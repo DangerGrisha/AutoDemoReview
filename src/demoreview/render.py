@@ -11,6 +11,18 @@ def esc(text) -> str:
     return html.escape(str(text))
 
 
+def embed_json(obj) -> str:
+    """Serialize for inlining inside a <script> tag.
+
+    json.dumps does not escape '<', so a player name containing '</script>'
+    would close the tag early and corrupt the blob. Escaping <, >, & to their
+    \\uXXXX form is valid JSON (parses back identically) and is inert to the HTML
+    tokenizer.
+    """
+    return (json.dumps(obj, separators=(",", ":"))
+            .replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026"))
+
+
 def kd_ratio(kills, deaths) -> str:
     if deaths:
         return f"{kills / deaths:.2f}"
@@ -30,6 +42,9 @@ PAGE_HEAD = """<!doctype html>
     --you: #6ea8fe; --opp: #ff8f6b;          /* your team / opponent */
     --me: #35d07f; --me-death: #ff6b81;       /* highlighted player */
     --win: #35d07f; --loss: #ff6b81;
+    /* grenade types (smoke / molotov+incendiary / HE / flash / decoy) */
+    --n-smoke: #cfd6df; --n-molotov: #ff7a3c; --n-he: #ffd166;
+    --n-flash: #e8f0ff; --n-decoy: #c792ea;
   }
   * { box-sizing: border-box; }
   body {
@@ -213,6 +228,23 @@ PAGE_HEAD = """<!doctype html>
   .mapwrap circle.kill { fill: var(--me); fill-opacity: .72; }
   .mapwrap circle.death { fill: var(--me-death); fill-opacity: .72; }
   .mapwrap circle.me { stroke: #fff; stroke-width: 2; fill-opacity: .95; }
+  .mapwrap circle.nade { fill-opacity: .8; stroke: rgba(0,0,0,.35); stroke-width: .5; }
+  .mapwrap circle.smoke   { fill: var(--n-smoke); }
+  .mapwrap circle.molotov { fill: var(--n-molotov); }
+  .mapwrap circle.he      { fill: var(--n-he); }
+  .mapwrap circle.flash   { fill: var(--n-flash); }
+  .mapwrap circle.decoy   { fill: var(--n-decoy); }
+  .mapwrap line.nade { display: none; stroke-width: 1.5; stroke-opacity: .4; }
+  .mapwrap line.smoke { stroke: var(--n-smoke); } .mapwrap line.molotov { stroke: var(--n-molotov); }
+  .mapwrap line.he { stroke: var(--n-he); } .mapwrap line.flash { stroke: var(--n-flash); }
+  .mapwrap line.decoy { stroke: var(--n-decoy); }
+  .nade-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .74rem;
+                 color: var(--muted); margin-top: 8px; align-items: center; }
+  .nade-legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block;
+                   margin-right: 4px; vertical-align: -1px; }
+  .nl-smoke { background: var(--n-smoke); } .nl-molotov { background: var(--n-molotov); }
+  .nl-he { background: var(--n-he); } .nl-flash { background: var(--n-flash); }
+  .nl-decoy { background: var(--n-decoy); }
 
   /* Round replay */
   .replay-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
@@ -225,6 +257,61 @@ PAGE_HEAD = """<!doctype html>
   .rtime { font-variant-numeric: tabular-nums; color: var(--muted); font-size: .82rem; min-width: 44px; }
   .revt { color: var(--muted); font-size: .8rem; margin-left: auto; }
   .rscrub { width: 100%; max-width: 560px; margin: 0 auto 10px; display: block; accent-color: var(--you); }
+
+  /* Replay killfeed overlay (stacks newest-on-top, top-right of the radar) */
+  .replaywrap { }
+  .killfeed { position: absolute; top: 8px; right: 8px; display: flex;
+              flex-direction: column; gap: 3px; align-items: flex-end;
+              pointer-events: none; z-index: 2; }
+  .killfeed .kf-n.pn { pointer-events: auto; cursor: pointer; }
+  .kf-row { display: flex; align-items: center; gap: 5px; font-size: .78rem;
+            font-weight: 600; background: rgba(14,17,22,.72); border: 1px solid var(--line);
+            border-radius: 6px; padding: 2px 7px; white-space: nowrap;
+            backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); }
+  .kf-row.fresh { outline: 1px solid rgba(255,255,255,.25); }
+  .kf-n.you { color: var(--me); } .kf-n.ally { color: var(--you); }
+  .kf-n.enemy { color: var(--opp); } .kf-n { color: var(--text); }
+  .kf-x { color: var(--me-death); font-weight: 700; }
+  .kf-hs { font-size: .6rem; font-weight: 700; color: #10131a; background: #ffd166;
+           padding: 0 4px; border-radius: 3px; margin-left: 2px; }
+
+  /* Clickable player names (focus switch) */
+  .pn { cursor: pointer; }
+  .pn:hover { text-decoration: underline; text-underline-offset: 2px; }
+  tr.me td .pn { font-weight: 700; }
+
+  /* Layer 5 rule badges on kill lines */
+  .rbadge { font-size: .6rem; font-weight: 700; padding: 1px 6px; border-radius: 4px;
+            margin-left: 6px; letter-spacing: .02em; text-transform: uppercase; white-space: nowrap; }
+  .rbadge.risky { background: rgba(255,143,107,.18); color: var(--opp);
+                  outline: 1px solid rgba(255,143,107,.5); }
+  .rbadge.attempt { background: rgba(199,146,234,.2); color: #c792ea; }
+  .rbadge.clutch { background: rgba(53,208,127,.2); color: var(--me); }
+
+  /* Layer 4 breakdown charts */
+  #layer4 { padding: 18px 20px; }
+  .l4-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 22px 26px; }
+  @media (max-width: 620px) { .l4-grid { grid-template-columns: 1fr; } }
+  .l4-block { min-width: 0; }
+  .l4-h { font-size: .8rem; font-weight: 700; margin: 0 0 10px; color: var(--text); }
+  .l4-h .sub2 { color: var(--muted); font-weight: 400; font-size: .78rem; }
+  .l4-row { display: grid; grid-template-columns: 92px 1fr auto; align-items: center;
+            gap: 8px; font-size: .8rem; margin-bottom: 6px; }
+  .l4-row .lbl { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .l4-row .val { font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; white-space: nowrap; }
+  .l4-track { position: relative; height: 14px; background: var(--card2);
+              border-radius: 4px; overflow: hidden; }
+  .l4-fill { position: absolute; inset: 0 auto 0 0; height: 100%; border-radius: 4px; }
+  .l4-fill.win { background: var(--win); } .l4-fill.loss { background: var(--loss); }
+  .l4-fill.you { background: var(--you); } .l4-fill.me { background: var(--me); }
+  .l4-fill.opp { background: var(--opp); } .l4-fill.mut { background: var(--muted); }
+  .l4-split { display: flex; height: 14px; border-radius: 4px; overflow: hidden; background: var(--card2); }
+  .l4-split i { display: block; height: 100%; }
+  .l4-split i.w { background: var(--win); } .l4-split i.l { background: var(--loss); }
+  .l4-empty { color: var(--muted); font-style: italic; font-size: .82rem; }
+  .l4-note { color: var(--muted); font-size: .76rem; margin-top: 14px; }
+  .h2h-k { color: var(--me); } .h2h-d { color: var(--me-death); }
+  .l4-row.worst .lbl { color: var(--opp); font-weight: 700; }
 </style>
 </head>
 <body>
@@ -233,6 +320,200 @@ PAGE_HEAD = """<!doctype html>
 
 PAGE_SCRIPT = """<script>
 (function () {
+  // ===== Focus-player controller: click any name to re-spotlight, no reload =====
+  var FD = {};
+  try { FD = JSON.parse(document.getElementById('focus-data').textContent); } catch (e) {}
+  var PROFILES = FD.profiles || {}, ROSTER = FD.roster || [], RULES = FD.rules || {};
+  var focusSid = FD.focus;
+  var teamA = {}, pname = {};
+  ROSTER.forEach(function (p) { teamA[p.sid] = p.teamA; pname[p.sid] = p.name; });
+  var redrawReplay = null, resetFeed = null, refreshMapFilter = null;
+
+  function he(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+  function roleForSid(sid) {                       // 'you' / 'ally' / 'enemy' / ''
+    if (!sid) return '';
+    if (sid === focusSid) return 'you';
+    var t = teamA[sid];
+    if (t === undefined) return 'enemy';
+    return t === teamA[focusSid] ? 'ally' : 'enemy';
+  }
+
+  function applySubheader() {
+    var el = document.getElementById('sub-focus');
+    if (el) el.textContent = pname[focusSid] || '?';
+  }
+  function applyScoreboard() {
+    var sb = document.getElementById('scoreboard');
+    if (!sb) return;
+    var ft = teamA[focusSid];
+    Array.prototype.forEach.call(sb.querySelectorAll('tbody tr'), function (tr) {
+      var sid = tr.dataset.sid;
+      tr.classList.toggle('me', sid === focusSid);
+      var cell = tr.querySelector('.teamtag');
+      if (cell) cell.innerHTML = (teamA[sid] === ft)
+        ? '<span class="tag you">You</span>' : '<span class="tag opp">Opp</span>';
+    });
+  }
+  function buildYourMatch() {
+    var host = document.getElementById('ym-chips');
+    var p = PROFILES[focusSid];
+    if (!host || !p) return;
+    var s = p.stats;
+    var chips = [
+      ['Rating', s.rating.toFixed(2), 1], ['ADR', Math.round(s.adr), 1],
+      ['KAST', Math.round(s.kast) + '%', 1],
+      ['K / D / A', s.kills + ' / ' + s.deaths + ' / ' + s.assists, 0],
+      ['HS%', Math.round(s.hs_pct) + '%', 0],
+      ['Opening', s.opening_k + '-' + s.opening_d + ' (' + Math.round(s.open_pct) + '%)', 0],
+      ['Multi-kills', s.multi, 0], ['Trade kills', s.trade_kills, 0],
+      ['Clutches', s.clutch_won + '/' + s.clutch, 0], ['Flash assists', s.flash_assists, 0],
+    ];
+    host.innerHTML = chips.map(function (c) {
+      return '<div class="chip' + (c[2] ? ' hi' : '') + '"><span class="clabel">'
+        + c[0] + '</span><span class="cval">' + he(c[1]) + '</span></div>';
+    }).join('');
+    var nm = document.getElementById('ym-name');
+    if (nm) nm.textContent = pname[focusSid] || '?';
+  }
+
+  // ---- Layer 4 breakdown charts (plain divs/CSS bars, no libraries) ----
+  function l4block(h, inner) {
+    return '<div class="l4-block"><div class="l4-h">' + h + '</div>' + inner + '</div>';
+  }
+  function l4row(label, widthPct, cls, val, extra) {
+    return '<div class="l4-row' + (extra || '') + '"><span class="lbl">' + he(String(label))
+      + '</span><span class="l4-track"><span class="l4-fill ' + cls + '" style="width:'
+      + widthPct + '%"></span></span><span class="val">' + val + '</span></div>';
+  }
+  function winByBuyBlock(wbb) {
+    var out = '';
+    ['CT', 'T'].forEach(function (side) {
+      ['eco', 'force', 'full'].forEach(function (b) {
+        var w = wbb[side][b][0], l = wbb[side][b][1], t = w + l;
+        if (!t) return;
+        out += '<div class="l4-row"><span class="lbl">' + side + ' ' + b + '</span>'
+          + '<span class="l4-split"><i class="w" style="width:' + (100 * w / t)
+          + '%"></i><i class="l" style="width:' + (100 * l / t) + '%"></i></span>'
+          + '<span class="val">' + w + '-' + l + '</span></div>';
+      });
+    });
+    if (!out) out = '<div class="l4-empty">no data</div>';
+    return l4block('Win rate by buy type <span class="sub2">(W-L)</span>', out);
+  }
+  function deathTypeBlock(dbt) {
+    var total = dbt.eco + dbt.force + dbt.full;
+    if (!total) return l4block('Deaths by round buy', '<div class="l4-empty">no deaths</div>');
+    var max = Math.max(1, dbt.eco, dbt.force, dbt.full);
+    var rows = [['eco', dbt.eco], ['force', dbt.force], ['full', dbt.full]].map(function (p) {
+      return l4row(p[0], 100 * p[1] / max, 'loss', p[1]);
+    }).join('');
+    return l4block('Deaths by round buy <span class="sub2">(your team buy)</span>', rows);
+  }
+  function deathWeaponBlock(dbw) {
+    if (!dbw.length) return l4block('Deaths by enemy weapon', '<div class="l4-empty">no deaths</div>');
+    var top = dbw.slice(0, 8), max = Math.max.apply(null, top.map(function (x) { return x[1]; }));
+    var rows = top.map(function (x) { return l4row(x[0], 100 * x[1] / max, 'opp', x[1]); }).join('');
+    return l4block('Deaths by enemy weapon', rows);
+  }
+  function h2hBlock(list) {
+    if (!list.length) return l4block('Head-to-head', '<div class="l4-empty">no duels</div>');
+    var rows = list.map(function (x, i) {
+      var t = x.k + x.d || 1;
+      return '<div class="l4-row' + (i === 0 ? ' worst' : '') + '"><span class="lbl">'
+        + he(x.name) + '</span><span class="l4-split"><i class="w" style="width:'
+        + (100 * x.k / t) + '%"></i><i class="l" style="width:' + (100 * x.d / t)
+        + '%"></i></span><span class="val"><span class="h2h-k">' + x.k
+        + '</span>/<span class="h2h-d">' + x.d + '</span></span></div>';
+    }).join('');
+    return l4block('Head-to-head <span class="sub2">(worst matchup first)</span>', rows);
+  }
+  function buildLayer4() {
+    var host = document.getElementById('layer4');
+    var p = PROFILES[focusSid];
+    if (!host || !p) return;
+    var blocks = [winByBuyBlock(p.winByBuy), h2hBlock(p.h2h),
+                  deathTypeBlock(p.deathsByType), deathWeaponBlock(p.deathsByWeapon)];
+    host.innerHTML = '<div class="l4-grid">' + blocks.join('') + '</div>'
+      + '<div class="l4-note">Win rate = ' + he(pname[focusSid])
+      + ' team, by buy type and side. Deaths and head-to-head are '
+      + he(pname[focusSid]) + ' own; head-to-head bar shows kills (green) vs deaths (red).</div>';
+  }
+
+  // ---- Per-kill line: focus highlight, name colours, FOCUS KILL/DEATH tag ----
+  function applyKillLines() {
+    Array.prototype.forEach.call(document.querySelectorAll('.kill[data-round]'), function (el) {
+      var ka = el.dataset.ka, kv = el.dataset.kv;
+      var isK = ka && ka === focusSid, isD = !isK && kv && kv === focusSid;
+      el.classList.toggle('mine-kill', !!isK);
+      el.classList.toggle('mine-death', !!isD);
+      Array.prototype.forEach.call(el.querySelectorAll('.name[data-sid]'), function (n) {
+        var sid = n.dataset.sid;
+        n.className = 'name pn ' + (sid === focusSid ? 'me' : roleForSid(sid));
+      });
+      var old = el.querySelector('.me-tag');
+      if (old) old.remove();
+      var slot = el.querySelector('.rbadge-slot');
+      if (isK || isD) {
+        var tag = document.createElement('span');
+        tag.className = 'me-tag ' + (isK ? 'kill' : 'death');
+        tag.textContent = isK ? 'FOCUS KILL' : 'FOCUS DEATH';
+        if (slot) el.insertBefore(tag, slot); else el.appendChild(tag);
+      }
+    });
+  }
+  // ---- Layer 5 rule badges (attached to the relevant kill line, per focus) ----
+  function applyRuleBadges() {
+    Array.prototype.forEach.call(document.querySelectorAll('.rbadge-slot'), function (s) {
+      s.innerHTML = '';
+    });
+    Object.keys(RULES).forEach(function (r) {
+      var fl = RULES[r][focusSid];
+      if (!fl) return;
+      fl.forEach(function (f) {
+        var line = document.querySelector('.kill[data-round="' + r + '"][data-idx="' + f.line + '"]');
+        var slot = line && line.querySelector('.rbadge-slot');
+        if (!slot) return;
+        if (f.kind === 'risky-duel')
+          slot.innerHTML = '<span class="rbadge risky" title="Died first while teammates were alive at a disadvantage">RISKY DUEL</span>';
+        else if (f.kind === 'clutch-won')
+          slot.innerHTML = '<span class="rbadge clutch" title="Won the round as the lone survivor">CLUTCH WON 1v' + f.x + '</span>';
+        else
+          slot.innerHTML = '<span class="rbadge attempt" title="Left as the last player alive against 2+ enemies">CLUTCH ATTEMPT 1v' + f.x + '</span>';
+      });
+    });
+  }
+  function applyMapDots() {
+    var mapwrap = document.getElementById('mapwrap');
+    if (!mapwrap) return;
+    Array.prototype.forEach.call(mapwrap.querySelectorAll('.d[data-sid]'), function (c) {
+      var me = c.dataset.sid === focusSid;
+      c.dataset.me = me ? '1' : '0';
+      c.classList.toggle('me', me);
+    });
+    if (refreshMapFilter) refreshMapFilter();
+  }
+
+  function applyFocus() {
+    applySubheader(); applyScoreboard(); buildYourMatch(); buildLayer4();
+    applyKillLines(); applyRuleBadges(); applyMapDots();
+    if (resetFeed) resetFeed();
+    if (redrawReplay) redrawReplay();
+  }
+  function refocus(sid) {
+    if (!sid || !(sid in PROFILES) || sid === focusSid) return;
+    focusSid = sid;
+    applyFocus();
+  }
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest ? e.target.closest('.pn') : null;
+    if (el && el.dataset.sid) refocus(el.dataset.sid);
+  });
+  // ===== end focus controller (initial applyFocus() runs at the very bottom) =====
+
   var sticky = document.querySelector('.sticky');
   var cards = Array.prototype.slice.call(document.querySelectorAll('.round'));
   var dots = Array.prototype.slice.call(document.querySelectorAll('.dot'));
@@ -304,12 +585,16 @@ PAGE_SCRIPT = """<script>
   // Map heatmap: toggle scope (you / everyone) and type (kills / deaths / both).
   var mapwrap = document.getElementById('mapwrap');
   if (mapwrap) {
-    var dots = Array.prototype.slice.call(mapwrap.querySelectorAll('circle.d'));
-    var mapScope = 'you', mapType = 'both';
+    var els = Array.prototype.slice.call(mapwrap.querySelectorAll('.d'));
+    var mapScope = 'you', mapType = 'both', mapNades = 'off';
     function updateMap() {
-      dots.forEach(function (c) {
-        var scopeOk = (mapScope === 'all') || c.dataset.me === '1';
+      els.forEach(function (c) {
         var dt = c.dataset.type;
+        if (dt === 'nade') {                       // grenades: own on/off toggle
+          c.style.display = (mapNades === 'on') ? 'block' : 'none';
+          return;
+        }
+        var scopeOk = (mapScope === 'all') || c.dataset.me === '1';
         var typeOk = (mapType === 'both')
           || (mapType === 'kills' && dt === 'kill')
           || (mapType === 'deaths' && dt === 'death');
@@ -322,11 +607,14 @@ PAGE_SCRIPT = """<script>
         seg.querySelectorAll('button').forEach(function (b) {
           b.classList.toggle('active', b === e.target);
         });
-        if (seg.dataset.group === 'scope') mapScope = e.target.dataset.val;
+        var grp = seg.dataset.group;
+        if (grp === 'scope') mapScope = e.target.dataset.val;
+        else if (grp === 'nades') mapNades = e.target.dataset.val;
         else mapType = e.target.dataset.val;
         updateMap();
       });
     });
+    refreshMapFilter = updateMap;      // let the focus controller re-run the filter
     updateMap();
   }
 
@@ -337,15 +625,32 @@ PAGE_SCRIPT = """<script>
     var cv = document.getElementById('replay-canvas');
     var ctx = cv.getContext('2d');
     var COLORS = { you: '#35d07f', ally: '#6ea8fe', enemy: '#ff8f6b' };
+    var NADE_COLORS = { smoke: '#cfd6df', molotov: '#ff7a3c', he: '#ffd166',
+                        flash: '#e8f0ff', decoy: '#c792ea' };
+    var WEAPONS = RP.weapons || [];                    // registry: index -> tag
+    var WALPHA = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+    function weaponTag(p, f) {                          // held-weapon tag or ''
+      if (!p.w) return '';
+      var ch = p.w.charAt(f);
+      if (ch === '.' || ch === '') return '';
+      var i = WALPHA.indexOf(ch);
+      return (i >= 0 && i < WEAPONS.length) ? WEAPONS[i] : '';
+    }
+    var showNades = true;
     var sel = document.getElementById('replay-round');
     var scrub = document.getElementById('replay-scrub');
     var playBtn = document.getElementById('replay-play');
     var speedBtn = document.getElementById('replay-speed');
     var timeLbl = document.getElementById('replay-time');
-    var evtLbl = document.getElementById('replay-evt');
-    var round = RP.rounds[0], cur = 0, playing = false, speed = 2, last = 0;
+    var feedEl = document.getElementById('replay-feed');
+    var round = RP.rounds[0], cur = 0, playing = false, speed = 2, last = 0, feedSig = '';
 
     function fps() { return 64 / round.step; }          // sample frames per second
+    function esc(s) {
+      return String(s).replace(/[&<>"]/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+      });
+    }
 
     function posAt(p, c) {
       var f0 = Math.floor(c), f1 = Math.min(f0 + 1, round.nf - 1), t = c - f0;
@@ -357,32 +662,174 @@ PAGE_SCRIPT = """<script>
                y: p.f[a + 1] + (p.f[b + 1] - p.f[a + 1]) * t,
                yaw: p.f[a + 2] + dy * t };
     }
+    // Head of a grenade's flight, interpolated along its throw arc.
+    function nadeAt(g, c) {
+      var n = g.trail.length;
+      if (!n) return g.det;
+      var span = g.df - g.tf;
+      var p = span > 0 ? (c - g.tf) / span : 1;
+      if (p < 0) p = 0; if (p > 1) p = 1;
+      var fi = p * (n - 1), i0 = Math.floor(fi), i1 = Math.min(i0 + 1, n - 1), t = fi - i0;
+      return [g.trail[i0][0] + (g.trail[i1][0] - g.trail[i0][0]) * t,
+              g.trail[i0][1] + (g.trail[i1][1] - g.trail[i0][1]) * t];
+    }
+    function drawNade(g) {
+      var col = NADE_COLORS[g.t] || '#fff';
+      if (cur >= g.tf && cur < g.df) {                 // in flight: arc + head
+        ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.globalAlpha = 0.85;
+        ctx.beginPath();
+        if (g.trail.length) {
+          ctx.moveTo(g.trail[0][0], g.trail[0][1]);
+          var head = nadeAt(g, cur);
+          var upto = Math.floor((g.trail.length - 1)
+            * (g.df > g.tf ? (cur - g.tf) / (g.df - g.tf) : 1));
+          for (var i = 1; i <= upto && i < g.trail.length; i++)
+            ctx.lineTo(g.trail[i][0], g.trail[i][1]);
+          ctx.lineTo(head[0], head[1]); ctx.stroke();
+          ctx.globalAlpha = 1;
+          ctx.beginPath(); ctx.arc(head[0], head[1], 4, 0, 6.2832);
+          ctx.fillStyle = col; ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        return;
+      }
+      if (cur < g.df || cur >= g.ef) return;            // detonation effect window
+      var life = (g.ef > g.df) ? (cur - g.df) / (g.ef - g.df) : 0;   // 0..1
+      var x = g.det[0], y = g.det[1];
+      if (g.t === 'smoke') {
+        ctx.globalAlpha = 0.22; ctx.fillStyle = col;
+        ctx.beginPath(); ctx.arc(x, y, 27, 0, 6.2832); ctx.fill();
+        ctx.globalAlpha = 0.55; ctx.lineWidth = 1.5; ctx.strokeStyle = col; ctx.stroke();
+      } else if (g.t === 'molotov') {
+        ctx.globalAlpha = 0.30; ctx.fillStyle = col;
+        ctx.beginPath(); ctx.arc(x, y, 22, 0, 6.2832); ctx.fill();
+        ctx.globalAlpha = 0.75; ctx.strokeStyle = col; ctx.lineWidth = 2;
+        for (var k = 0; k < 7; k++) {                  // flicker tongues (no RNG)
+          var a = k * 0.9 + cur * 0.25, rr = 15 + 7 * Math.sin(cur * 0.5 + k);
+          ctx.beginPath(); ctx.moveTo(x, y);
+          ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); ctx.stroke();
+        }
+      } else if (g.t === 'flash') {
+        ctx.globalAlpha = Math.max(0, 1 - life); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(x, y, 6 + life * 42, 0, 6.2832); ctx.stroke();
+      } else if (g.t === 'he') {
+        ctx.globalAlpha = Math.max(0, 1 - life); ctx.strokeStyle = col; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(x, y, 5 + life * 26, 0, 6.2832); ctx.stroke();
+        ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, 4, 0, 6.2832); ctx.fill();
+      } else {                                          // decoy: small pulsing dot
+        ctx.globalAlpha = 0.8; ctx.fillStyle = col;
+        ctx.beginPath(); ctx.arc(x, y, 4 + 2 * Math.sin(cur * 0.4), 0, 6.2832); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // A red cross + small name wherever a player has died so far this round.
+    function drawDeaths(f) {
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.font = '600 17px -apple-system, sans-serif';
+      round.events.forEach(function (e) {
+        if (e.f > f || !e.d) return;
+        var x = e.d[0], y = e.d[1];
+        ctx.globalAlpha = 0.92; ctx.strokeStyle = '#ff3b4e'; ctx.lineWidth = 3.5;
+        ctx.beginPath();
+        ctx.moveTo(x - 7, y - 7); ctx.lineTo(x + 7, y + 7);
+        ctx.moveTo(x + 7, y - 7); ctx.lineTo(x - 7, y + 7); ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.65)';
+        ctx.strokeText(e.v, x, y + 9);
+        ctx.fillStyle = 'rgba(255,140,148,.95)';
+        ctx.fillText(e.v, x, y + 9);
+      });
+    }
+
+    // Killfeed: newest on top, a few recent kills, rebuilt only when it changes.
+    function renderFeed(f) {
+      var vis = 0, recent = [];
+      for (var i = 0; i < round.events.length; i++) {
+        if (round.events[i].f <= f) { vis++; recent.push(round.events[i]); }
+      }
+      var sig = round.n + ':' + vis;
+      if (sig === feedSig) return;
+      feedSig = sig;
+      recent = recent.slice(-6).reverse();               // newest first, cap 6
+      feedEl.innerHTML = recent.map(function (e, idx) {
+        var hs = e.hs ? '<span class="kf-hs">HS</span>' : '';
+        var ka = e.ks ? ' pn" data-sid="' + esc(e.ks) + '"' : '"';   // clickable if identified
+        var va = e.vs ? ' pn" data-sid="' + esc(e.vs) + '"' : '"';
+        return '<div class="kf-row' + (idx === 0 ? ' fresh' : '') + '">'
+          + '<span class="kf-n ' + roleForSid(e.ks) + ka + '>' + esc(e.k) + '</span>'
+          + '<span class="kf-x">&#10006;</span>'
+          + '<span class="kf-n ' + roleForSid(e.vs) + va + '>' + esc(e.v) + '</span>' + hs + '</div>';
+      }).join('');
+    }
+
     function draw() {
       ctx.clearRect(0, 0, cv.width, cv.height);
+      var f = Math.floor(cur);
+      if (showNades && round.grenades)
+        round.grenades.forEach(drawNade);              // under everything
+      drawDeaths(f);                                    // death crosses under live players
+      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
       round.players.forEach(function (p) {
         var pos = posAt(p, cur);
         if (!pos) return;
-        var col = COLORS[p.r] || '#aaa';
+        var role = roleForSid(p.sid) || p.r;            // live: follows the focus
+        var isYou = role === 'you';
+        var col = COLORS[role] || '#aaa';
         var yr = pos.yaw * Math.PI / 180;               // yaw 0=east; radar y is flipped
         ctx.strokeStyle = col; ctx.lineWidth = 4;
         ctx.beginPath(); ctx.moveTo(pos.x, pos.y);
         ctx.lineTo(pos.x + Math.cos(yr) * 26, pos.y - Math.sin(yr) * 26); ctx.stroke();
-        ctx.beginPath(); ctx.arc(pos.x, pos.y, p.r === 'you' ? 15 : 12, 0, 6.2832);
+        ctx.beginPath(); ctx.arc(pos.x, pos.y, isYou ? 15 : 12, 0, 6.2832);
         ctx.fillStyle = col; ctx.fill();
-        if (p.r === 'you') { ctx.lineWidth = 5; ctx.strokeStyle = '#fff'; ctx.stroke(); }
+        // Blinded? Wash the dot toward white in proportion to flash level (0-9).
+        var bl = p.bl ? +p.bl.charAt(f) : 0;
+        if (bl > 0) {
+          ctx.globalAlpha = (bl / 9) * 0.8; ctx.fillStyle = '#ffffff'; ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+        if (isYou) { ctx.lineWidth = 5; ctx.strokeStyle = '#fff'; ctx.stroke(); }
+        var rad = isYou ? 15 : 12;
+        // Name tag above the dot.
+        ctx.textBaseline = 'bottom';
+        ctx.font = '600 18px -apple-system, sans-serif';
+        ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(0,0,0,.7)';
+        ctx.strokeText(p.n, pos.x, pos.y - rad - 4);
+        ctx.fillStyle = col; ctx.fillText(p.n, pos.x, pos.y - rad - 4);
+        // Held weapon tag just below the dot — the real in-game gun.
+        var wtag = weaponTag(p, f);
+        if (wtag) {
+          ctx.textBaseline = 'top';
+          ctx.font = '700 15px -apple-system, sans-serif';
+          ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.72)';
+          ctx.strokeText(wtag, pos.x, pos.y + rad + 3);
+          ctx.fillStyle = 'rgba(255,255,255,.92)';
+          ctx.fillText(wtag, pos.x, pos.y + rad + 3);
+        }
       });
-      var f = Math.floor(cur);
+      if (round.bomb) drawBomb(f);
       scrub.value = f;
       timeLbl.textContent = (f / fps()).toFixed(1) + 's';
-      var ev = '';
-      for (var i = 0; i < round.events.length; i++) {
-        if (round.events[i][0] <= f) ev = round.events[i][2]; else break;
-      }
-      evtLbl.textContent = ev;
+      renderFeed(f);
+    }
+    // Planted bomb: a bomb marker + a 40s countdown above it, from the plant frame.
+    function drawBomb(f) {
+      var b = round.bomb;
+      if (f < b.pf) return;                            // not planted yet this frame
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle'; ctx.font = '20px -apple-system, sans-serif';
+      ctx.fillText('💣', b.x, b.y);
+      var remain = Math.max(0, 40 - (f - b.pf) / fps());
+      var txt = remain.toFixed(1) + 's';
+      ctx.textBaseline = 'bottom'; ctx.font = '700 18px -apple-system, sans-serif';
+      ctx.lineWidth = 3.5; ctx.strokeStyle = 'rgba(0,0,0,.72)';
+      ctx.strokeText(txt, b.x, b.y - 15);
+      ctx.fillStyle = remain > 10 ? '#ffd166' : '#ff3b4e';
+      ctx.fillText(txt, b.x, b.y - 15);
     }
     function loadRound(i) {
       round = RP.rounds[i]; cur = 0; playing = false; playBtn.innerHTML = '&#9654;';
-      scrub.max = round.nf - 1; scrub.value = 0; sel.value = i; draw();
+      scrub.max = round.nf - 1; scrub.value = 0; sel.value = i; feedSig = ''; draw();
     }
     function step(ts) {
       if (!playing) return;
@@ -412,13 +859,13 @@ PAGE_SCRIPT = """<script>
     document.getElementById('replay-nextkill').addEventListener('click', function () {
       var f = Math.floor(cur);
       for (var i = 0; i < round.events.length; i++) {
-        if (round.events[i][0] > f) { cur = round.events[i][0]; draw(); return; }
+        if (round.events[i].f > f) { cur = round.events[i].f; draw(); return; }
       }
     });
     document.getElementById('replay-prevkill').addEventListener('click', function () {
       var f = Math.floor(cur), target = 0;
       for (var i = 0; i < round.events.length; i++) {
-        if (round.events[i][0] < f) target = round.events[i][0]; else break;
+        if (round.events[i].f < f) target = round.events[i].f; else break;
       }
       cur = target; draw();
     });
@@ -426,6 +873,17 @@ PAGE_SCRIPT = """<script>
       speed = speed === 1 ? 2 : speed === 2 ? 4 : 1;
       speedBtn.innerHTML = speed + '&times;';
     });
+    var nadeSeg = document.getElementById('replay-nadeseg');
+    if (nadeSeg) nadeSeg.addEventListener('click', function (e) {
+      if (e.target.tagName !== 'BUTTON') return;
+      nadeSeg.querySelectorAll('button').forEach(function (b) {
+        b.classList.toggle('active', b === e.target);
+      });
+      showNades = e.target.dataset.val === 'on';
+      draw();
+    });
+    redrawReplay = draw;                          // let the focus controller redraw
+    resetFeed = function () { feedSig = ''; };    // ...and force a killfeed rebuild
     loadRound(0);
   }
 
@@ -440,6 +898,8 @@ PAGE_SCRIPT = """<script>
     }, { rootMargin: '-' + (sticky.offsetHeight + 20) + 'px 0px -70% 0px', threshold: 0 });
     cards.forEach(function (c) { spy.observe(c); });
   }
+
+  applyFocus();     // render Layer 4 + rule badges and normalise everything to the default focus
 })();
 </script>
 """
@@ -496,28 +956,39 @@ def render_sticky(summary, rounds, meta) -> str:
     )
 
 
-def render_kill(kill, is_opening=False) -> str:
+def _kill_name(name, rel, is_me, sid) -> str:
+    """A clickable player name inside a kill line (colour baked for default focus)."""
+    sid_attr = f' data-sid="{esc(sid)}"' if sid else ""
+    pn = " pn" if sid else ""
+    return (f'<span class="name{pn} {name_class(rel, is_me)}"{sid_attr}>{esc(name)}</span>')
+
+
+def render_kill(kill, is_opening=False, rnd=None, idx=None) -> str:
     classes = ["kill"]
     if kill["attacker_is_me"]:
         classes.append("mine-kill")
     elif kill["victim_is_me"]:
         classes.append("mine-death")
 
-    attacker = (f'<span class="name {name_class(kill["attacker_rel"], kill["attacker_is_me"])}">'
-                f'{esc(kill["attacker"])}</span>')
-    victim = (f'<span class="name {name_class(kill["victim_rel"], kill["victim_is_me"])}">'
-              f'{esc(kill["victim"])}</span>')
+    attacker = _kill_name(kill["attacker"], kill["attacker_rel"],
+                          kill["attacker_is_me"], kill.get("attacker_sid"))
+    victim = _kill_name(kill["victim"], kill["victim_rel"],
+                        kill["victim_is_me"], kill.get("victim_sid"))
     opening = ' <span class="open">OPENING</span>' if is_opening else ""
     hs = ' <span class="hs">HS</span>' if kill["headshot"] else ""
     tag = ""
     if kill["attacker_is_me"]:
-        tag = ' <span class="me-tag kill">YOUR KILL</span>'
+        tag = ' <span class="me-tag kill">FOCUS KILL</span>'
     elif kill["victim_is_me"]:
-        tag = ' <span class="me-tag death">YOUR DEATH</span>'
+        tag = ' <span class="me-tag death">FOCUS DEATH</span>'
 
-    return (f'<div class="{" ".join(classes)}">{attacker}'
+    data = (f' data-ka="{esc(kill.get("attacker_sid") or "")}" '
+            f'data-kv="{esc(kill.get("victim_sid") or "")}" '
+            f'data-round="{rnd}" data-idx="{idx}"')
+    return (f'<div class="{" ".join(classes)}"{data}>{attacker}'
             f'<span class="arrow">&#9656;</span>{victim}'
-            f'<span class="wep">{esc(kill["weapon"])}</span>{opening}{hs}{tag}</div>')
+            f'<span class="wep">{esc(kill["weapon"])}</span>{opening}{hs}{tag}'
+            f'<span class="rbadge-slot"></span></div>')
 
 
 MULTI_LABEL = {2: "2K", 3: "3K", 4: "4K", 5: "ACE"}
@@ -590,7 +1061,7 @@ def render_round(rd, ref_sid=None) -> str:
         parts.append(render_economy(rd["economy"]))
 
     if rd["kills"]:
-        parts.extend(render_kill(k, is_opening=(i == 0))
+        parts.extend(render_kill(k, is_opening=(i == 0), rnd=rd["number"], idx=i)
                      for i, k in enumerate(rd["kills"]))
     else:
         parts.append('<div class="no-kills">No kills this round.</div>')
@@ -663,9 +1134,9 @@ def render_your_match(rs, ref_name) -> str:
         f'<span class="clabel">{esc(label)}</span>'
         f'<span class="cval">{esc(val)}</span></div>'
         for label, val, hi in chips)
-    return (f'<div class="your-match"><div class="ym-title">'
-            f'{esc(ref_name)} &mdash; your match</div>'
-            f'<div class="chips">{inner}</div></div>')
+    return (f'<div class="your-match" id="ym-host"><div class="ym-title">'
+            f'<span id="ym-name">{esc(ref_name)}</span> &mdash; focus player</div>'
+            f'<div class="chips" id="ym-chips">{inner}</div></div>')
 
 
 SB_COLUMNS = [
@@ -690,14 +1161,17 @@ def render_scoreboard(players, ref_sid) -> str:
     rows = []
     for p in players:
         me = ' class="me"' if p["sid"] == ref_sid else ""
+        team_code = "A" if p["on_your_team"] else "B"
         team = ('<span class="tag you">You</span>' if p["on_your_team"]
                 else '<span class="tag opp">Opp</span>')
         rows.append(
-            f'<tr{me} data-name="{esc(p["name"])}" data-kills="{p["kills"]}" '
+            f'<tr{me} data-sid="{esc(p["sid"])}" data-team="{team_code}" '
+            f'data-name="{esc(p["name"])}" data-kills="{p["kills"]}" '
             f'data-deaths="{p["deaths"]}" data-assists="{p["assists"]}" '
             f'data-adr="{p["adr"]:.1f}" data-kast="{p["kast"]:.1f}" '
             f'data-hs="{p["hs_pct"]:.1f}" data-rating="{p["rating"]:.3f}">'
-            f'<td>{esc(p["name"])}</td><td>{team}</td>'
+            f'<td><span class="pn" data-sid="{esc(p["sid"])}">{esc(p["name"])}</span></td>'
+            f'<td class="teamtag">{team}</td>'
             f'<td class="num">{p["kills"]}</td><td class="num">{p["deaths"]}</td>'
             f'<td class="num">{p["assists"]}</td><td class="num">{p["adr"]:.0f}</td>'
             f'<td class="num">{p["kast"]:.0f}%</td><td class="num">{p["hs_pct"]:.0f}%</td>'
@@ -707,13 +1181,33 @@ def render_scoreboard(players, ref_sid) -> str:
             f'<tbody>{"".join(rows)}</tbody></table>')
 
 
-def _map_dot(px, py, kind, is_me, title) -> str:
+def _map_dot(px, py, kind, is_me, title, sid=None) -> str:
     me = " me" if is_me else ""
-    return (f'<circle class="d {kind}{me}" data-type="{kind}" data-me="{1 if is_me else 0}" '
+    sid_attr = f' data-sid="{esc(sid)}"' if sid else ""
+    return (f'<circle class="d {kind}{me}" data-type="{kind}" data-me="{1 if is_me else 0}"{sid_attr} '
             f'cx="{px:.1f}" cy="{py:.1f}" r="6"><title>{esc(title)}</title></circle>')
 
 
-def render_map(map_kills, meta, info) -> str:
+NADE_LABEL = {"smoke": "smoke", "molotov": "molotov", "he": "HE",
+              "flash": "flash", "decoy": "decoy"}
+
+
+def _nade_map_svg(nade) -> str:
+    """A detonation dot plus a faint line back to where it was thrown from."""
+    me = 1 if nade["me"] else 0
+    t = nade["t"]
+    title = (f'R{nade["round"]} · {NADE_LABEL.get(t, t)} detonation'
+             + (' · you' if nade["me"] else ''))
+    line = (f'<line class="d nade {t}" data-type="nade" data-me="{me}" '
+            f'x1="{nade["ox"]:.1f}" y1="{nade["oy"]:.1f}" '
+            f'x2="{nade["dx"]:.1f}" y2="{nade["dy"]:.1f}"></line>')
+    dot = (f'<circle class="d nade {t}" data-type="nade" data-me="{me}" '
+           f'cx="{nade["dx"]:.1f}" cy="{nade["dy"]:.1f}" r="5">'
+           f'<title>{esc(title)}</title></circle>')
+    return line + dot
+
+
+def render_map(map_kills, map_nades, meta, info) -> str:
     """Radar panel with kill/death dots (radar image via the shared .radar-bg)."""
     size = info["size"]
 
@@ -722,11 +1216,29 @@ def render_map(map_kills, meta, info) -> str:
         if mk["kx"] is not None and mk["ky"] is not None:
             px, py = maps.world_to_radar(mk["kx"], mk["ky"], info)
             dots.append(_map_dot(px, py, "kill", mk["killer_is_me"],
-                                 f'R{mk["round"]} · {mk["killer"]} killed {mk["victim"]} · {mk["weapon"]}'))
+                                 f'R{mk["round"]} · {mk["killer"]} killed {mk["victim"]} · {mk["weapon"]}',
+                                 sid=mk.get("killer_sid")))
         if mk["vx"] is not None and mk["vy"] is not None:
             px, py = maps.world_to_radar(mk["vx"], mk["vy"], info)
             dots.append(_map_dot(px, py, "death", mk["victim_is_me"],
-                                 f'R{mk["round"]} · {mk["victim"]} killed by {mk["killer"]} · {mk["weapon"]}'))
+                                 f'R{mk["round"]} · {mk["victim"]} killed by {mk["killer"]} · {mk["weapon"]}',
+                                 sid=mk.get("victim_sid")))
+    nade_svg = "".join(_nade_map_svg(n) for n in (map_nades or []))
+
+    nade_seg = (
+        '<div class="seg" data-group="nades">'
+        '<button data-val="off" class="active">Nades off</button>'
+        '<button data-val="on">Nades on</button></div>'
+    ) if map_nades else ""
+    nade_legend = (
+        '<div class="nade-legend">Grenade detonations: '
+        '<span><i class="nl-smoke"></i>smoke</span>'
+        '<span><i class="nl-molotov"></i>molotov</span>'
+        '<span><i class="nl-he"></i>HE</span>'
+        '<span><i class="nl-flash"></i>flash</span>'
+        '<span><i class="nl-decoy"></i>decoy</span>'
+        '<span class="muted">— line points back to the throw origin</span></div>'
+    ) if map_nades else ""
 
     controls = (
         '<div class="map-controls">'
@@ -737,6 +1249,7 @@ def render_map(map_kills, meta, info) -> str:
         '<button data-val="both" class="active">Kills + deaths</button>'
         '<button data-val="kills">Kills</button>'
         '<button data-val="deaths">Deaths</button></div>'
+        f'{nade_seg}'
         '<span class="map-legend"><i class="lk"></i> kills &nbsp; <i class="ld"></i> deaths</span>'
         '</div>'
     )
@@ -748,8 +1261,9 @@ def render_map(map_kills, meta, info) -> str:
         f'{controls}'
         '<div class="mapwrap" id="mapwrap">'
         '<div class="radar-bg"></div>'
-        f'<svg viewBox="0 0 {size} {size}" preserveAspectRatio="xMidYMid meet">{"".join(dots)}</svg>'
-        '</div></div>'
+        f'<svg viewBox="0 0 {size} {size}" preserveAspectRatio="xMidYMid meet">{"".join(dots)}{nade_svg}</svg>'
+        '</div>'
+        f'{nade_legend}</div>'
     )
 
 
@@ -760,7 +1274,7 @@ def render_replay(replay, meta, info) -> str:
     size = replay["size"]
     options = "".join(f'<option value="{i}">Round {rd["n"]}</option>'
                       for i, rd in enumerate(replay["rounds"]))
-    data_json = json.dumps(replay, separators=(",", ":"))
+    data_json = embed_json(replay)
     return (
         '<div class="card replaycard">'
         '<div class="rounds-title" style="margin:0 0 12px">Round replay '
@@ -774,14 +1288,24 @@ def render_replay(replay, meta, info) -> str:
         '<button class="rbtn" id="replay-prevkill" title="Previous kill">&#9198;</button>'
         '<button class="rbtn" id="replay-nextkill" title="Next kill">&#9197;</button>'
         '<button class="rbtn" id="replay-speed" title="Speed">2&times;</button>'
+        '<div class="seg" id="replay-nadeseg" data-group="nades">'
+        '<button data-val="on" class="active">Nades on</button>'
+        '<button data-val="off">Nades off</button></div>'
         '<span class="rtime" id="replay-time">0.0s</span>'
-        '<span class="revt" id="replay-evt"></span>'
         '</div>'
         '<input type="range" id="replay-scrub" class="rscrub" min="0" max="0" value="0">'
         '<div class="replaywrap">'
         '<div class="radar-bg"></div>'
         f'<canvas id="replay-canvas" width="{size}" height="{size}"></canvas>'
+        '<div class="killfeed" id="replay-feed"></div>'
         '</div>'
+        '<div class="nade-legend">Nades: '
+        '<span><i class="nl-smoke"></i>smoke</span>'
+        '<span><i class="nl-molotov"></i>molotov</span>'
+        '<span><i class="nl-he"></i>HE</span>'
+        '<span><i class="nl-flash"></i>flash</span>'
+        '<span><i class="nl-decoy"></i>decoy</span>'
+        '<span class="muted">— trail shows the throw arc/direction</span></div>'
         f'<script type="application/json" id="replay-data">{data_json}</script>'
         '</div>'
     )
@@ -801,8 +1325,9 @@ def render_html(summary, rounds, demo_name, meta) -> str:
                      'background-size:cover;background-position:center}}</style>')
     parts.append(render_sticky(summary, rounds, meta))
 
-    sub = (f'{esc(demo_name)} &nbsp;&middot;&nbsp; your player: '
-           f'<span class="name me">{esc(ref)}</span>')
+    sub = (f'{esc(demo_name)} &nbsp;&middot;&nbsp; focus player: '
+           f'<span class="name me" id="sub-focus">{esc(ref)}</span>'
+           ' <span class="muted">&mdash; click any player name to spotlight them</span>')
     if not meta["found"]:
         sub += ' <span class="opp">(not found &mdash; showing CT-start team)</span>'
     if meta["rival_found"] and meta["rival_auto"]:
@@ -829,12 +1354,25 @@ def render_html(summary, rounds, demo_name, meta) -> str:
     parts.append('</div>')
 
     if info:
-        parts.append(render_map(summary.get("map_kills", []), meta, info))
+        parts.append(render_map(summary.get("map_kills", []),
+                                summary.get("map_nades", []), meta, info))
         parts.append(render_replay(summary.get("replay"), meta, info))
 
     parts.append('<div class="rounds-title">Rounds</div>')
     parts.extend(render_round(rd, ref_sid) for rd in rounds)
     parts.append('<div class="empty">No rounds match this filter.</div>')
+
+    # Layer 4: per-player breakdown charts (filled client-side, follows focus).
+    parts.append('<div class="rounds-title" id="breakdown-title">Player breakdown '
+                 '<span class="muted" style="text-transform:none;letter-spacing:0">'
+                 '(follows the focus player)</span></div>')
+    parts.append('<div class="card" id="layer4"></div>')
+
+    # Embedded per-player analysis blob for the client-side focus switch.
+    focus_blob = dict(summary.get("analysis") or {})
+    focus_blob["focus"] = ref_sid
+    parts.append('<script type="application/json" id="focus-data">'
+                 f'{embed_json(focus_blob)}</script>')
 
     parts.append(PAGE_FOOT)
     return "".join(parts)

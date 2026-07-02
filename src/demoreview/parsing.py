@@ -9,6 +9,8 @@ from collections import defaultdict
 
 from . import stats
 from . import replay as replay_mod
+from . import grenades as grenades_mod
+from . import analysis as analysis_mod
 
 try:
     import pandas as pd
@@ -345,9 +347,11 @@ def collect(parser, highlight, rival):
                     "attacker": clean_name(attacker_raw) if attacker_raw else "<world>",
                     "attacker_rel": rel(a_side, my_side),
                     "attacker_is_me": attacker_is_me,
+                    "attacker_sid": a_steam,
                     "victim": clean_name(k.get("user_name")),
                     "victim_rel": rel(v_side, my_side),
                     "victim_is_me": victim_is_me,
+                    "victim_sid": v_steam,
                     "weapon": clean_name(k.get("weapon")),
                     "headshot": headshot,
                 })
@@ -355,7 +359,7 @@ def collect(parser, highlight, rival):
                     "round": r, "tick": int(k.get("tick")),
                     "a_sid": a_steam, "v_sid": v_steam,
                     "assister_sid": assister_sid, "assistedflash": assistedflash,
-                    "headshot": headshot,
+                    "headshot": headshot, "weapon": clean_name(k.get("weapon")),
                 })
                 kx, ky = value_or(k.get("attacker_X"), None), value_or(k.get("attacker_Y"), None)
                 vx, vy = value_or(k.get("user_X"), None), value_or(k.get("user_Y"), None)
@@ -370,6 +374,8 @@ def collect(parser, highlight, rival):
                     "weapon": clean_name(k.get("weapon")),
                     "killer_is_me": attacker_is_me,
                     "victim_is_me": victim_is_me,
+                    "killer_sid": a_steam,
+                    "victim_sid": v_steam,
                 })
                 if attacker_is_me:
                     my_kills += 1
@@ -424,10 +430,25 @@ def collect(parser, highlight, rival):
     for rd, ins in zip(rounds, round_insights):
         rd["insights"] = ins
 
+    # Per-player analysis blob (Layer 4 breakdowns + Layer 5 rules) for the
+    # client-side focus-player switch — computed for every player.
+    analysis = analysis_mod.build_analysis(
+        kills_seq, rounds, players, roster_by_round, ref_side_by_round,
+        winners, names, your_team_ids, n_rounds)
+
     # Replay: sampled positions per round (None if the map is unsupported).
     replay = replay_mod.build_replay(
         parser, map_name, freeze_ticks, end_ticks, roster_by_round,
         ref_side_by_round, ref_steamid, names, kills_seq)
+
+    # Grenades: per-round flights/detonations (shares the replay frame model) plus
+    # a flat detonation list for the static map. None if the map is unsupported.
+    nades = grenades_mod.build_grenades(
+        parser, map_name, freeze_ticks, end_ticks, roster_by_round,
+        ref_side_by_round, ref_steamid, names)
+    if replay and nades:
+        for rd, gs in zip(replay["rounds"], nades["rounds"]):
+            rd["grenades"] = gs
 
     summary = {
         "n_rounds": n_rounds,
@@ -441,7 +462,9 @@ def collect(parser, highlight, rival):
         "players": players,
         "ref_stats": ref_stats,
         "map_kills": map_kills,
+        "map_nades": nades["map"] if nades else [],
         "replay": replay,
+        "analysis": analysis,
     }
     meta = {
         "ref_name": ref_name,
