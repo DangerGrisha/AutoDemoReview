@@ -14,9 +14,19 @@ external libraries), framed around one highlighted player (default `P1rat1C`):
 - a **pro scoreboard** (sortable): K / D / A, **ADR**, **KAST%**, **HS%**, and an
   **HLTV 2.0-style rating** — click any column header to sort
 - a **"your match" strip**: your rating, ADR, KAST, opening win %, clutches, etc.
-- a **2D map heatmap** on the real radar: where you (or everyone) get kills vs die
+- a **2D map heatmap** on the real radar: where you (or everyone) get kills vs die,
+  plus an optional **grenade layer** — detonation dots per type (smoke / molotov /
+  HE / flash / decoy) with a line back to where each was thrown from
 - a **2D round replay**: canvas playback of all 10 players with play/scrub and
-  jump-to-kill — you're the ringed green dot
+  jump-to-kill — you're the ringed green dot. Each player shows a **name tag** and
+  their **held weapon** (the real gun/util — AK, M4A1‑S, AWP, DEAG, 🔪, 💣, …),
+  updated frame-by-frame; **flashed** players wash toward white by how blind they are. A live
+  **killfeed** stacks kills newest-on-top, each **death** leaves a red ✕ with the
+  victim's name, and a **planted bomb** shows a 💣 with a 40 s countdown. Rounds
+  hold ~2 s on the final frame so they don't cut off. **Grenades** fly along their
+  real throw arc (the trail shows the direction) and detonate into timed effects:
+  a smoke cloud, a molotov fire area, a flash ring, an HE burst, or a decoy
+  marker, each lasting its real duration (toggle with **Nades on/off**)
 - **round cards** framed as **"Your team" vs "Opponent"** with insight badges
   (**clutch won**, **3K+/ACE**), an **opening-duel indicator**, a collapsible
   **per-player economy breakdown**, players alive, and the kill list
