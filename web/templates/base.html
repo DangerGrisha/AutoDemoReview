@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}demoReview{% endblock %}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">demoReview</a>
+  <nav>
+    {% if user %}
+      <a href="/profile">My matches</a>
+      <a href="/stats">Career</a>
+      <a href="/upload">Upload</a>
+      <span class="who">
+        {% if user.avatar_url %}<img class="avatar" src="{{ user.avatar_url }}" alt="">{% endif %}
+        <span class="pname">{{ user.persona_name }}</span>
+      </span>
+      <a href="/logout">Log out</a>
+    {% else %}
+      <a class="btn small" href="/login">Sign in through Steam</a>
+    {% endif %}
+  </nav>
+</header>
+<main class="wrap">
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

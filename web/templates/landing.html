@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <h1>demoReview</h1>
+  <div class="rule"></div>
+  <p class="lede">Upload your CS2 demos and get an interactive match breakdown &mdash;
+     scoreboard, per-round kill feed, 2D replay, and heatmaps, all spotlighting you.</p>
+  {% if user %}
+    <p class="actions">
+      <a class="btn" href="/upload">Upload a demo</a>
+      <a class="btn ghost" href="/profile">My matches</a>
+    </p>
+  {% else %}
+    <p class="actions"><a class="btn" href="/login">Sign in through Steam</a></p>
+    {% if request.query_params.get('error') %}
+      <p class="error">Steam login failed or was cancelled. Please try again.</p>
+    {% endif %}
+  {% endif %}
+</section>
+{% endblock %}
