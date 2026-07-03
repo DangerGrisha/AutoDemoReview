@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Upload &mdash; demoReview{% endblock %}
+{% block content %}
+<h1>Upload a demo</h1>
+
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+
+<form class="upload" method="post" action="/upload" enctype="multipart/form-data"
+      onsubmit="var b=document.getElementById('go');b.disabled=true;b.textContent='Parsing… this can take up to a minute';">
+  <input type="file" name="demo" accept=".dem" required>
+  <button id="go" class="btn" type="submit">Upload &amp; parse</button>
+</form>
+
+<p class="muted">
+  Large demos (300&ndash;500&nbsp;MB) take roughly 30&ndash;60&nbsp;seconds to parse &mdash;
+  keep this tab open. The raw <code>.dem</code> is discarded after parsing; only the
+  match data is stored, and you're spotlighted automatically by your Steam account.
+</p>
+{% endblock %}

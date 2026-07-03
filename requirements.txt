@@ -1,0 +1,15 @@
+demoparser2>=0.36
+
+# Layer 6 -- LLM coaching feedback (src/coach.py)
+anthropic>=0.40
+python-dotenv>=1.0
+
+# Web app (web/) -- FastAPI + SQLite + Jinja2 + Steam OpenID.
+# httpx / pydantic come in transitively via anthropic; listed here as they are
+# used directly by the web layer.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+jinja2>=3.1
+python-multipart>=0.0.9
+itsdangerous>=2.1
+httpx>=0.27

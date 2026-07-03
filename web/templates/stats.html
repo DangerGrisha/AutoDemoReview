@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Career &mdash; demoReview{% endblock %}
+{% block content %}
+<h1>Career</h1>
+
+{% if not career.matches %}
+  <p class="muted empty">No matches yet. <a href="/upload">Upload a demo</a> to start building
+  your career stats.</p>
+{% else %}
+{% set o = career.overall %}
+
+<div class="tiles">
+  <div class="tile"><span class="tlabel">Record</span>
+    <span class="tval">{{ o.wins }}&ndash;{{ o.losses }}</span>
+    <span class="tsub">{{ o.win_pct }}% win &middot; {{ o.matches }} matches</span></div>
+  <div class="tile hi"><span class="tlabel">Rating</span>
+    <span class="tval">{{ '%.2f'|format(o.rating) }}</span>
+    <span class="tsub">{{ o.rounds }} rounds</span></div>
+  <div class="tile"><span class="tlabel">K / D</span>
+    <span class="tval">{{ '%.2f'|format(o.kd) }}</span>
+    <span class="tsub">{{ o.kills }} / {{ o.deaths }} / {{ o.assists }}</span></div>
+  <div class="tile"><span class="tlabel">ADR</span><span class="tval">{{ o.adr }}</span></div>
+  <div class="tile"><span class="tlabel">KAST</span><span class="tval">{{ o.kast }}%</span></div>
+  <div class="tile"><span class="tlabel">HS%</span><span class="tval">{{ o.hs_pct }}%</span></div>
+</div>
+
+<div class="career-cols">
+  <section class="career-block">
+    <h2>Weapons</h2>
+    {% if career.top_weapons %}
+    <table class="matches slim">
+      <thead><tr><th>Weapon</th><th class="num">Kills</th></tr></thead>
+      <tbody>
+      {% for w, c in career.top_weapons %}
+        <tr><td class="wep-name">{{ w }}</td><td class="num">{{ c }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="muted">No weapon data.</p>{% endif %}
+  </section>
+
+  <section class="career-block">
+    <h2>Toughest opponents</h2>
+    {% if career.worst %}
+    <table class="matches slim">
+      <thead><tr><th>Opponent</th><th class="num">K</th><th class="num">D</th><th class="num">+/&ndash;</th></tr></thead>
+      <tbody>
+      {% for h in career.worst %}
+        <tr><td>{{ h.name }}</td><td class="num">{{ h.k }}</td><td class="num">{{ h.d }}</td>
+            <td class="num {{ 'pos' if h.diff >= 0 else 'neg' }}">{{ '%+d'|format(h.diff) }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="muted">No head-to-head data yet.</p>{% endif %}
+  </section>
+
+  <section class="career-block">
+    <h2>Best matchups</h2>
+    {% if career.best %}
+    <table class="matches slim">
+      <thead><tr><th>Opponent</th><th class="num">K</th><th class="num">D</th><th class="num">+/&ndash;</th></tr></thead>
+      <tbody>
+      {% for h in career.best %}
+        <tr><td>{{ h.name }}</td><td class="num">{{ h.k }}</td><td class="num">{{ h.d }}</td>
+            <td class="num {{ 'pos' if h.diff >= 0 else 'neg' }}">{{ '%+d'|format(h.diff) }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}<p class="muted">No head-to-head data yet.</p>{% endif %}
+  </section>
+</div>
+{% endif %}
+{% endblock %}

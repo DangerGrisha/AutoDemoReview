@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}My matches &mdash; demoReview{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>My matches</h1>
+  <a class="btn" href="/upload">Upload a demo</a>
+</div>
+
+{% if matches %}
+<div class="table-wrap">
+<table class="matches">
+  <thead>
+    <tr><th>Date</th><th>Map</th><th>Score</th><th class="num">K / D</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for m in matches %}
+    <tr class="{{ 'win' if m.won else 'loss' }}">
+      <td class="mono muted">{{ m.created_at }}</td>
+      <td class="map">
+        {{ m.map_name or '&mdash;' }}
+        {% if m.uploader_steamid != user.steamid64 %}
+          <span class="via muted" title="Uploaded by {{ m.uploader_name or 'a friend' }}">via {{ m.uploader_name or 'friend' }}</span>
+        {% endif %}
+      </td>
+      <td>
+        <span class="score">{{ m.my_score }}&ndash;{{ m.opp_score }}</span>
+        <span class="tag {{ 'win' if m.won else 'loss' }}">{{ 'W' if m.won else 'L' }}</span>
+      </td>
+      <td class="num">
+        {{ m.kills }} / {{ m.deaths }}
+        {% if not m.is_participant %}
+          <span class="tag warn" title="You weren't found in this demo &mdash; showing the uploader's spotlight">?</span>
+        {% endif %}
+      </td>
+      <td class="num"><a class="btn small" href="/matches/{{ m.id }}">View</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted empty">No matches yet. <a href="/upload">Upload your first demo.</a></p>
+{% endif %}
+{% endblock %}

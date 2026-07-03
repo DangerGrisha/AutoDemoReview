@@ -1,0 +1,30 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Secrets — the real API key lives in .env; keep the .env.example template tracked
+.env
+!.env.example
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Keep the demos/ folder but ignore the (large) demo files themselves
+demos/*
+!demos/.gitkeep
+
+# Generated HTML reports
+output/
+
+# Web app runtime data: SQLite DB (+WAL/SHM) and streamed upload temp files
+web/data/
+!web/data/.gitkeep
+
+# Claude Code harness state (not project source)
+.claude/
