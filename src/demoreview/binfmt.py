@@ -338,6 +338,17 @@ def encode_round(model):
     return bytes(out), clamp_counter[0]
 
 
+def read_header(data):
+    """Parse just the JSON header from a ``C2R3`` blob (no tick-stream decode).
+
+    Cheap metadata access for building a round manifest without expanding tracks.
+    """
+    if data[:4] != MAGIC:
+        raise ValueError("bad magic: not a C2R3 blob")
+    (header_len,) = struct.unpack_from("<I", data, 8)
+    return json.loads(data[12:12 + header_len].decode("utf-8"))
+
+
 def decode_round(data):
     """Decode ``C2R3`` v1 bytes into a round_model dict (geometry dequantized to floats)."""
     if data[:4] != MAGIC:
