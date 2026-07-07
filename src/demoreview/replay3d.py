@@ -114,9 +114,20 @@ def _flash_byte(fd):
     return min(255, int(round(min(fd, FLASH_FULL_S) / FLASH_FULL_S * 255)))
 
 
+FLIGHT_GAP_TICKS = 64      # a >1s gap in an entity's trajectory = the id was reused -> new flight
+MAX_FLIGHT_SECONDS = 5.0   # cap plausible grenade airtime; rejects stale / cross-round matches
+
+
 def _build_flights(parser):
-    """entity_id -> {type, sid, start_tick, pos(x,y,z)} for grenade throw matching."""
-    flights = {}
+    """List of per-flight {type, sid, start, pos}.
+
+    Grenade entity ids are REUSED across the match, so we cannot key flights by id (that
+    collapses every later grenade onto the first one, matching detonations to throws from
+    earlier rounds). Instead we sort each entity's trajectory by tick and segment it into
+    separate flights wherever there is a large tick gap; each segment's first sampled point
+    is a throw origin.
+    """
+    flights = []
     try:
         proj = parser.parse_grenades()
     except Exception:
@@ -124,35 +135,52 @@ def _build_flights(parser):
     if proj is None or proj.empty:
         return flights
     proj = proj[proj["x"].notna() & proj["y"].notna()]
+    if proj.empty:
+        return flights
+    proj = proj.sort_values(["grenade_entity_id", "tick"])
+    last_eid = object()
+    last_tick = None
     for row in proj.itertuples(index=False):
         gtype = _norm_type(getattr(row, "grenade_type", ""))
         if gtype is None:
             continue
         eid = getattr(row, "grenade_entity_id", None)
         tick = int(row.tick)
-        z = float(getattr(row, "z", 0.0) or 0.0)
-        rec = flights.get(eid)
-        if rec is None or tick < rec["start"]:
-            flights[eid] = {"type": gtype, "sid": str(row.steamid), "start": tick,
-                            "pos": [float(row.x), float(row.y), z]}
+        if eid != last_eid or last_tick is None or tick - last_tick > FLIGHT_GAP_TICKS:
+            flights.append({"type": gtype, "sid": str(row.steamid), "start": tick,
+                            "pos": [float(row.x), float(row.y),
+                                    float(getattr(row, "z", 0.0) or 0.0)]})
+        last_eid = eid
+        last_tick = tick
     return flights
 
 
-def _match_throw(flights, gtype, sid, det_tick):
-    """Best (start_tick, pos) for the flight of this type+thrower ending before det_tick."""
+def _match_throw(flights, gtype, sid, det_tick, round_start, max_flight):
+    """Latest same-round flight of this type+thrower that plausibly produced det_tick.
+
+    Constrained to the detonation's own round (start >= round_start) and to a realistic
+    airtime (det_tick - start <= max_flight), so a reused-id flight from another round can
+    never be picked. Returns None when no plausible throw exists (then no tracer is drawn).
+    """
     best = None
-    for rec in flights.values():
-        if rec["type"] == gtype and rec["sid"] == sid and rec["start"] <= det_tick:
-            if best is None or rec["start"] > best["start"]:
-                best = rec
+    for rec in flights:
+        if rec["type"] != gtype or rec["sid"] != sid:
+            continue
+        if rec["start"] < round_start or rec["start"] > det_tick:
+            continue
+        if det_tick - rec["start"] > max_flight:
+            continue
+        if best is None or rec["start"] > best["start"]:
+            best = rec
     return best
 
 
-def _extract_utility(parser, freeze_ticks, end_ticks, stride):
+def _extract_utility(parser, freeze_ticks, end_ticks, stride, tickrate):
     """Per-round list of utility event dicts (detonations + throws + flash victims)."""
     n = len(end_ticks)
     per_round = [[] for _ in range(n)]
     flights = _build_flights(parser)
+    max_flight = int(MAX_FLIGHT_SECONDS * tickrate)
 
     # flash victims grouped by detonation tick
     blind_by_tick = {}
@@ -197,7 +225,7 @@ def _extract_utility(parser, freeze_ticks, end_ticks, stride):
                 "pos": [float(x), float(y), z],
                 "radius": const["radius"], "duration": const["duration"],
             }
-            flight = _match_throw(flights, gtype, sid, tick)
+            flight = _match_throw(flights, gtype, sid, tick, int(freeze_ticks[ri]), max_flight)
             if flight is not None:
                 item["throwTick"] = flight["start"]
                 item["throwSample"] = max(0, (flight["start"] - int(freeze_ticks[ri])) // stride)
@@ -247,7 +275,7 @@ def build_replay3d(parser, target_hz=TARGET_HZ):
         if ri is not None:
             roster_by_round[ri][row.sid] = int(row.team_num)
 
-    utility_by_round = _extract_utility(parser, freeze_ticks, end_ticks, stride)
+    utility_by_round = _extract_utility(parser, freeze_ticks, end_ticks, stride, tickrate)
 
     models = []
     for i in range(n_rounds):
