@@ -185,6 +185,9 @@ _TEMPLATE = r"""<!doctype html>
   #marks { position:absolute; left:0; right:0; top:6px; height:14px; z-index:2; pointer-events:none; }
   #marks .m { position:absolute; top:0; width:3px; height:14px; border-radius:2px; transform:translateX(-1px);
     pointer-events:auto; cursor:pointer; opacity:.85; }
+  #marks .u { position:absolute; bottom:-3px; width:8px; height:8px; border-radius:50%;
+    transform:translateX(-4px); border:1px solid rgba(0,0,0,.55); pointer-events:auto; cursor:pointer; }
+  #flash { position:fixed; inset:0; background:#fff; opacity:0; pointer-events:none; z-index:8; }
   #err { position:fixed; inset:0; display:none; place-items:center; padding:40px;
     background:#0b0e14; color:#ff8080; z-index:20; text-align:center; }
 </style>
@@ -222,6 +225,7 @@ _TEMPLATE = r"""<!doctype html>
     <input id="scrub" type="range" min="0" max="100" step="0.01" value="0">
   </div>
 </div>
+<div id="flash"></div>
 <div id="err"></div>
 
 <script type="module">
@@ -281,6 +285,99 @@ const _p=new THREE.Vector3(), _s=new THREE.Vector3(1,1,1), _zero=new THREE.Vecto
 const _noseTilt=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,0,1), -Math.PI/2);
 const _col=new THREE.Color();
 
+// ---- utility rendering (smoke / molotov / HE / flash) ----
+// Each utility's on-screen state is recomputed from the playback clock every frame, so it
+// stays correct under arbitrary scrubbing. Meshes are built once per round load, not per frame.
+const utilGroup = new THREE.Group(); scene.add(utilGroup);
+let utils = [];
+const _sphereGeo = new THREE.SphereGeometry(1, 18, 14);
+const _discGeo = new THREE.CircleGeometry(1, 30);
+const _flameGeo = new THREE.ConeGeometry(0.22, 1, 7);
+let flashFocusName = null;   // set by ?flash=<name>; Phase E will bind the follow player
+let flashFocus = null;       // resolved player index whose flash drives the overlay
+
+function clearUtils(){
+  for (const u of utils) for (const o of u.objs){ utilGroup.remove(o); o.material && o.material.dispose(); }
+  utils = [];
+}
+
+function buildUtility(header, rate){
+  clearUtils();
+  for (const u of (header.utility || [])){
+    const p = worldToScene(u.pos[0], u.pos[1], u.pos[2], S);
+    const rS = (u.radius || 0) * S;
+    const s0 = (u.detSample != null) ? u.detSample : 0;
+    const durS = u.duration || 0;
+    if (u.type === 'smoke'){
+      const m = new THREE.Mesh(_sphereGeo, new THREE.MeshStandardMaterial({
+        color:0xd6dae1, transparent:true, opacity:0, depthWrite:false, roughness:1 }));
+      m.position.set(p[0], p[1] + rS*0.55, p[2]); m.visible=false; utilGroup.add(m);
+      utils.push({ type:'smoke', s0, s1:s0 + Math.max(1, durS*rate), grow:Math.max(1, 1.2*rate),
+                   rS, mesh:m, mat:m.material, objs:[m] });
+    } else if (u.type === 'molotov'){
+      const d = new THREE.Mesh(_discGeo, new THREE.MeshBasicMaterial({
+        color:0xff6a1a, transparent:true, opacity:0, side:THREE.DoubleSide, depthWrite:false }));
+      d.rotation.x=-Math.PI/2; d.position.set(p[0], p[1]+0.03, p[2]); d.scale.setScalar(Math.max(rS,0.1));
+      d.visible=false; utilGroup.add(d);
+      const flames=[]; for (let k=0;k<7;k++){ const a=k/7*6.2832, rr=rS*0.5;
+        const fm=new THREE.Mesh(_flameGeo, new THREE.MeshBasicMaterial({
+          color:0xff9a2a, transparent:true, opacity:0, depthWrite:false }));
+        fm.position.set(p[0]+Math.cos(a)*rr, p[1]+0.4, p[2]+Math.sin(a)*rr); fm.visible=false;
+        utilGroup.add(fm); flames.push(fm); }
+      utils.push({ type:'molotov', s0, s1:s0 + Math.max(1, durS*rate), rS, disc:d, flames, objs:[d,...flames] });
+    } else if (u.type === 'he'){
+      const m = new THREE.Mesh(_sphereGeo, new THREE.MeshBasicMaterial({
+        color:0xffb060, transparent:true, opacity:0, depthWrite:false }));
+      m.position.set(p[0], p[1]+rS*0.3, p[2]); m.visible=false; utilGroup.add(m);
+      utils.push({ type:'burst', s0, s1:s0 + Math.max(1, 0.45*rate), rS:rS*0.5, base:0.7,
+                   mesh:m, mat:m.material, objs:[m] });
+    } else if (u.type === 'flash'){
+      const m = new THREE.Mesh(_sphereGeo, new THREE.MeshBasicMaterial({
+        color:0xffffff, transparent:true, opacity:0, depthWrite:false }));
+      m.position.set(p[0], p[1]+0.6, p[2]); m.scale.setScalar(1.1); m.visible=false; utilGroup.add(m);
+      utils.push({ type:'burst', s0, s1:s0 + Math.max(1, 0.25*rate), rS:1.1, base:0.95,
+                   mesh:m, mat:m.material, objs:[m] });
+    } else if (u.type === 'decoy'){
+      const m = new THREE.Mesh(_sphereGeo, new THREE.MeshBasicMaterial({
+        color:0x9aa4b2, transparent:true, opacity:0, depthWrite:false }));
+      m.position.set(p[0], p[1]+0.5, p[2]); m.scale.setScalar(0.4); m.visible=false; utilGroup.add(m);
+      utils.push({ type:'decoy', s0, s1:s0 + Math.max(1, durS*rate), objs:[m], mat:m.material });
+    }
+  }
+}
+
+function updateUtility(s, tsec){
+  for (const u of utils){
+    if (s < u.s0 || s > u.s1){ for (const o of u.objs) o.visible=false; continue; }
+    const p = (u.s1 > u.s0) ? (s - u.s0)/(u.s1 - u.s0) : 1;
+    if (u.type === 'smoke'){
+      const grow = Math.min(1, (s - u.s0)/u.grow), fade = p > 0.9 ? (1-p)/0.1 : 1;
+      u.mesh.visible=true; u.mesh.scale.setScalar(u.rS*grow); u.mat.opacity = 0.34*Math.min(grow, fade);
+    } else if (u.type === 'molotov'){
+      const grow = Math.min(1, (s - u.s0)/Math.max(1,(u.s1-u.s0)*0.06)), fade = p > 0.85 ? (1-p)/0.15 : 1;
+      u.disc.visible=true; u.disc.material.opacity = 0.42*fade*grow;
+      for (let k=0;k<u.flames.length;k++){ const fm=u.flames[k]; fm.visible=true;
+        const fl = 0.55 + 0.45*Math.sin(tsec*10 + k*1.7);
+        fm.scale.set(1, fl*1.7, 1); fm.material.opacity = 0.5*fade*grow*fl; }
+    } else if (u.type === 'burst'){         // HE / flash detonation pop: expand + fade
+      u.mesh.visible=true; u.mesh.scale.setScalar(u.rS*(0.3 + p)); u.mat.opacity = (1-p)*u.base;
+    } else if (u.type === 'decoy'){
+      u.objs[0].visible=true; u.mat.opacity = 0.22 + 0.14*Math.sin(tsec*6);
+    }
+  }
+}
+
+// Full-screen white flash overlay. Only makes sense with a POV/follow player (Phase E); here
+// the data-to-trigger logic is fully wired and driven by the focus player's per-tick flash
+// channel (opacity = remaining blindness, fading out over the real flash duration).
+function updateFlash(i0, i1, f){
+  const ov = $('#flash');
+  if (flashFocus == null || !state){ ov.style.opacity = 0; return; }
+  const tr = state.tracks[flashFocus];
+  const v = lerp(tr.flash[i0], tr.flash[i1], f) / 255;   // 0..1
+  ov.style.opacity = Math.min(1, v).toFixed(3);
+}
+
 // ---- greybox (built once from calibration + match-wide levels) ----
 function buildGreybox(){
   const cal = MANIFEST.calibration, rect = radarGroundRect(cal, S);
@@ -328,17 +425,33 @@ async function loadRound(meta){
       labels[i].sprite.visible=false; }
   }
   bodies.instanceColor.needsUpdate=true; noses.instanceColor.needsUpdate=true;
-  buildMarks(meta);
+  buildUtility(header, state.rate);
+  flashFocus = (flashFocusName != null)
+    ? header.players.findIndex(pl => (pl.name||'').toLowerCase() === flashFocusName.toLowerCase())
+    : -1;
+  if (flashFocus < 0) flashFocus = null;
+  buildMarks(meta, header);
   clock = 0; $('#scrub').max = state.duration; seek(0);
 }
 
-function buildMarks(meta){
+const UTIL_MARK_COLOR = { smoke:'#d6dae1', molotov:'#ff6a1a', flash:'#ffffff', he:'#ff5040', decoy:'#9aa4b2' };
+function buildMarks(meta, header){
   const marks=$('#marks'); marks.innerHTML='';
+  const dur = meta.durationS || 1;
   (meta.kills||[]).forEach(k=>{
-    const t=k.sample/meta.sampleRate, pct=meta.durationS? t/meta.durationS*100:0;
+    const t=k.sample/meta.sampleRate, pct=t/dur*100;
     const el=document.createElement('div'); el.className='m'; el.style.left=pct+'%';
     el.style.background = k.atkTeam===3 ? 'var(--ct)' : 'var(--t)';
     el.title = k.atk+' → '+k.vic; el.onclick = ()=>{ playing=false; syncPlayBtn(); seek(t); };
+    marks.appendChild(el);
+  });
+  ((header && header.utility) || []).forEach(u=>{
+    if (u.detSample==null) return;
+    const t=u.detSample/meta.sampleRate, pct=t/dur*100;
+    const el=document.createElement('div'); el.className='u'; el.style.left=pct+'%';
+    el.style.background = UTIL_MARK_COLOR[u.type] || '#888';
+    el.title = u.type + (u.type==='smoke'?' deployed':u.type==='molotov'?' burning':' @ '+t.toFixed(1)+'s');
+    el.onclick = ()=>{ playing=false; syncPlayBtn(); seek(t); };
     marks.appendChild(el);
   });
 }
@@ -365,6 +478,8 @@ function update(){
     lb.quaternion.copy(camera.quaternion);
   }
   bodies.instanceMatrix.needsUpdate=true; noses.instanceMatrix.needsUpdate=true;
+  updateUtility(s, clock);
+  updateFlash(i0, i1, f);
 }
 
 // ---- seek / UI ----
@@ -411,6 +526,7 @@ async function init(){
   // optional deep-link: ?round=<1-based>&t=<seconds> (seeks + pauses on that moment)
   const q=new URLSearchParams(location.search);
   const qr=parseInt(q.get('round')), qt=parseFloat(q.get('t'));
+  flashFocusName = q.get('flash');   // ?flash=<player name> -> drives the full-screen flash overlay
   let idx = MANIFEST.rounds.findIndex(r=>r.n===qr); if (idx<0) idx=0;
   sel.value=idx;
   await loadRound(MANIFEST.rounds[idx]);
