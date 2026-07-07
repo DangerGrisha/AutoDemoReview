@@ -296,14 +296,65 @@ const _flameGeo = new THREE.ConeGeometry(0.22, 1, 7);
 let flashFocusName = null;   // set by ?flash=<name>; Phase E will bind the follow player
 let flashFocus = null;       // resolved player index whose flash drives the overlay
 
+const UTIL_COLOR = { smoke:'#d6dae1', molotov:'#ff6a1a', flash:'#ffffff', he:'#ff5040', decoy:'#9aa4b2' };
+
+function makeTracerLabel(text, color){
+  const c=document.createElement('canvas'); c.width=256; c.height=64;
+  const g=c.getContext('2d'); g.font='bold 26px sans-serif'; g.textAlign='center'; g.textBaseline='middle';
+  g.lineWidth=5; g.strokeStyle='rgba(0,0,0,.85)'; g.strokeText(text,128,32);
+  g.fillStyle=color; g.fillText(text,128,32);
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace;
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:t, depthTest:false, transparent:true}));
+  sp.scale.set(3.6,0.9,1); return sp;
+}
+
+// A parabolic throw tracer: thrower -> detonation, drawn over the real flight time, faded
+// out shortly after landing. Attaches desc.tracer (skipped if we have no throw origin).
+function buildTracer(desc, u, nameBySid, rate){
+  if (!u.throwPos || u.throwSample == null || u.detSample == null || u.detSample <= u.throwSample) return;
+  const a = worldToScene(u.throwPos[0], u.throwPos[1], u.throwPos[2], S);
+  const b = worldToScene(u.pos[0], u.pos[1], u.pos[2], S);
+  const arcH = Math.min(7, Math.max(0.8, Math.hypot(b[0]-a[0], b[2]-a[2]) * 0.18));  // lob height
+  const N = 40, pts = [];
+  for (let k=0;k<=N;k++){ const t=k/N;
+    pts.push(new THREE.Vector3(a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t + arcH*4*t*(1-t), a[2]+(b[2]-a[2])*t)); }
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  const col = UTIL_COLOR[u.type] || '#cccccc';
+  const mat = new THREE.LineBasicMaterial({ color:col, transparent:true, opacity:0 });
+  const line = new THREE.Line(geo, mat); line.visible=false; utilGroup.add(line);
+  const label = makeTracerLabel(nameBySid[u.thrower] || '?', col); label.visible=false; utilGroup.add(label);
+  desc.tracer = { line, mat, geo, pts, N, label, tf:u.throwSample, df:u.detSample,
+                  fade:u.detSample + Math.max(1, 1.5*rate) };
+}
+
+function updateTracer(tr, s){
+  if (s < tr.tf || s > tr.fade){ tr.line.visible=false; tr.label.visible=false; return; }
+  tr.line.visible = true;
+  const prog = tr.df > tr.tf ? Math.min(1, (s - tr.tf)/(tr.df - tr.tf)) : 1;   // flight progress
+  const count = Math.max(2, Math.floor(prog*tr.N) + 1);
+  tr.geo.setDrawRange(0, count);                       // draw the arc up to the nade head
+  const op = s <= tr.df ? 0.95 : Math.max(0, 0.95*(1 - (s - tr.df)/(tr.fade - tr.df)));
+  tr.mat.opacity = op;
+  const tip = tr.pts[Math.min(tr.N, count-1)];
+  tr.label.visible = op > 0.06; tr.label.material.opacity = op;
+  tr.label.position.set(tip.x, tip.y + 0.6, tip.z); tr.label.quaternion.copy(camera.quaternion);
+}
+
 function clearUtils(){
-  for (const u of utils) for (const o of u.objs){ utilGroup.remove(o); o.material && o.material.dispose(); }
+  for (const u of utils){
+    for (const o of u.objs){ utilGroup.remove(o); o.material && o.material.dispose(); }
+    if (u.tracer){ utilGroup.remove(u.tracer.line); utilGroup.remove(u.tracer.label);
+      u.tracer.geo.dispose(); u.tracer.mat.dispose();
+      u.tracer.label.material.map.dispose(); u.tracer.label.material.dispose(); }
+  }
   utils = [];
 }
 
 function buildUtility(header, rate){
   clearUtils();
+  const nameBySid = {}; header.players.forEach(pl => nameBySid[pl.sid] = pl.name);
   for (const u of (header.utility || [])){
+    const before = utils.length;
     const p = worldToScene(u.pos[0], u.pos[1], u.pos[2], S);
     const rS = (u.radius || 0) * S;
     const s0 = (u.detSample != null) ? u.detSample : 0;
@@ -343,11 +394,13 @@ function buildUtility(header, rate){
       m.position.set(p[0], p[1]+0.5, p[2]); m.scale.setScalar(0.4); m.visible=false; utilGroup.add(m);
       utils.push({ type:'decoy', s0, s1:s0 + Math.max(1, durS*rate), objs:[m], mat:m.material });
     }
+    if (utils.length > before) buildTracer(utils[utils.length-1], u, nameBySid, rate);
   }
 }
 
 function updateUtility(s, tsec){
   for (const u of utils){
+    if (u.tracer) updateTracer(u.tracer, s);
     if (s < u.s0 || s > u.s1){ for (const o of u.objs) o.visible=false; continue; }
     const p = (u.s1 > u.s0) ? (s - u.s0)/(u.s1 - u.s0) : 1;
     if (u.type === 'smoke'){
@@ -434,7 +487,6 @@ async function loadRound(meta){
   clock = 0; $('#scrub').max = state.duration; seek(0);
 }
 
-const UTIL_MARK_COLOR = { smoke:'#d6dae1', molotov:'#ff6a1a', flash:'#ffffff', he:'#ff5040', decoy:'#9aa4b2' };
 function buildMarks(meta, header){
   const marks=$('#marks'); marks.innerHTML='';
   const dur = meta.durationS || 1;
@@ -449,7 +501,7 @@ function buildMarks(meta, header){
     if (u.detSample==null) return;
     const t=u.detSample/meta.sampleRate, pct=t/dur*100;
     const el=document.createElement('div'); el.className='u'; el.style.left=pct+'%';
-    el.style.background = UTIL_MARK_COLOR[u.type] || '#888';
+    el.style.background = UTIL_COLOR[u.type] || '#888';
     el.title = u.type + (u.type==='smoke'?' deployed':u.type==='molotov'?' burning':' @ '+t.toFixed(1)+'s');
     el.onclick = ()=>{ playing=false; syncPlayBtn(); seek(t); };
     marks.appendChild(el);
