@@ -17,3 +17,8 @@ demos/*
 
 # Generated HTML reports
 output/
+
+# Rust / WASM build artifacts
+rust/target/
+rust/viewer/pkg/
+rust/viewer/www/pkg/
