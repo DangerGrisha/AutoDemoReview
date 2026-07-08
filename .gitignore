@@ -10,6 +10,9 @@ __pycache__/
 .env
 !.env.example
 
+# Steam-bot PoC: stored login_key / sentry (unattended re-login credentials)
+.steambot_creds/
+
 # Editors / OS
 .idea/
 .vscode/
