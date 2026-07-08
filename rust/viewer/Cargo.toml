@@ -1,0 +1,15 @@
+[package]
+name = "viewer"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# "3d" is Bevy 0.19's umbrella feature (app scaffolding + winit + webgl2 + PBR
+# rendering + gizmos); "web" adds the wasm/browser integration. We deliberately
+# skip the other default umbrellas ("2d", "ui", "audio").
+bevy = { version = "0.19", default-features = false, features = ["3d", "web"] }
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"

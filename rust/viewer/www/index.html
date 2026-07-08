@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bevy WASM spike — demoReview 3D</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #14181f; overflow: hidden; }
+  #bevy-canvas { width: 100vw; height: 100vh; display: block; outline: none; }
+  #hud {
+    position: fixed; top: 10px; left: 10px; z-index: 10;
+    font: 13px/1.5 ui-monospace, Menlo, monospace; color: #cfe3ff;
+    background: rgba(10, 14, 20, 0.82); border: 1px solid #2d3a4d;
+    border-radius: 6px; padding: 10px 14px; white-space: pre;
+  }
+</style>
+</head>
+<body>
+<div id="hud">loading…</div>
+<canvas id="bevy-canvas"></canvas>
+<script type="module">
+const hud = document.getElementById('hud');
+const t = { start: performance.now() };
+let frames = 0;
+
+function fmt(ms) { return ms === undefined ? '…' : ms.toFixed(0) + ' ms'; }
+function render(err) {
+  const wasmEntry = performance.getEntriesByType('resource').find(e => e.name.endsWith('.wasm'));
+  const sizeLine = wasmEntry
+    ? `wasm transfer: ${(wasmEntry.transferSize / 1048576).toFixed(2)} MB (decoded ${(wasmEntry.decodedBodySize / 1048576).toFixed(2)} MB)`
+    : 'wasm transfer: n/a';
+  hud.textContent =
+    `Bevy WASM spike\n` +
+    `js module load:  ${fmt(t.moduleLoaded && t.moduleLoaded - t.start)}\n` +
+    `wasm init done:  ${fmt(t.wasmReady && t.wasmReady - t.start)}\n` +
+    `first frame:     ${fmt(t.firstFrame && t.firstFrame - t.start)}\n` +
+    `frames rendered: ${frames}\n` +
+    sizeLine +
+    (err ? `\nERROR: ${err}` : '');
+}
+
+window.bevyFirstFrame = () => { t.firstFrame = performance.now(); render(); };
+window.bevyFrameTick = (n) => {
+  frames = n;
+  if (n === 1 || n % 10 === 0) render();
+  if (n === 1 || n % 60 === 0) console.log(`bevy frames rendered: ${n}`);
+};
+
+try {
+  const mod = await import('./pkg/viewer.js');
+  t.moduleLoaded = performance.now();
+  await mod.default();          // fetch + compile + instantiate the .wasm
+  t.wasmReady = performance.now();
+  render();
+  try {
+    mod.run('#bevy-canvas');
+  } catch (e) {
+    // winit escapes its event loop with a benign control-flow exception on wasm.
+    if (!String(e).includes('control flow') && !String(e).includes("Using exceptions")) throw e;
+  }
+} catch (e) {
+  render(String(e));
+  throw e;
+}
+</script>
+</body>
+</html>
