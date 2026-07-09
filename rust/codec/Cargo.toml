@@ -1,0 +1,13 @@
+[package]
+name = "c2r3"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# preserve_order: header key order and the verbatim `utility` objects are part of the
+# C2R3 byte format, so JSON maps must keep insertion order.
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[dev-dependencies]
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }

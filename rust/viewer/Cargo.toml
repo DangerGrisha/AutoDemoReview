@@ -8,8 +8,12 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # "3d" is Bevy 0.19's umbrella feature (app scaffolding + winit + webgl2 + PBR
-# rendering + gizmos); "web" adds the wasm/browser integration. We deliberately
-# skip the other default umbrellas ("2d", "ui", "audio").
-bevy = { version = "0.19", default-features = false, features = ["3d", "web"] }
+# rendering + gizmos); "web" adds the wasm/browser integration; "png" for the
+# radar ground texture. We deliberately skip the other default umbrellas
+# ("2d", "ui", "audio").
+bevy = { version = "0.19", default-features = false, features = ["3d", "web", "png"] }
+c2r3 = { path = "../codec" }
+serde_json = { version = "1", features = ["preserve_order"] }
 wasm-bindgen = "0.2"
+js-sys = "0.3"
 console_error_panic_hook = "0.1"
