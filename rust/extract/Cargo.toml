@@ -1,0 +1,17 @@
+[package]
+name = "extract3d"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+c2r3 = { path = "../codec" }
+serde_json = { version = "1", features = ["preserve_order"] }
+anyhow = "1"
+flate2 = "1"
+# demoparser2's Rust core, vendored at tag v0.41.3 (see ../vendor/README.md)
+parser = { path = "../vendor/parser" }
+ahash = "0.8"
+
+[[bin]]
+name = "extract3d"
+path = "src/bin/extract3d.rs"

@@ -1,66 +1,252 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Bevy WASM spike — demoReview 3D</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3D replay (Bevy)</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #14181f; overflow: hidden; }
-  #bevy-canvas { width: 100vw; height: 100vh; display: block; outline: none; }
-  #hud {
-    position: fixed; top: 10px; left: 10px; z-index: 10;
-    font: 13px/1.5 ui-monospace, Menlo, monospace; color: #cfe3ff;
-    background: rgba(10, 14, 20, 0.82); border: 1px solid #2d3a4d;
-    border-radius: 6px; padding: 10px 14px; white-space: pre;
-  }
+  :root { --ct:#3b82f6; --t:#f59e0b; }
+  html,body { margin:0; height:100%; background:#0b0e14; color:#e6e9ef;
+    font:13px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; overflow:hidden; }
+  #canvas { position:fixed; inset:0; width:100%; height:100%; display:block; outline:none; }
+  #labels { position:fixed; inset:0; pointer-events:none; z-index:5; overflow:hidden; }
+  .plabel { position:absolute; transform:translate(-50%,-100%); font-weight:700; font-size:15px;
+    color:#fff; text-shadow:0 0 3px #000,0 0 3px #000,0 0 4px #000; white-space:nowrap; }
+  .tlabel { position:absolute; transform:translate(-50%,-100%); font-weight:700; font-size:13px;
+    text-shadow:0 0 3px #000,0 0 3px #000; white-space:nowrap; }
+  #hud { position:fixed; top:12px; left:12px; z-index:10; background:rgba(12,16,24,.82);
+    border:1px solid #232a36; border-radius:10px; padding:10px 13px; backdrop-filter:blur(6px); }
+  #hud h1 { margin:0 0 8px; font-size:14px; }
+  #hud .row { display:flex; align-items:center; gap:8px; margin-top:6px; }
+  #hud select { background:#141a24; color:#e6e9ef; border:1px solid #2a3342; border-radius:6px;
+    padding:3px 6px; font:inherit; }
+  #hud .k { color:#8b93a5; }
+  #hud .stat { font-variant-numeric:tabular-nums; }
+  .legend span { display:inline-flex; align-items:center; gap:5px; margin-right:10px; }
+  .dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+  #bar { position:fixed; left:0; right:0; bottom:0; z-index:10; padding:10px 16px 14px;
+    background:linear-gradient(transparent, rgba(8,11,17,.9) 30%); }
+  #bar .ctl { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+  button { background:#1a2230; color:#e6e9ef; border:1px solid #2a3342; border-radius:7px;
+    padding:5px 11px; font:inherit; cursor:pointer; }
+  button:hover { background:#222c3d; } button.on { background:#2b6cff; border-color:#2b6cff; }
+  #time { font-variant-numeric:tabular-nums; color:#c7cdd8; margin-left:4px; }
+  #track { position:relative; height:26px; }
+  #scrub { position:absolute; inset:0; width:100%; margin:0; -webkit-appearance:none;
+    background:transparent; cursor:pointer; z-index:3; }
+  #scrub::-webkit-slider-runnable-track { height:6px; border-radius:3px;
+    background:linear-gradient(#2a3342,#2a3342); margin-top:10px; }
+  #scrub::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; margin-top:6px;
+    border-radius:50%; background:#e6e9ef; border:2px solid #2b6cff; }
+  #fill { position:absolute; left:0; top:10px; height:6px; border-radius:3px; background:#2b6cff;
+    z-index:1; pointer-events:none; }
+  #marks { position:absolute; left:0; right:0; top:6px; height:14px; z-index:2; pointer-events:none; }
+  #marks .m { position:absolute; top:0; width:3px; height:14px; border-radius:2px; transform:translateX(-1px);
+    pointer-events:auto; cursor:pointer; opacity:.85; }
+  #marks .u { position:absolute; bottom:-3px; width:8px; height:8px; border-radius:50%;
+    transform:translateX(-4px); border:1px solid rgba(0,0,0,.55); pointer-events:auto; cursor:pointer; }
+  #flash { position:fixed; inset:0; background:#fff; opacity:0; pointer-events:none; z-index:8; }
+  #err { position:fixed; inset:0; display:none; place-items:center; padding:40px;
+    background:#0b0e14; color:#ff8080; z-index:20; text-align:center; }
 </style>
 </head>
 <body>
-<div id="hud">loading…</div>
-<canvas id="bevy-canvas"></canvas>
-<script type="module">
-const hud = document.getElementById('hud');
-const t = { start: performance.now() };
-let frames = 0;
+<canvas id="canvas"></canvas>
+<div id="labels"></div>
+<div id="hud">
+  <h1 id="title">3D replay</h1>
+  <div class="row"><span class="k">Round</span><select id="roundSel"></select></div>
+  <div class="row stat"><span class="k">FPS</span><span id="fps">–</span>
+    <span class="k">frame</span><span id="upd">–</span><span class="k">ms</span></div>
+  <div class="row legend" style="margin-top:8px">
+    <span><i class="dot" style="background:var(--ct)"></i>CT</span>
+    <span><i class="dot" style="background:var(--t)"></i>T</span></div>
+</div>
 
-function fmt(ms) { return ms === undefined ? '…' : ms.toFixed(0) + ' ms'; }
-function render(err) {
-  const wasmEntry = performance.getEntriesByType('resource').find(e => e.name.endsWith('.wasm'));
-  const sizeLine = wasmEntry
-    ? `wasm transfer: ${(wasmEntry.transferSize / 1048576).toFixed(2)} MB (decoded ${(wasmEntry.decodedBodySize / 1048576).toFixed(2)} MB)`
-    : 'wasm transfer: n/a';
-  hud.textContent =
-    `Bevy WASM spike\n` +
-    `js module load:  ${fmt(t.moduleLoaded && t.moduleLoaded - t.start)}\n` +
-    `wasm init done:  ${fmt(t.wasmReady && t.wasmReady - t.start)}\n` +
-    `first frame:     ${fmt(t.firstFrame && t.firstFrame - t.start)}\n` +
-    `frames rendered: ${frames}\n` +
-    sizeLine +
-    (err ? `\nERROR: ${err}` : '');
+<div id="bar">
+  <div class="ctl">
+    <button id="play">⏸ Pause</button>
+    <span class="k">speed</span>
+    <button class="spd" data-s="0.5">0.5×</button>
+    <button class="spd on" data-s="1">1×</button>
+    <button class="spd" data-s="2">2×</button>
+    <button class="spd" data-s="4">4×</button>
+    <span id="time">0:00 / 0:00</span>
+  </div>
+  <div id="track">
+    <div id="fill"></div>
+    <div id="marks"></div>
+    <input id="scrub" type="range" min="0" max="100" step="0.01" value="0">
+  </div>
+</div>
+<div id="flash"></div>
+<div id="err"></div>
+
+<script type="module">
+/* ============================================================================
+ * JS <-> WASM control interface (the page owns the UI; Bevy owns the scene)
+ *
+ * JS -> WASM (exported from pkg/viewer.js):
+ *   run(canvasSelector)      start the Bevy app on the canvas; returns immediately
+ *   load_manifest(jsonText)  greybox + team colors + camera framing
+ *   load_round(bytes) -> headerJson
+ *                            decode one round's .3dr; resets clock to 0.
+ *                            The returned header JSON drives labels/markers here.
+ *   seek(seconds)            clamp + jump the playback clock
+ *   set_playing(bool)        play/pause (resumes from 0 when at the end)
+ *   set_speed(x)             0.5 / 1 / 2 / 4
+ *   set_flash_focus(name?)   whose flash channel drives the #flash overlay
+ *
+ * WASM -> JS (this page defines window.__replayFrame, called every frame):
+ *   payload = Float32Array [clock, duration, playing, flashOpacity, nPlayers, nTracers,
+ *                           {x, y, visible} * nPlayers,     // viewport coords in 0..1
+ *                           {utilIdx, x, y, opacity} * nTracers]
+ *   The page uses it to sync scrubber/time/play button, position the HTML name
+ *   labels + tracer labels, drive the flash overlay, and count FPS.
+ * ========================================================================== */
+import init, { run, load_manifest, load_round, seek, set_playing, set_speed, set_flash_focus }
+  from './pkg/viewer.js';
+
+const $ = s => document.querySelector(s);
+function fail(m){ const e=$('#err'); e.style.display='grid'; e.textContent='Error: '+m; console.error(m); }
+const fmt = s => { s=Math.max(0,s|0); return (s/60|0)+':'+String(s%60).padStart(2,'0'); };
+const UTIL_COLOR = { smoke:'#d6dae1', molotov:'#ff6a1a', flash:'#ffffff', he:'#ff5040', decoy:'#9aa4b2' };
+
+let MANIFEST=null, state=null, seeking=false, lastPlaying=true;
+let playerLabels=[], tracerLabels={};
+
+function buildLabels(header){
+  const layer=$('#labels');
+  playerLabels.forEach(el=>el.remove());
+  Object.values(tracerLabels).forEach(el=>el.remove());
+  playerLabels=[]; tracerLabels={};
+  header.players.forEach(pl=>{
+    const el=document.createElement('div'); el.className='plabel';
+    el.textContent=pl.name||'?'; el.style.display='none';
+    layer.appendChild(el); playerLabels.push(el);
+  });
 }
 
-window.bevyFirstFrame = () => { t.firstFrame = performance.now(); render(); };
-window.bevyFrameTick = (n) => {
-  frames = n;
-  if (n === 1 || n % 10 === 0) render();
-  if (n === 1 || n % 60 === 0) console.log(`bevy frames rendered: ${n}`);
+function tracerLabel(idx){
+  if (tracerLabels[idx]) return tracerLabels[idx];
+  const u=state.header.utility[idx]||{};
+  const names={}; state.header.players.forEach(pl=>names[pl.sid]=pl.name);
+  const el=document.createElement('div'); el.className='tlabel';
+  el.textContent=names[u.thrower]||'?';
+  el.style.color=UTIL_COLOR[u.type]||'#ccc';
+  $('#labels').appendChild(el); tracerLabels[idx]=el;
+  return el;
+}
+
+function buildMarks(meta, header){
+  const marks=$('#marks'); marks.innerHTML='';
+  const dur=meta.durationS||1;
+  (meta.kills||[]).forEach(k=>{
+    const t=k.sample/meta.sampleRate, pct=t/dur*100;
+    const el=document.createElement('div'); el.className='m'; el.style.left=pct+'%';
+    el.style.background = k.atkTeam===3 ? 'var(--ct)' : 'var(--t)';
+    el.title = k.atk+' → '+k.vic;
+    el.onclick = ()=>{ set_playing(false); seek(t); };
+    marks.appendChild(el);
+  });
+  ((header && header.utility)||[]).forEach(u=>{
+    if (u.detSample==null) return;
+    const t=u.detSample/meta.sampleRate, pct=t/dur*100;
+    const el=document.createElement('div'); el.className='u'; el.style.left=pct+'%';
+    el.style.background = UTIL_COLOR[u.type] || '#888';
+    el.title = u.type + (u.type==='smoke'?' deployed':u.type==='molotov'?' burning':' @ '+t.toFixed(1)+'s');
+    el.onclick = ()=>{ set_playing(false); seek(t); };
+    marks.appendChild(el);
+  });
+}
+
+async function loadRound(meta){
+  const buf = await (await fetch(meta.file)).arrayBuffer();
+  const header = JSON.parse(load_round(new Uint8Array(buf)));
+  state = { header, n:meta.nSamples, rate:meta.sampleRate, duration:meta.durationS };
+  buildLabels(header);
+  buildMarks(meta, header);
+  $('#scrub').max = state.duration;
+}
+
+function syncPlayBtn(playing){ $('#play').textContent = playing ? '⏸ Pause' : '▶ Play'; }
+
+// ---- per-frame report from Bevy ----
+let frames=0, fpsT=performance.now(), lastFrameT=performance.now(), frameAcc=0;
+window.__replayFrame = (d) => {
+  const now=performance.now(); frameAcc+=now-lastFrameT; lastFrameT=now; frames++;
+  if (now-fpsT>=500){ const fps=frames/((now-fpsT)/1000);
+    $('#fps').textContent=fps.toFixed(0); $('#upd').textContent=(frameAcc/frames).toFixed(1);
+    window.__fps=fps; frames=0; frameAcc=0; fpsT=now; }
+
+  const clock=d[0], duration=d[1], playing=d[2]>0.5, flashOp=d[3];
+  const nP=d[4]|0, nT=d[5]|0;
+  window.__clock=clock; window.__playing=playing;   // headless-verify hooks
+  if (playing !== lastPlaying){ lastPlaying=playing; syncPlayBtn(playing); }
+  if (!seeking){
+    $('#scrub').value=clock;
+    $('#fill').style.width=(duration? clock/duration*100:0)+'%';
+    $('#time').textContent=fmt(clock)+' / '+fmt(duration);
+  }
+  $('#flash').style.opacity = Math.min(1, flashOp).toFixed(3);
+
+  const W=innerWidth, H=innerHeight;
+  for (let i=0;i<playerLabels.length;i++){
+    const el=playerLabels[i];
+    if (i<nP && d[6+i*3+2]>0.5){
+      el.style.display='block';
+      el.style.left=(d[6+i*3]*W)+'px'; el.style.top=(d[6+i*3+1]*H)+'px';
+    } else el.style.display='none';
+  }
+  const seen=new Set();
+  for (let k=0;k<nT;k++){
+    const off=6+nP*3+k*4, idx=d[off]|0, op=d[off+3];
+    const el=tracerLabel(idx); seen.add(idx);
+    el.style.display = op>0.06 ? 'block' : 'none';
+    el.style.opacity = op.toFixed(2);
+    el.style.left=(d[off+1]*W)+'px'; el.style.top=(d[off+2]*H)+'px';
+  }
+  for (const idx in tracerLabels) if (!seen.has(+idx)) tracerLabels[idx].style.display='none';
 };
 
-try {
-  const mod = await import('./pkg/viewer.js');
-  t.moduleLoaded = performance.now();
-  await mod.default();          // fetch + compile + instantiate the .wasm
-  t.wasmReady = performance.now();
-  render();
-  try {
-    mod.run('#bevy-canvas');
-  } catch (e) {
-    // winit escapes its event loop with a benign control-flow exception on wasm.
-    if (!String(e).includes('control flow') && !String(e).includes("Using exceptions")) throw e;
-  }
-} catch (e) {
-  render(String(e));
-  throw e;
+// ---- UI wiring ----
+$('#play').onclick = ()=>{ set_playing(!lastPlaying); };
+document.querySelectorAll('.spd').forEach(b=>b.onclick=()=>{ set_speed(parseFloat(b.dataset.s));
+  document.querySelectorAll('.spd').forEach(x=>x.classList.toggle('on', x===b)); });
+const scrub=$('#scrub');
+scrub.addEventListener('pointerdown',()=>seeking=true);
+addEventListener('pointerup',()=>seeking=false);
+scrub.addEventListener('input',()=>{ seek(parseFloat(scrub.value)); });
+
+async function main(){
+  await init();
+  run('#canvas');
+  const manifestText = await (await fetch('manifest.json')).text();
+  MANIFEST = JSON.parse(manifestText);
+  load_manifest(manifestText);
+  $('#title').textContent = MANIFEST.map + ' · 3D replay';
+
+  const sel=$('#roundSel');
+  MANIFEST.rounds.forEach((r,idx)=>{ const o=document.createElement('option');
+    o.value=idx; o.textContent='Round '+r.n; sel.appendChild(o); });
+  sel.onchange=async()=>{ set_playing(false); await loadRound(MANIFEST.rounds[+sel.value]);
+    set_playing(true); };
+
+  // deep links: ?round=<1-based>&t=<seconds> (seek + pause) &flash=<player name>
+  const q=new URLSearchParams(location.search);
+  const qr=parseInt(q.get('round')), qt=parseFloat(q.get('t'));
+  const qflash=q.get('flash');
+  if (qflash) set_flash_focus(qflash);
+  let idx = MANIFEST.rounds.findIndex(r=>r.n===qr); if (idx<0) idx=0;
+  sel.value=idx;
+  await loadRound(MANIFEST.rounds[idx]);
+  if (!isNaN(qt)){ set_playing(false); seek(qt); lastPlaying=false; }
+  syncPlayBtn(lastPlaying);
+  // ?probe=1: log the playback clock every 2 s (headless playback verification)
+  if (q.get('probe')) setInterval(()=>console.log('replay-probe clock='
+    +(window.__clock||0).toFixed(2)+' playing='+window.__playing+' fps='+(window.__fps||0).toFixed(0)), 2000);
 }
+main().catch(e=>fail(e && e.message || String(e)));
 </script>
 </body>
 </html>

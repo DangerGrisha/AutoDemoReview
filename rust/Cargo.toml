@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["viewer"]
+members = ["codec", "extract", "viewer"]
 
 # Size-optimized release: the viewer's Rust-side math is trivial (interpolating
 # 10 players), so wasm download size dominates perceived load time, not opt-level.
@@ -9,3 +9,11 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = "debuginfo"
+
+# ...but the demo parser is compute-heavy (native CLI only, never shipped to wasm):
+# keep it at full speed inside the size-optimized profile.
+[profile.release.package.parser]
+opt-level = 3
+
+[profile.release.package.csgoproto]
+opt-level = 3
