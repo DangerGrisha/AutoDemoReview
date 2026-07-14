@@ -31,3 +31,19 @@ web/data/
 
 # Claude Code harness state (not project source)
 .claude/
+
+# Rust / WASM build artifacts
+rust/target/
+rust/viewer/pkg/
+rust/viewer/www/pkg/
+rust/viewer/www/assets/
+
+# 3D replay build outputs: wasm bundle, radar copies, converted map assets (large, generated)
+web/static/replay3d/pkg/
+web/static/replay3d/assets/
+
+# External reference project (unlicensed upstream — knowledge source only, never commit)
+CS2MapViewer-master/
+
+# Source2Viewer-CLI download used by tools/prepare_map.py docs
+tools/s2v/
