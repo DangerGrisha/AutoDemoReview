@@ -42,8 +42,10 @@ rust/viewer/www/assets/
 web/static/replay3d/pkg/
 web/static/replay3d/assets/
 
-# External reference project (unlicensed upstream — knowledge source only, never commit)
+# External reference project (a friend's private repo — knowledge source only,
+# never commit: `git add -A` would otherwise embed it as a gitlink)
 CS2MapViewer-master/
+CS2MapViewer/
 
 # Source2Viewer-CLI download used by tools/prepare_map.py docs
 tools/s2v/
