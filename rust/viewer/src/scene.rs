@@ -7,8 +7,10 @@ use bevy::prelude::*;
 use c2r3::DecodedRound;
 use serde_json::Value;
 
+use bevy::gltf::{GltfAssetLabel, GltfLoaderSettings};
+
 use crate::coords::{radar_ground_rect, world_to_scene, Calibration};
-use crate::state::{GreyboxTag, ManifestData, PlayerBody, PlayerNose};
+use crate::state::{GreyboxTag, ManifestData, MapTag, PlayerBody, PlayerNose};
 use crate::util::hex_color;
 
 pub const CAP_H: f32 = 0.35 * 2.0 + 1.0; // capsule total height (r 0.35, cylinder 1.0)
@@ -38,31 +40,46 @@ pub fn parse_manifest(json: &str) -> Result<ManifestData, String> {
         .map(|a| a.iter().filter_map(Value::as_f64).collect())
         .unwrap_or_default();
     let ground_y = (elevation_world_z.first().copied().unwrap_or(0.0) * scene_scale) as f32;
+    let radar_asset = v
+        .get("radarAsset")
+        .and_then(Value::as_str)
+        .unwrap_or("de_mirage.png")
+        .to_string();
+    let map_asset = v
+        .get("mapAsset")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     Ok(ManifestData {
         scene_scale,
         cal,
         team_colors,
         elevation_world_z,
         ground_y,
+        radar_asset,
+        map_asset,
     })
 }
 
 /// Build the static greybox: radar ground plane, elevation planes, perimeter walls.
 /// (The grid is drawn per-frame with gizmos; see draw_grid.) Returns the scene-space
-/// center the camera should orbit.
+/// center the camera should orbit. `visible` is false when the real map geometry
+/// is shown instead (the JS Map/Radar toggle flips it back).
 pub fn build_greybox(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     asset_server: &AssetServer,
     m: &ManifestData,
+    visible: bool,
 ) -> Vec3 {
     let s = m.scene_scale;
     let rect = radar_ground_rect(&m.cal, s);
     let ground_y = m.ground_y;
+    let vis = if visible { Visibility::Visible } else { Visibility::Hidden };
 
     // radar-textured ground plane (MeshBasicMaterial equivalent: unlit)
-    let radar_tex: Handle<Image> = asset_server.load("de_mirage.png");
+    let radar_tex: Handle<Image> = asset_server.load(m.radar_asset.clone());
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(rect.half_x * 2.0, rect.half_z * 2.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -72,6 +89,7 @@ pub fn build_greybox(
         })),
         Transform::from_xyz(rect.center[0], ground_y - 0.02, rect.center[2]),
         GreyboxTag,
+        vis,
     ));
 
     // translucent elevation planes at each match-wide level (opacity .09, no depth write)
@@ -90,6 +108,7 @@ pub fn build_greybox(
             })),
             Transform::from_xyz(rect.center[0], (*wz * s) as f32, rect.center[2]),
             GreyboxTag,
+            vis,
         ));
     }
 
@@ -119,6 +138,7 @@ pub fn build_greybox(
             Transform::from_xyz((a[0] + d[0]) / 2.0, ground_y + h / 2.0, (a[2] + d[2]) / 2.0)
                 .with_rotation(Quat::from_rotation_y(-dz.atan2(dx))),
             GreyboxTag,
+            vis,
         ));
     }
 
@@ -129,6 +149,82 @@ pub fn build_greybox(
         s,
     );
     Vec3::from_array(center)
+}
+
+/// Spawn the real map world exported by Source2Viewer (glTF/GLB, Y-up, Hammer
+/// units). Its axis convention (x, z, -y of Source) is exactly `world_to_scene`
+/// with s = 1, so a uniform sceneScale registers it with the player positions —
+/// no rotation or recalibration. Children spawn under the root and inherit its
+/// Visibility, so the Map/Radar toggle only touches this entity.
+pub fn spawn_map(commands: &mut Commands, asset_server: &AssetServer, m: &ManifestData) {
+    let Some(path) = m.map_asset.clone() else {
+        return;
+    };
+    let scene: Handle<WorldAsset> = asset_server
+        .load_builder()
+        .with_settings(|s: &mut GltfLoaderSettings| {
+            // Source2Viewer emits non-standard attribute semantics; skip strict
+            // gltf-crate validation (unknown attributes are warn-and-skip anyway).
+            s.validate = false;
+            s.load_cameras = false;
+            s.load_lights = false;
+            s.load_animations = false;
+        })
+        .load(GltfAssetLabel::Scene(0).from_asset(path));
+    commands.spawn((
+        WorldAssetRoot(scene),
+        Transform::from_scale(Vec3::splat(m.scene_scale as f32)),
+        Visibility::Visible,
+        MapTag,
+    ));
+}
+
+/// Source 2 editor/tool/effect materials that are invisible in-game but export
+/// as opaque sheets (clips, triggers, block-light, effect planes). `extras` is
+/// the raw material-extras JSON, which carries the vmat path + shader name.
+pub fn is_hidden_material(name: &str, extras: Option<&str>) -> bool {
+    let n = name.to_ascii_lowercase();
+    // start-anchored so real assets like "bucket_tools" survive; no broad
+    // "skybox" match — that would hide the 3D skybox's distant buildings.
+    if n.starts_with("tools")
+        || n == "black_simple"
+        || n.contains("trigger")
+        || n.contains("nodraw")
+        || n.contains("occluder")
+        || n.contains("playerclip")
+        || n.contains("invisible")
+    {
+        return true;
+    }
+    if let Some(raw) = extras {
+        if raw.contains("materials/tools/") || raw.contains("csgo_effects.vfx") {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod hidden_material_tests {
+    use super::is_hidden_material;
+
+    #[test]
+    fn tool_brushes_hidden() {
+        assert!(is_hidden_material("toolsclip", None));
+        assert!(is_hidden_material("toolsnodraw", None));
+        assert!(is_hidden_material("toolsskybox", None));
+        assert!(is_hidden_material("black_simple", None));
+        assert!(is_hidden_material("de_mirage_playerclip", None));
+        assert!(is_hidden_material("ok_name", Some(r#"{"vmat":"materials/tools/toolsblock_los.vmat"}"#)));
+        assert!(is_hidden_material("dust_sheet", Some(r#"{"shader":"csgo_effects.vfx"}"#)));
+    }
+
+    #[test]
+    fn real_assets_visible() {
+        assert!(!is_hidden_material("bucket_tools", None));
+        assert!(!is_hidden_material("skybox_dust_hotel_a", None));
+        assert!(!is_hidden_material("de_mirage_ground", Some(r#"{"vmat":"materials/world/ground.vmat"}"#)));
+    }
 }
 
 /// Spawn the per-round player entities (body capsule + nose cone), team-colored.

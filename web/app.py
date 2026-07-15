@@ -14,13 +14,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import career, config, db, participants, pipeline, steam_openid
+from . import career, config, db, participants, pipeline, replay3d, steam_openid
 
 WEB_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
@@ -159,6 +159,13 @@ def upload_demo(request: Request, demo: UploadFile = File(...)):
         existing = db.find_match_by_hash(digest)
         if existing is not None:
             if db.can_access(existing, user["steamid64"]):
+                # Backfill: matches analyzed before the 3D-replay feature gain
+                # their artifacts on re-upload (the raw .dem is never kept).
+                if not replay3d.has_replay(existing):
+                    try:
+                        replay3d.extract(tmp_path, existing)
+                    except Exception:
+                        pass
                 return RedirectResponse(f"/matches/{existing}?dup=1", status_code=302)
             return err("This demo has already been analyzed (uploaded by someone "
                        "else) and you don't appear in it.", 409)
@@ -198,6 +205,12 @@ def upload_demo(request: Request, demo: UploadFile = File(...)):
             if existing is not None and db.can_access(existing, user["steamid64"]):
                 return RedirectResponse(f"/matches/{existing}?dup=1", status_code=302)
             raise
+        # 3D replay artifacts (best-effort; must run before `finally` frees the
+        # temp .dem -- the raw demo is never kept).
+        try:
+            replay3d.extract(tmp_path, match_id)
+        except Exception:
+            pass
         return RedirectResponse(f"/matches/{match_id}", status_code=302)
     except Exception as exc:  # noqa: BLE001 -- surface any parse failure cleanly
         return err(f"Couldn't parse this file -- is it a valid CS2 .dem? ({type(exc).__name__})")
@@ -226,9 +239,14 @@ def match_view(request: Request, match_id: int):
         up = db.get_user(row["uploader_steamid"])
         up_name = html.escape(up["persona_name"]) if up else "another player"
         note = f'<span class="sn-note">shown from {up_name}’s perspective</span>'
+    replay3d_link = (
+        f'<a href="/matches/{match_id}/3d">3D replay</a>'
+        if replay3d.has_replay(match_id) else ""
+    )
     site_nav = (
         '<div class="site-nav">'
         '<a href="/profile">&#8592; My matches</a>'
+        f'{replay3d_link}'
         '<span class="sn-brand">demoReview</span>'
         f'{note}'
         f'<span class="sn-user">{avatar}{html.escape(user["persona_name"])}</span>'
@@ -237,6 +255,41 @@ def match_view(request: Request, match_id: int):
     page = pipeline.render_match_html(
         summary, rounds, row["original_filename"] or "match.dem", meta, site_nav=site_nav)
     return HTMLResponse(page)
+
+
+# ---- 3D replay ----
+
+@app.get("/matches/{match_id}/3d", response_class=HTMLResponse)
+def match_replay3d(request: Request, match_id: int):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    row = db.get_match(match_id, user["steamid64"])       # access-scoped, like match_view
+    if row is None:
+        raise HTTPException(status_code=404)
+    return _page(request, "replay3d.html", {
+        "user": user,
+        "match_id": match_id,
+        "map_name": row["map_name"] or "",
+        "demo_name": row["original_filename"] or "match.dem",
+        "has_replay": replay3d.has_replay(match_id),
+        "map_asset": replay3d.map_asset_rel(row["map_name"]),
+    })
+
+
+@app.get("/matches/{match_id}/replay3d/{fname}")
+def match_replay3d_artifact(request: Request, match_id: int, fname: str):
+    """Auth-gated artifact serving: manifest.json + rNN.3dr only."""
+    user = current_user(request)
+    if not user:
+        raise HTTPException(status_code=401)
+    if db.get_match(match_id, user["steamid64"]) is None:
+        raise HTTPException(status_code=404)
+    path = replay3d.artifact_path(match_id, fname)
+    if path is None:
+        raise HTTPException(status_code=404)
+    media = "application/json" if fname.endswith(".json") else "application/octet-stream"
+    return FileResponse(str(path), media_type=media)
 
 
 # ---- errors ----

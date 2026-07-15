@@ -12,13 +12,15 @@ mod util;
 
 pub use coords::*;
 
+use bevy::asset::AssetMetaCheck;
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::gltf::{GltfMaterialExtras, GltfMaterialName};
 use bevy::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use state::{
-    ang_lerp, lerp, push_control, sample_pos, ControlMsg, GreyboxTag, PlayerBody, PlayerNose,
-    RoundState, UtilTag, Viewer, QUEUE,
+    ang_lerp, lerp, push_control, sample_pos, ControlMsg, GreyboxTag, MapTag, PlayerBody,
+    PlayerNose, RoundState, UtilTag, Viewer, QUEUE,
 };
 use util::{tracer_frame, util_frame, UtilKind};
 
@@ -27,9 +29,12 @@ use util::{tracer_frame, util_frame, UtilKind};
 // ---------------------------------------------------------------------------
 
 /// Start the Bevy app on the given canvas (CSS selector). Returns immediately;
-/// all further control goes through the queued messages below.
+/// all further control goes through the queued messages below. `asset_root` is
+/// the base every asset path (radar PNG, map glTF + its textures) resolves
+/// against — on wasm it becomes the fetch() URL prefix. `None` keeps Bevy's
+/// page-relative "assets" default (the standalone www/ dev page).
 #[wasm_bindgen]
-pub fn run(canvas_selector: String) {
+pub fn run(canvas_selector: String, asset_root: Option<String>) {
     console_error_panic_hook::set_once();
     App::new()
         .insert_resource(ClearColor(util::hex_color("#0b0e14")))
@@ -37,15 +42,24 @@ pub fn run(canvas_selector: String) {
         .insert_resource(orbit::OrbitCam::default())
         .insert_resource(LabelsOut::default())
         .insert_resource(TracersOut::default())
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                canvas: Some(canvas_selector),
-                fit_canvas_to_parent: true,
-                prevent_default_event_handling: false,
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        canvas: Some(canvas_selector),
+                        fit_canvas_to_parent: true,
+                        prevent_default_event_handling: false,
+                        ..default()
+                    }),
+                    ..default()
+                })
+                .set(AssetPlugin {
+                    file_path: asset_root.unwrap_or_else(|| "assets".into()),
+                    // no .meta files exist; skip a 404 fetch per asset on wasm
+                    meta_check: AssetMetaCheck::Never,
+                    ..default()
+                }),
+        )
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -60,6 +74,7 @@ pub fn run(canvas_selector: String) {
             )
                 .chain(),
         )
+        .add_systems(Update, hide_tool_brushes)
         .run();
 }
 
@@ -98,6 +113,12 @@ pub fn set_speed(speed: f64) {
 #[wasm_bindgen]
 pub fn set_flash_focus(name: Option<String>) {
     push_control(ControlMsg::SetFlashFocus(name));
+}
+
+/// Map/Radar toggle: show the real map geometry (true) or the radar greybox (false).
+#[wasm_bindgen]
+pub fn set_map_visible(on: bool) {
+    push_control(ControlMsg::SetShowMap(on));
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +178,11 @@ fn setup(mut commands: Commands) {
     ));
 }
 
+/// Ambient brightness: the greybox value matches the Three.js template; the map
+/// value compensates for PBR map materials having no baked lighting at all.
+const AMBIENT_GREYBOX: f32 = 420.0;
+const AMBIENT_MAP: f32 = 1800.0;
+
 #[allow(clippy::too_many_arguments)]
 fn drain_controls(
     mut commands: Commands,
@@ -166,26 +192,49 @@ fn drain_controls(
     asset_server: Res<AssetServer>,
     mut orbit_cam: ResMut<orbit::OrbitCam>,
     q_greybox: Query<Entity, With<GreyboxTag>>,
+    q_map: Query<Entity, With<MapTag>>,
     q_round: Query<Entity, Or<(With<PlayerBody>, With<PlayerNose>, With<UtilTag>)>>,
+    mut q_greybox_vis: Query<&mut Visibility, (With<GreyboxTag>, Without<MapTag>)>,
+    mut q_map_vis: Query<&mut Visibility, (With<MapTag>, Without<GreyboxTag>)>,
+    mut q_ambient: Query<&mut AmbientLight, With<Camera3d>>,
 ) {
     let msgs: Vec<ControlMsg> = std::mem::take(&mut *QUEUE.lock().unwrap());
     for msg in msgs {
         match msg {
             ControlMsg::LoadManifest(json) => match scene::parse_manifest(&json) {
                 Ok(m) => {
-                    for e in &q_greybox {
+                    for e in q_greybox.iter().chain(&q_map) {
                         commands.entity(e).despawn();
                     }
-                    let center =
-                        scene::build_greybox(&mut commands, &mut meshes, &mut materials, &asset_server, &m);
+                    let show_map = m.map_asset.is_some();
+                    let center = scene::build_greybox(
+                        &mut commands, &mut meshes, &mut materials, &asset_server, &m, !show_map,
+                    );
+                    scene::spawn_map(&mut commands, &asset_server, &m);
+                    for mut amb in &mut q_ambient {
+                        amb.brightness = if show_map { AMBIENT_MAP } else { AMBIENT_GREYBOX };
+                    }
                     orbit_cam.target = center;
                     orbit_cam.yaw = 0.0;
                     orbit_cam.pitch = std::f32::consts::FRAC_PI_4;
                     orbit_cam.dist = 58.0 * std::f32::consts::SQRT_2;
+                    viewer.show_map = show_map;
                     viewer.manifest = Some(m);
                 }
                 Err(e) => warn!("bad manifest: {e}"),
             },
+            ControlMsg::SetShowMap(on) => {
+                viewer.show_map = on;
+                for mut v in &mut q_greybox_vis {
+                    *v = if on { Visibility::Hidden } else { Visibility::Visible };
+                }
+                for mut v in &mut q_map_vis {
+                    *v = if on { Visibility::Visible } else { Visibility::Hidden };
+                }
+                for mut amb in &mut q_ambient {
+                    amb.brightness = if on { AMBIENT_MAP } else { AMBIENT_GREYBOX };
+                }
+            }
             ControlMsg::LoadRound(dec) => {
                 let Some(m) = viewer.manifest.as_ref() else {
                     warn!("load_round before load_manifest; ignoring");
@@ -436,8 +485,26 @@ fn update_utility(
     }
 }
 
+/// Despawn glTF mesh entities whose material is a Source 2 editor/tool brush
+/// (clips, triggers, block-light, effect sheets — invisible in-game, opaque in
+/// export). `Added` filter: runs only the frame each map entity appears.
+fn hide_tool_brushes(
+    mut commands: Commands,
+    q: Query<(Entity, &GltfMaterialName, Option<&GltfMaterialExtras>), Added<GltfMaterialName>>,
+) {
+    for (e, name, extras) in &q {
+        if scene::is_hidden_material(&name.0, extras.map(|x| x.value.as_str())) {
+            commands.entity(e).despawn();
+        }
+    }
+}
+
 /// GridHelper equivalent: 40 divisions over the radar rect, drawn as gizmo lines.
+/// Skipped while the real map is shown (it has its own ground).
 fn draw_grid(viewer: Res<Viewer>, mut gizmos: Gizmos) {
+    if viewer.show_map {
+        return;
+    }
     let Some(m) = viewer.manifest.as_ref() else {
         return;
     };

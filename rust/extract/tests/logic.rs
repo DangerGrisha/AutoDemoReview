@@ -4,8 +4,8 @@
 use anyhow::Result;
 use extract3d::{
     build_flights, build_replay3d, detect_tickrate, flash_byte, match_throw, norm_type,
-    round_sample_ticks, weapons::weapon_tag, BlindEvent, DemoSource, DetEvent, GrenadeRow,
-    KillEvent, TickRow, F_ALIVE, F_PRESENT,
+    round_sample_ticks, segment_rounds, weapons::weapon_tag, BlindEvent, DemoSource, DetEvent,
+    EndEvent, FreezeEvent, GrenadeRow, KillEvent, TickRow, F_ALIVE, F_PRESENT,
 };
 
 // ---------------------------------------------------------------------------
@@ -372,6 +372,65 @@ fn tickrate_default_on_failure() {
     assert_eq!(detect_tickrate(&mut Broken), 64);
 }
 
+// ---------------------------------------------------------------------------
+// round segmentation (port of parsing.py::_segment_rounds)
+// ---------------------------------------------------------------------------
+
+fn fz(tick: i64, trp: Option<i64>) -> FreezeEvent {
+    FreezeEvent { tick, total_rounds_played: trp }
+}
+fn re(tick: i64, winner: Option<&str>) -> EndEvent {
+    EndEvent { tick, winner: winner.map(str::to_string) }
+}
+
+/// Real-demo shape: a winner-less round_end artifact at match start plus a
+/// knife round / restart mean the streams differ in length and alignment.
+#[test]
+fn segment_rounds_skips_artifacts_and_restarts() {
+    let freezes = [
+        fz(100, Some(0)),  // knife round (pre-restart)
+        fz(1000, Some(0)), // restart -> the real round 1 (LAST trp==0 wins)
+        fz(3000, Some(1)),
+        fz(5000, Some(2)), // trailing freeze with no matching end
+    ];
+    let ends = [
+        re(50, None),           // winner-less artifact before any real round
+        re(900, Some("CT")),    // knife-round end (before the restart freeze)
+        re(2500, Some("T")),
+        re(2600, None),         // artifact between rounds
+        re(4500, Some("CT")),
+    ];
+    let (ft, et) = segment_rounds(&freezes, &ends);
+    assert_eq!(ft, vec![1000, 3000]);
+    assert_eq!(et, vec![2500, 4500]);
+}
+
+/// Sources without enrichment (default trait impl / synthetic fixtures) keep
+/// the old naive pairing when the streams are already well-formed.
+#[test]
+fn segment_rounds_unenriched_passthrough() {
+    let freezes = [fz(1000, None), fz(3000, None)];
+    let ends = [re(2500, None), re(4500, None)];
+    let (ft, et) = segment_rounds(&freezes, &ends);
+    assert_eq!(ft, vec![1000, 3000]);
+    assert_eq!(et, vec![2500, 4500]);
+}
+
+/// The panic case from demos/match.dem: more round_ends than freezes must not
+/// index out of bounds (extra end pairs with no freeze and is dropped).
+#[test]
+fn segment_rounds_more_ends_than_freezes() {
+    let freezes = [fz(1000, Some(0))];
+    let ends = [re(500, Some("CT")), re(2500, Some("T"))];
+    let (ft, et) = segment_rounds(&freezes, &ends);
+    assert_eq!(ft, vec![1000]);
+    assert_eq!(et, vec![2500]);
+    // downstream must also stay in bounds with the aligned lists
+    let (per_round, all) = round_sample_ticks(&ft, &et, 16, 64);
+    assert_eq!(per_round.len(), 1);
+    assert!(!all.is_empty());
+}
+
 #[test]
 fn manifest_shape() {
     let (models, _) = build_replay3d(&mut FakeDemo).unwrap();
@@ -390,6 +449,7 @@ fn manifest_shape() {
     let man = extract3d::manifest::build_manifest(&decoded, &kills, &info);
 
     assert_eq!(man["map"], "de_mirage");
+    assert_eq!(man["radarAsset"], "de_mirage.png");
     assert_eq!(man["calibration"]["pos_x"], -3230.0);
     assert_eq!(man["sceneScale"], 0.02);
     assert_eq!(man["teamColors"]["2"], "#f59e0b");
@@ -406,6 +466,6 @@ fn manifest_shape() {
     let keys: Vec<&str> = man.as_object().unwrap().keys().map(|s| s.as_str()).collect();
     assert_eq!(
         keys,
-        ["map", "calibration", "sceneScale", "teamColors", "elevationWorldZ", "rounds"]
+        ["map", "radarAsset", "calibration", "sceneScale", "teamColors", "elevationWorldZ", "rounds"]
     );
 }

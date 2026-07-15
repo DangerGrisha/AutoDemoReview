@@ -128,6 +128,21 @@ pub struct KillEvent {
     pub is_warmup: bool,
 }
 
+/// `round_freeze_end` with the total_rounds_played enrichment (None when the
+/// source cannot provide it).
+#[derive(Clone, Debug)]
+pub struct FreezeEvent {
+    pub tick: i64,
+    pub total_rounds_played: Option<i64>,
+}
+
+/// `round_end` with the winner enrichment ("CT"/"T"; None = artifact/unknown).
+#[derive(Clone, Debug)]
+pub struct EndEvent {
+    pub tick: i64,
+    pub winner: Option<String>,
+}
+
 /// The demo access surface (mirrors the demoparser2 calls replay3d.py makes).
 pub trait DemoSource {
     fn map_name(&mut self) -> Result<String>;
@@ -141,6 +156,21 @@ pub trait DemoSource {
     fn blind_events(&mut self) -> Result<Vec<BlindEvent>>;
     fn grenade_rows(&mut self) -> Result<Vec<GrenadeRow>>;
     fn kill_events(&mut self) -> Result<Vec<KillEvent>>;
+    /// Round events with the fields `segment_rounds` pairs on. The default
+    /// falls back to bare ticks (no enrichment) for simple/test sources.
+    fn round_events(&mut self) -> Result<(Vec<FreezeEvent>, Vec<EndEvent>)> {
+        let freezes = self
+            .event_ticks("round_freeze_end")?
+            .into_iter()
+            .map(|tick| FreezeEvent { tick, total_rounds_played: None })
+            .collect();
+        let ends = self
+            .event_ticks("round_end")?
+            .into_iter()
+            .map(|tick| EndEvent { tick, winner: None })
+            .collect();
+        Ok((freezes, ends))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -245,14 +275,60 @@ pub fn detect_tickrate(source: &mut dyn DemoSource) -> i64 {
     }
 }
 
+/// Pair freeze-times with round-ends into the real match rounds (port of
+/// parsing.py::_segment_rounds). Positional zipping breaks on real demos:
+/// knife rounds, match restarts, and winner-less round_end artifacts add
+/// unpaired events, so the two streams differ in length and alignment.
+///
+///   * The first real round begins at the LAST round_freeze_end whose
+///     total_rounds_played == 0 (warm-up / knife / pre-restart are dropped).
+///   * Each round ends at the first round_end with a real winner (CT/T)
+///     after its freeze; winner-less artifacts are skipped.
+///
+/// Sources without enrichment (all winners None) keep every end — the naive
+/// behavior the synthetic test fixtures rely on.
+pub fn segment_rounds(freezes: &[FreezeEvent], ends: &[EndEvent]) -> (Vec<i64>, Vec<i64>) {
+    let mut fr: Vec<&FreezeEvent> = freezes.iter().collect();
+    fr.sort_by_key(|f| f.tick);
+    let any_winner = ends.iter().any(|e| e.winner.is_some());
+    let mut ve: Vec<&EndEvent> = ends
+        .iter()
+        .filter(|e| !any_winner || matches!(e.winner.as_deref(), Some("CT") | Some("T")))
+        .collect();
+    ve.sort_by_key(|e| e.tick);
+
+    let mut start_i = 0;
+    for (i, f) in fr.iter().enumerate() {
+        if f.total_rounds_played == Some(0) {
+            start_i = i;
+        }
+    }
+
+    let (mut freeze_ticks, mut end_ticks) = (Vec::new(), Vec::new());
+    let mut ei = 0;
+    for f in &fr[start_i..] {
+        while ei < ve.len() && ve[ei].tick <= f.tick {
+            ei += 1; // skip ends at/before this freeze
+        }
+        if ei >= ve.len() {
+            break; // last freeze had no matching end
+        }
+        freeze_ticks.push(f.tick);
+        end_ticks.push(ve[ei].tick);
+        ei += 1;
+    }
+    (freeze_ticks, end_ticks)
+}
+
 /// Per-round sample tick lists + the sorted union across all rounds.
+/// `freeze_ticks`/`end_ticks` must be index-aligned (see segment_rounds).
 pub fn round_sample_ticks(
     freeze_ticks: &[i64],
     end_ticks: &[i64],
     stride: i64,
     tickrate: i64,
 ) -> (Vec<Vec<i64>>, Vec<i64>) {
-    let n = end_ticks.len();
+    let n = end_ticks.len().min(freeze_ticks.len());
     let mut per_round = Vec::with_capacity(n);
     let mut all: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
     for i in 0..n {
@@ -492,8 +568,8 @@ pub fn build_replay3d_hz(
     let stride = ((tickrate as f64 / target_hz).round_ties_even() as i64).max(1);
     let sample_rate = tickrate as f64 / stride as f64;
 
-    let freeze_ticks = source.event_ticks("round_freeze_end")?;
-    let end_ticks = source.event_ticks("round_end")?;
+    let (freezes, ends) = source.round_events()?;
+    let (freeze_ticks, end_ticks) = segment_rounds(&freezes, &ends);
     let n_rounds = end_ticks.len();
 
     let (per_round_ticks, all_ticks) =

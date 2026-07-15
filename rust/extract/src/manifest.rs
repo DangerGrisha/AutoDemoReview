@@ -114,6 +114,7 @@ pub fn build_manifest(
 
     let mut manifest = Map::new();
     manifest.insert("map".into(), Value::from(map_name));
+    manifest.insert("radarAsset".into(), Value::from(info.asset));
     manifest.insert("calibration".into(), Value::Object(calibration));
     manifest.insert("sceneScale".into(), jf(SCENE_SCALE));
     manifest.insert("teamColors".into(), Value::Object(team_colors));

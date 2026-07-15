@@ -15,7 +15,9 @@ use parser::second_pass::game_events::GameEvent;
 use parser::second_pass::parser_settings::create_huffman_lookup_table;
 use parser::second_pass::variants::{PropColumn, VarVec, Variant};
 
-use crate::{BlindEvent, DemoSource, DetEvent, GrenadeRow, KillEvent, TickRow};
+use crate::{
+    BlindEvent, DemoSource, DetEvent, EndEvent, FreezeEvent, GrenadeRow, KillEvent, TickRow,
+};
 
 /// The per-tick props the extraction samples (mirrors replay3d.TICK_PROPS; note
 /// `ducked` forces the parser single-threaded — accepted, it costs ~1 s total).
@@ -225,6 +227,25 @@ impl DemoSource for Dp2Source {
             .filter(|e| e.name == event)
             .map(|e| e.tick as i64)
             .collect())
+    }
+
+    fn round_events(&mut self) -> Result<(Vec<FreezeEvent>, Vec<EndEvent>)> {
+        let mut freezes = Vec::new();
+        let mut ends = Vec::new();
+        for e in self.events()? {
+            match e.name.as_str() {
+                "round_freeze_end" => freezes.push(FreezeEvent {
+                    tick: e.tick as i64,
+                    total_rounds_played: v_i64(field(e, "total_rounds_played")),
+                }),
+                "round_end" => ends.push(EndEvent {
+                    tick: e.tick as i64,
+                    winner: v_string(field(e, "winner")),
+                }),
+                _ => {}
+            }
+        }
+        Ok((freezes, ends))
     }
 
     fn game_time_samples(&mut self, ticks: &[i64]) -> Result<Vec<(i64, f64)>> {

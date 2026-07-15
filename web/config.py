@@ -46,7 +46,21 @@ PARSE_CONCURRENCY = max(1, int(os.environ.get("PARSE_CONCURRENCY", "1")))
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8000"))
 
+# 3D replay: per-match extract3d artifacts (manifest.json + rNN.3dr) live here.
+REPLAY3D_DIR = DATA_DIR / "replay3d"
+
+# Path to the extract3d release binary. 3D replay is best-effort: when the
+# binary is missing the upload still succeeds, just without a 3D replay.
+_extract3d_default = REPO_ROOT / "rust" / "target" / "release" / (
+    "extract3d.exe" if os.name == "nt" else "extract3d")
+_extract3d = os.environ.get("EXTRACT3D_BIN", "").strip()
+EXTRACT3D_BIN = Path(_extract3d) if _extract3d else _extract3d_default
+
+# A 300-500 MB demo takes ~1 min to extract; leave generous headroom.
+EXTRACT3D_TIMEOUT_S = int(os.environ.get("EXTRACT3D_TIMEOUT_S", "900"))
+
 # Ensure runtime dirs exist (gitignored).
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+REPLAY3D_DIR.mkdir(parents=True, exist_ok=True)

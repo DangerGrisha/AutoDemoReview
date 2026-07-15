@@ -104,8 +104,8 @@
  *   The page uses it to sync scrubber/time/play button, position the HTML name
  *   labels + tracer labels, drive the flash overlay, and count FPS.
  * ========================================================================== */
-import init, { run, load_manifest, load_round, seek, set_playing, set_speed, set_flash_focus }
-  from './pkg/viewer.js';
+import init, { run, load_manifest, load_round, seek, set_playing, set_speed, set_flash_focus,
+  set_map_visible } from './pkg/viewer.js';
 
 const $ = s => document.querySelector(s);
 function fail(m){ const e=$('#err'); e.style.display='grid'; e.textContent='Error: '+m; console.error(m); }
@@ -220,11 +220,25 @@ scrub.addEventListener('input',()=>{ seek(parseFloat(scrub.value)); });
 
 async function main(){
   await init();
-  run('#canvas');
-  const manifestText = await (await fetch('manifest.json')).text();
-  MANIFEST = JSON.parse(manifestText);
-  load_manifest(manifestText);
+  run('#canvas', null);   // null = page-relative "assets/" root (dev server)
+  const q=new URLSearchParams(location.search);
+  MANIFEST = JSON.parse(await (await fetch('manifest.json')).text());
+  // ?map=maps/de_mirage/world.glb — inject real map geometry (path under assets/)
+  const qmap=q.get('map');
+  if (qmap) MANIFEST.mapAsset = qmap;
+  load_manifest(JSON.stringify(MANIFEST));
   $('#title').textContent = MANIFEST.map + ' · 3D replay';
+
+  // Map/Radar toggle (only meaningful when a map asset is wired in)
+  if (MANIFEST.mapAsset){
+    let mapOn = true;
+    const btn = document.createElement('button');
+    btn.textContent = 'Radar view';
+    btn.style.marginTop = '8px'; btn.style.width = '100%';
+    btn.onclick = ()=>{ mapOn = !mapOn; set_map_visible(mapOn);
+      btn.textContent = mapOn ? 'Radar view' : 'Map view'; };
+    $('#hud').appendChild(btn);
+  }
 
   const sel=$('#roundSel');
   MANIFEST.rounds.forEach((r,idx)=>{ const o=document.createElement('option');
@@ -233,7 +247,6 @@ async function main(){
     set_playing(true); };
 
   // deep links: ?round=<1-based>&t=<seconds> (seek + pause) &flash=<player name>
-  const q=new URLSearchParams(location.search);
   const qr=parseInt(q.get('round')), qt=parseFloat(q.get('t'));
   const qflash=q.get('flash');
   if (qflash) set_flash_focus(qflash);

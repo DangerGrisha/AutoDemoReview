@@ -18,6 +18,7 @@ pub enum ControlMsg {
     SetPlaying(bool),
     SetSpeed(f64),
     SetFlashFocus(Option<String>),
+    SetShowMap(bool),
 }
 
 pub static QUEUE: Mutex<Vec<ControlMsg>> = Mutex::new(Vec::new());
@@ -34,6 +35,10 @@ pub struct ManifestData {
     pub elevation_world_z: Vec<f64>,
     /// groundY = elevationWorldZ[0] * S (scene units) — the template's reference height
     pub ground_y: f32,
+    /// radar PNG for the greybox ground plane (manifest.radarAsset)
+    pub radar_asset: String,
+    /// optional glTF/GLB world geometry, relative to the asset root (manifest.mapAsset)
+    pub map_asset: Option<String>,
 }
 
 pub struct RoundState {
@@ -54,6 +59,8 @@ pub struct Viewer {
     pub flash_focus_name: Option<String>,
     /// resolved slot index in the current round whose flash channel drives the overlay
     pub flash_focus: Option<usize>,
+    /// real map geometry shown (true) vs the radar greybox (false)
+    pub show_map: bool,
 }
 
 impl Default for Viewer {
@@ -66,6 +73,7 @@ impl Default for Viewer {
             speed: 1.0,
             flash_focus_name: None,
             flash_focus: None,
+            show_map: false,
         }
     }
 }
@@ -73,6 +81,10 @@ impl Default for Viewer {
 /// Marker components for scene entities.
 #[derive(Component)]
 pub struct GreyboxTag;
+
+/// Root of the spawned glTF map world (children inherit its Visibility).
+#[derive(Component)]
+pub struct MapTag;
 
 #[derive(Component)]
 pub struct PlayerBody {
