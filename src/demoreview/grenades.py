@@ -8,6 +8,7 @@ in lockstep with the players. Returns None if the map is unsupported.
 """
 
 from . import maps
+from .parseutil import event_df
 from .replay import STEP, TICKRATE
 
 # Projectile entity class -> our normalized grenade type. Incendiary and molotov
@@ -56,7 +57,7 @@ def build_grenades(parser, map_name, freeze_ticks, end_ticks,
     dets = []
     for ev, gtype in DET_EVENTS.items():
         try:
-            df = parser.parse_event(ev)
+            df = event_df(parser, ev)      # tolerates demoparser2's bare-[] result
         except Exception:
             df = None
         if df is None or df.empty:

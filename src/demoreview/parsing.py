@@ -12,6 +12,7 @@ from . import stats
 from . import replay as replay_mod
 from . import grenades as grenades_mod
 from . import analysis as analysis_mod
+from .parseutil import event_df
 
 try:
     import pandas as pd
@@ -89,6 +90,28 @@ def snap_at(ticks_df, tick):
     return ticks_df[ticks_df["tick"] == tick]
 
 
+def int_or_none(value):
+    """An integer tick field as an int, or None when the demo has no value there.
+
+    demoparser2 reports NaN for a player the game hasn't placed yet -- someone
+    still connecting, a spectator, a GOTV slot -- in `team_num`,
+    `team_rounds_total` and friends. `int(NaN)` raises, so every read of those
+    columns must go through here: a single such row in one freeze snapshot used
+    to abort the whole parse ("cannot convert float NaN to integer") and throw
+    away an otherwise perfectly good match.
+    """
+    try:
+        if value is None or value != value:          # NaN is the only x != x
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# Kept as the descriptive name at the call sites that read a side.
+team_num_of = int_or_none
+
+
 def alive_counts(ticks_df, tick, side_num):
     """Alive players on `side_num` at `tick`."""
     snap = ticks_df[(ticks_df["tick"] == tick)
@@ -118,7 +141,14 @@ def team_scores_at(ticks_df, tick):
     """Native per-side round-win totals (team_rounds_total) at `tick`."""
     snap = snap_at(ticks_df, tick)
     by_side = snap.groupby("team_num")["team_rounds_total"].first()
-    return {int(k): int(v) for k, v in by_side.items()}
+    # Both the side and its score can be NaN for a not-yet-placed player; such a
+    # group carries no score, so it is skipped rather than crashing the parse.
+    out = {}
+    for side, score in by_side.items():
+        side, score = int_or_none(side), int_or_none(score)
+        if side is not None and score is not None:
+            out[side] = score
+    return out
 
 
 def find_sid(ticks_df, name):
@@ -224,29 +254,39 @@ def collect(parser, highlight, rival, highlight_sid=None):
     `highlight_sid` (optional SteamID64) spotlights a player by their stable
     steamid instead of their display name -- see `resolve_reference`.
     """
-    round_ends = parser.parse_event("round_end").sort_values("tick")
-    freeze_ends = parser.parse_event(
-        "round_freeze_end", other=["total_rounds_played"]).sort_values("tick")
-    buytime_ends = parser.parse_event("buytime_ended").sort_values("tick")
-    bomb_plants = parser.parse_event("bomb_planted").sort_values("tick")
-    kills = parser.parse_event(
-        "player_death",
+    round_ends = event_df(parser, "round_end")
+    freeze_ends = event_df(parser, "round_freeze_end",
+                           other=["total_rounds_played"])
+    # These two may legitimately be absent (a match where nobody ever planted).
+    buytime_ends = event_df(parser, "buytime_ended")
+    bomb_plants = event_df(parser, "bomb_planted")
+    kills = event_df(
+        parser, "player_death",
         player=["team_num", "X", "Y"],
         other=["total_rounds_played", "is_warmup_period"],
     )
-    hurts = parser.parse_event(
-        "player_hurt",
+    hurts = event_df(
+        parser, "player_hurt",
         player=["team_num"],
         other=["total_rounds_played", "is_warmup_period"],
     )
-    blinds = parser.parse_event(
-        "player_blind",
+    blinds = event_df(
+        parser, "player_blind",
         player=["team_num"],
         other=["total_rounds_played", "is_warmup_period"],
     )
 
+    # No round ends or no freeze ends -> nothing that can be segmented into rounds.
     if round_ends is None or round_ends.empty:
         return None, [], {}
+    if freeze_ends is None or freeze_ends.empty:
+        return None, [], {}
+    round_ends = round_ends.sort_values("tick")
+    freeze_ends = freeze_ends.sort_values("tick")
+    if buytime_ends is not None:
+        buytime_ends = buytime_ends.sort_values("tick")
+    if bomb_plants is not None:
+        bomb_plants = bomb_plants.sort_values("tick")
 
     try:
         map_name = parser.parse_header().get("map_name")
@@ -295,7 +335,9 @@ def collect(parser, highlight, rival, highlight_sid=None):
             snap = ticks_df[(ticks_df["tick"] == tk)
                             & (ticks_df["sid"] == ref_steamid)]
             if not snap.empty:
-                return int(snap["team_num"].iloc[0])
+                side = team_num_of(snap["team_num"].iloc[0])
+                if side is not None:
+                    return side          # no side at this tick: try the next one
         return prev
 
     # Reference player's teammates (share their side; invariant across the swap).
@@ -303,7 +345,9 @@ def collect(parser, highlight, rival, highlight_sid=None):
     for i, ft in enumerate(freeze_ticks):
         snap = snap_at(ticks_df, ft)
         if ref_steamid in snap["sid"].values:
-            pside = int(snap.loc[snap["sid"] == ref_steamid, "team_num"].iloc[0])
+            pside = team_num_of(snap.loc[snap["sid"] == ref_steamid, "team_num"].iloc[0])
+            if pside is None:
+                continue                 # not on a team yet at this freeze; try the next round
             your_team_ids = set(snap.loc[snap["team_num"] == pside, "sid"])
             break
 
@@ -359,8 +403,9 @@ def collect(parser, highlight, rival, highlight_sid=None):
     roster_by_round = {}
     for rr in range(1, n_rounds + 1):
         snap = snap_at(ticks_df, freeze_ticks[rr - 1])
-        roster_by_round[rr] = {row["sid"]: int(row["team_num"])
-                               for _, row in snap.iterrows()}
+        roster_by_round[rr] = {row["sid"]: side
+                               for _, row in snap.iterrows()
+                               if (side := team_num_of(row["team_num"])) is not None}
     names = {}
     for _, row in ticks_df.drop_duplicates("sid").iterrows():
         names[row["sid"]] = clean_name(row["name"])

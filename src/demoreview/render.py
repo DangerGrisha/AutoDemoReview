@@ -12,11 +12,19 @@ def esc(text) -> str:
     return html.escape(str(text))
 
 
+# The ONLY link shape allowed through: a round deep-link into this site's own
+# 3D replay, exactly as coach.render_markdown builds it. Anything else the model
+# writes stays literal text, so no href it invents can ever reach the page.
+_MD_ROUND_LINK = re.compile(
+    r"\[([^\]\[]{1,32})\]\((/matches/\d+/3d\?round=\d+(?:&amp;t=\d+(?:\.\d+)?)?)\)")
+
+
 def _md_inline(text) -> str:
-    """Escape text, then apply inline markdown (**bold**, `code`)."""
+    """Escape text, then apply inline markdown (**bold**, `code`, round links)."""
     out = esc(text)                                   # escape FIRST -> injection-safe
     out = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", out)
     out = re.sub(r"`(.+?)`", r"<code>\1</code>", out)
+    out = _MD_ROUND_LINK.sub(r'<a class="coach-round" href="\2">\1</a>', out)
     return out
 
 
@@ -80,29 +88,43 @@ def markdown_to_html(md: str) -> str:
     return "".join(parts)
 
 
-def render_coaching(coaching_md) -> str:
-    """The AI-coaching card: a toggle button + a hidden div with the baked report.
+def render_coaching(coaching_md, action_html=None) -> str:
+    """The AI-coaching card: a toggle button + a hidden div with the report.
 
-    `coaching_md` is the pre-generated markdown (from coach.generate_report_text),
+    `coaching_md` is the generated markdown (from coach.generate_report_text),
     or None/empty when it wasn't generated -- in which case we show a static
     placeholder so the visualiser still renders fine.
+
+    `action_html` is an optional control the web app injects to (re)generate the
+    report on demand; the CLI never passes one, so its card stays static.
     """
-    if coaching_md and coaching_md.strip():
+    has_report = bool(coaching_md and coaching_md.strip())
+    if has_report:
         body = markdown_to_html(coaching_md)
+    elif action_html:
+        body = ('<p class="coach-empty">No coaching report yet &mdash; generate '
+                'one to get a per-round breakdown of this match.</p>')
     else:
         body = ('<p class="coach-empty">Coaching report not available for this '
                 'match yet.</p>')
+    # With nothing to read yet, the card opens on the "generate" prompt rather
+    # than hiding it behind a toggle nobody would press.
+    open_now = bool(action_html) and not has_report
+    hidden = "" if open_now else " hidden"
+    toggle_label = "Hide coaching report" if open_now else "View coaching report"
 
     return (
         '<div class="card coach-card">'
         '<div class="coach-head">'
         '<div class="rounds-title" style="margin:0">AI coaching report '
         '<span class="muted" style="text-transform:none;letter-spacing:0">'
-        '(pre-generated &mdash; baked into this page)</span></div>'
-        '<button class="coach-btn" id="coach-toggle" aria-expanded="false" '
-        'aria-controls="coach-body">View coaching report</button>'
+        '(measured from this match)</span></div>'
+        f'{action_html or ""}'
+        f'<button class="coach-btn" id="coach-toggle" '
+        f'aria-expanded="{"true" if open_now else "false"}" '
+        f'aria-controls="coach-body">{toggle_label}</button>'
         '</div>'
-        f'<div class="coach-body" id="coach-body" hidden>{body}</div>'
+        f'<div class="coach-body" id="coach-body"{hidden}>{body}</div>'
         '<script>(function(){'
         'var b=document.getElementById("coach-toggle"),'
         'p=document.getElementById("coach-body");'
@@ -193,6 +215,14 @@ PAGE_HEAD = """<!doctype html>
               text-transform: uppercase; letter-spacing: .1em; color: var(--text); }
   .site-nav a { color: var(--you); text-decoration: none; font-weight: 600; }
   .site-nav a:hover { text-decoration: underline; }
+  /* 3D replay entry point: a pill, so it doesn't read as one more text link. */
+  .site-nav a.sn-3d { display: inline-flex; align-items: center; gap: 6px;
+              padding: 4px 12px; border-radius: 999px; font-size: .8rem;
+              letter-spacing: .04em; text-transform: uppercase;
+              color: var(--you); border: 1px solid rgba(74,144,217,.55);
+              background: rgba(74,144,217,.12); }
+  .site-nav a.sn-3d:hover { text-decoration: none;
+              background: rgba(74,144,217,.22); border-color: var(--you); }
   .site-nav .sn-note { color: var(--opp); font-style: italic; font-size: .82rem; }
   .site-nav .sn-user { margin-left: auto; color: var(--muted);
               display: inline-flex; align-items: center; gap: 8px; }
@@ -481,6 +511,17 @@ PAGE_HEAD = """<!doctype html>
                background: var(--me); border: 0; border-radius: 9px; padding: 8px 16px;
                cursor: pointer; white-space: nowrap; transition: filter .1s; }
   .coach-btn:hover { filter: brightness(1.08); }
+  /* Generate/regenerate sits next to the toggle but must not compete with it:
+     same shape, outline instead of fill. */
+  .coach-form { margin: 0 0 0 auto; }
+  .coach-btn.coach-gen { background: transparent; color: var(--me);
+                         box-shadow: inset 0 0 0 1px var(--me); }
+  .coach-btn.coach-gen:disabled { opacity: .6; cursor: progress; }
+  .coach-err { color: var(--opp); font-size: .8rem; }
+  .coach-round { color: var(--me); text-decoration: none;
+                 box-shadow: inset 0 0 0 1px var(--line); border-radius: 6px;
+                 padding: 1px 7px; margin-right: 2px; display: inline-block; }
+  .coach-round:hover { box-shadow: inset 0 0 0 1px var(--me); }
   .coach-body { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px;
                 font-size: .92rem; }
   .coach-body h3 { font-size: 1rem; margin: 18px 0 8px; color: var(--me); }
@@ -1519,7 +1560,8 @@ def render_replay(replay, meta, info) -> str:
     )
 
 
-def render_html(summary, rounds, demo_name, meta, coaching_md=None, site_nav=None) -> str:
+def render_html(summary, rounds, demo_name, meta, coaching_md=None, site_nav=None,
+                coaching_action=None) -> str:
     my, opp = summary["my_final"], summary["opp_final"]
     ref = meta["ref_name"]
     ref_sid = meta.get("ref_sid")
@@ -1566,7 +1608,7 @@ def render_html(summary, rounds, demo_name, meta, coaching_md=None, site_nav=Non
 
     # Layer 6: pre-generated AI coaching report (baked in at build time; the
     # button just toggles it -- no live/browser-side API call, no key exposure).
-    parts.append(render_coaching(coaching_md))
+    parts.append(render_coaching(coaching_md, coaching_action))
 
     if info:
         parts.append(render_map(summary.get("map_kills", []),

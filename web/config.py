@@ -59,8 +59,32 @@ EXTRACT3D_BIN = Path(_extract3d) if _extract3d else _extract3d_default
 # A 300-500 MB demo takes ~1 min to extract; leave generous headroom.
 EXTRACT3D_TIMEOUT_S = int(os.environ.get("EXTRACT3D_TIMEOUT_S", "900"))
 
+# --- Steam bot (auto-import of finished matches) ---
+# The bot's own profile: the /connect page links players at it so THEY send the
+# friend invite (the bot only accepts). Absent -> the page shows the auto-import
+# setup but hides the Steam-chat half.
+STEAMBOT_PROFILE_URL = os.environ.get("STEAMBOT_PROFILE_URL", "").strip() or None
+STEAMBOT_PERSONA = os.environ.get("STEAMBOT_PERSONA", "").strip() or "our Steam bot"
+# Where the Node Steam agent (GC resolve + chat) listens. Loopback only.
+STEAMBOT_AGENT_URL = os.environ.get("STEAMBOT_AGENT_URL", "http://127.0.0.1:8790").rstrip("/")
+# Shared secret between the worker and the agent. The agent binds to loopback, so
+# this guards against other local processes driving the bot, not the network.
+STEAMBOT_AGENT_TOKEN = os.environ.get("STEAMBOT_AGENT_TOKEN", "").strip()
+# How often a subscription is polled for a new match, and how many per sweep.
+# Two speeds on purpose: the idle poll hits Steam's Web API (rate-limited, and
+# pointless to hammer -- a match can't appear faster than it is played), while
+# waiting for an already-detected match only asks the Game Coordinator and the
+# replay CDN, which we own the pace of. So the wait is checked much more often:
+# that window is the only part of the delay we can actually shorten.
+STEAMBOT_POLL_INTERVAL_S = int(os.environ.get("STEAMBOT_POLL_INTERVAL_S", "120"))
+STEAMBOT_PENDING_INTERVAL_S = int(os.environ.get("STEAMBOT_PENDING_INTERVAL_S", "45"))
+STEAMBOT_BATCH = int(os.environ.get("STEAMBOT_BATCH", "25"))
+# Auto-downloaded demos land here and are deleted right after ingest.
+STEAMBOT_DOWNLOAD_DIR = TMP_DIR / "steambot"
+
 # Ensure runtime dirs exist (gitignored).
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 REPLAY3D_DIR.mkdir(parents=True, exist_ok=True)
+STEAMBOT_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)

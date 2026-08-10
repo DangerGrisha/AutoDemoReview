@@ -52,10 +52,14 @@ def loads_enriched(text):
     return d["summary"], d["rounds"], d["meta"]
 
 
-def render_match_html(summary, rounds, demo_name, meta, site_nav=None):
+def render_match_html(summary, rounds, demo_name, meta, site_nav=None,
+                      coaching_md=None, coaching_action=None):
     """Regenerate the self-contained match HTML from stored data.
 
     `site_nav` is an optional HTML snippet the web app injects at the top of the
-    report (back-to-profile nav); the CLI path never passes it.
+    report (back-to-profile nav); the CLI path never passes it. `coaching_md` /
+    `coaching_action` fill the AI-coaching card with the cached report and the
+    control that (re)generates it.
     """
-    return render_html(summary, rounds, demo_name, meta, coaching_md=None, site_nav=site_nav)
+    return render_html(summary, rounds, demo_name, meta, coaching_md=coaching_md,
+                       site_nav=site_nav, coaching_action=coaching_action)

@@ -7,23 +7,105 @@ any user who participated in it (their SteamID is a parsed player) or uploaded i
 
 import hashlib
 import html
+import mimetypes
 import os
-import sqlite3
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import career, config, db, participants, pipeline, replay3d, steam_openid
+from . import (autoimport, career, coaching, config, db, ingest, pipeline,
+               replay3d, steam_openid)
 
 WEB_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
+
+# Windows' registry-backed mimetypes DB often lacks (or mislabels) these. The
+# .wasm one is load-bearing: WebAssembly.instantiateStreaming refuses anything
+# but application/wasm. Registering here fixes FileResponse's guess_type for
+# compressed AND uncompressed serving alike.
+mimetypes.add_type("application/wasm", ".wasm")
+mimetypes.add_type("model/gltf-binary", ".glb")
+mimetypes.add_type("text/javascript", ".js")
+
+
+class CompressedStaticFiles(StaticFiles):
+    """StaticFiles + precompressed siblings + long-lived caching for replay3d.
+
+    tools/precompress.py writes `<file>.br` / `<file>.gz` next to the big 3D
+    replay payloads (wasm / glb / js). When the request's Accept-Encoding
+    allows it and the sibling exists, the sibling is served instead, with:
+
+      * Content-Encoding: br|gzip
+      * the ORIGINAL Content-Type (application/wasm keeps
+        WebAssembly.instantiateStreaming on the fast path)
+      * Vary: Accept-Encoding
+
+    Content-Length / ETag / Last-Modified / 304 revalidation all come from
+    default StaticFiles behavior applied to the sibling file, so they are
+    consistent per-variant. Everything under /static/replay3d/ additionally
+    gets a week of Cache-Control (the page warm-fetches the map .glb so
+    Bevy's own fetch of the same URL becomes a deterministic disk-cache hit).
+    """
+
+    COMPRESSIBLE_EXTS = {".wasm", ".glb", ".js", ".3dr"}
+    MEDIA_TYPES = {
+        ".wasm": "application/wasm",
+        ".glb": "model/gltf-binary",
+        ".js": "text/javascript",
+        ".3dr": "application/octet-stream",
+    }
+
+    @staticmethod
+    def _accepted_encodings(scope):
+        """Lower-cased encoding tokens from Accept-Encoding, minus q=0 ones."""
+        raw = b",".join(v for k, v in scope.get("headers", []) if k == b"accept-encoding")
+        accepted = set()
+        for part in raw.decode("latin-1").split(","):
+            token, _, params = part.partition(";")
+            token = token.strip().lower()
+            if not token:
+                continue
+            q = params.strip().lower()
+            if q.startswith("q="):
+                try:
+                    if float(q[2:].split(";")[0]) == 0.0:
+                        continue
+                except ValueError:
+                    pass
+            accepted.add(token)
+        return accepted
+
+    async def get_response(self, path, scope):
+        ext = os.path.splitext(path)[1].lower()
+        response = None
+        if ext in self.COMPRESSIBLE_EXTS and scope["method"] in ("GET", "HEAD"):
+            accepted = self._accepted_encodings(scope)
+            for encoding, suffix in (("br", ".br"), ("gzip", ".gz")):
+                if encoding not in accepted:
+                    continue
+                if self.lookup_path(path + suffix)[1] is None:   # no sibling on disk
+                    continue
+                response = await super().get_response(path + suffix, scope)
+                if response.status_code == 200:
+                    response.headers["content-encoding"] = encoding
+                    response.headers["content-type"] = self.MEDIA_TYPES[ext]
+                break
+        if response is None:
+            response = await super().get_response(path, scope)
+        if ext in self.COMPRESSIBLE_EXTS:
+            # Both variants of the URL exist -> caches must key on the header.
+            response.headers["vary"] = "Accept-Encoding"
+        if path.replace("\\", "/").startswith("replay3d/"):
+            response.headers["cache-control"] = "public, max-age=604800"
+        return response
 
 
 @asynccontextmanager
@@ -40,7 +122,7 @@ app.add_middleware(
     https_only=False,          # LAN / http
     max_age=30 * 24 * 3600,
 )
-app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
+app.mount("/static", CompressedStaticFiles(directory=str(WEB_DIR / "static")), name="static")
 
 
 def current_user(request):
@@ -95,7 +177,11 @@ def profile(request: Request):
     user = current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=302)
-    matches = db.list_matches(user["steamid64"])
+    # dicts (not sqlite3.Row) so the 3D flags can ride along to the template
+    matches = [dict(m) for m in db.list_matches(user["steamid64"])]
+    for m in matches:
+        m["has3d"] = replay3d.has_replay(m["id"])
+        m["map3d"] = replay3d.map_asset_rel(m["map_name"]) is not None
     return _page(request, "profile.html", {"user": user, "matches": matches})
 
 
@@ -107,6 +193,47 @@ def stats_page(request: Request):
     data = career.build_career(
         db.career_totals(user["steamid64"]), db.career_blobs(user["steamid64"]))
     return _page(request, "stats.html", {"user": user, "career": data})
+
+
+@app.get("/connect", response_class=HTMLResponse)
+def connect_form(request: Request):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    return _page(request, "connect.html",
+                 {"user": user, "st": autoimport.status(user["steamid64"]),
+                  "error": None, "saved": request.query_params.get("saved") == "1"})
+
+
+@app.post("/connect", response_class=HTMLResponse)
+def connect_save(request: Request,
+                 auth_code: str = Form(""),
+                 share_code: str = Form(""),
+                 chat_optin: str = Form("")):
+    """Store an auto-import subscription after validating the codes against Steam."""
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    try:
+        autoimport.connect(user["steamid64"], auth_code, share_code,
+                           chat_optin=bool(chat_optin))
+    except autoimport.SetupError as exc:
+        st = autoimport.status(user["steamid64"])
+        # Keep what they typed (minus the secret) so the form isn't a retype.
+        st["form_sharecode"] = (share_code or "").strip()
+        return _page(request, "connect.html",
+                     {"user": user, "st": st, "error": str(exc), "saved": False}, 400)
+    return RedirectResponse("/connect?saved=1", status_code=302)
+
+
+@app.post("/connect/off")
+def connect_off(request: Request):
+    """Stop auto-import and forget the stored auth code."""
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    db.delete_steam_link(user["steamid64"])
+    return RedirectResponse("/connect", status_code=302)
 
 
 @app.get("/upload", response_class=HTMLResponse)
@@ -153,65 +280,19 @@ def upload_demo(request: Request, demo: UploadFile = File(...)):
                 out.write(chunk)
         digest = sha.hexdigest()
 
-        # Already analyzed (global dedup)? Skip the ~1-min parse. Redirect only if
-        # the re-uploader may actually see it (a participant is already linked);
-        # never leak a match uploaded by another group on a hash collision.
-        existing = db.find_match_by_hash(digest)
-        if existing is not None:
-            if db.can_access(existing, user["steamid64"]):
-                # Backfill: matches analyzed before the 3D-replay feature gain
-                # their artifacts on re-upload (the raw .dem is never kept).
-                if not replay3d.has_replay(existing):
-                    try:
-                        replay3d.extract(tmp_path, existing)
-                    except Exception:
-                        pass
-                return RedirectResponse(f"/matches/{existing}?dup=1", status_code=302)
+        # Dedup, parse, insert and 3D extract all live in web/ingest.py -- the Steam
+        # bot's auto-download worker goes through the very same function.
+        try:
+            res = ingest.ingest_demo(tmp_path, owner_steamid=user["steamid64"],
+                                     filename=filename, digest=digest)
+        except ingest.IngestError as exc:
+            return err(str(exc))
+        if not res.visible:
+            # Someone else's match on a hash hit: never link a stranger to it.
             return err("This demo has already been analyzed (uploaded by someone "
                        "else) and you don't appear in it.", 409)
-
-        # Cheap sanity check before the expensive parse.
-        with open(tmp_path, "rb") as f:
-            if f.read(8)[:7] != b"PBDEMS2":
-                return err("That doesn't look like a CS2 demo (bad file header).")
-
-        summary, rounds, meta = pipeline.parse_demo_file(tmp_path, user["steamid64"])
-        if not summary:
-            return err("No scored rounds found in that demo (warm-up only or unsupported).")
-
-        match = {
-            "uploader_steamid": user["steamid64"],
-            "original_filename": filename,
-            "map_name": meta.get("map_name"),
-            "my_score": summary["my_final"],
-            "opp_score": summary["opp_final"],
-            "won": 1 if summary["won_match"] else 0,
-            "n_rounds": summary["n_rounds"],
-            "ref_name": meta.get("ref_name"),
-            "ref_sid": meta.get("ref_sid"),
-            "ref_kills": summary["ref_kills"],
-            "ref_deaths": summary["ref_deaths"],
-            "found": 1 if meta.get("found") else 0,
-            "dem_sha256": digest,
-            "data_json": pipeline.dumps_enriched(summary, rounds, meta),
-        }
-        try:
-            match_id = db.insert_match_with_participants(
-                match=match, participants=participants.extract_participants(summary))
-        except sqlite3.IntegrityError:
-            # Lost a check-then-insert race with a concurrent identical upload (the
-            # global UNIQUE(dem_sha256) index fired). Treat it as the dup it is.
-            existing = db.find_match_by_hash(digest)
-            if existing is not None and db.can_access(existing, user["steamid64"]):
-                return RedirectResponse(f"/matches/{existing}?dup=1", status_code=302)
-            raise
-        # 3D replay artifacts (best-effort; must run before `finally` frees the
-        # temp .dem -- the raw demo is never kept).
-        try:
-            replay3d.extract(tmp_path, match_id)
-        except Exception:
-            pass
-        return RedirectResponse(f"/matches/{match_id}", status_code=302)
+        suffix = "?dup=1" if res.duplicate else ""
+        return RedirectResponse(f"/matches/{res.match_id}{suffix}", status_code=302)
     except Exception as exc:  # noqa: BLE001 -- surface any parse failure cleanly
         return err(f"Couldn't parse this file -- is it a valid CS2 .dem? ({type(exc).__name__})")
     finally:
@@ -239,10 +320,18 @@ def match_view(request: Request, match_id: int):
         up = db.get_user(row["uploader_steamid"])
         up_name = html.escape(up["persona_name"]) if up else "another player"
         note = f'<span class="sn-note">shown from {up_name}’s perspective</span>'
-    replay3d_link = (
-        f'<a href="/matches/{match_id}/3d">3D replay</a>'
-        if replay3d.has_replay(match_id) else ""
-    )
+    # A pill, not a plain link -- the 3D replay is a headline feature and was
+    # getting lost among the nav's text links. The title flags the fallback when
+    # this map has no converted geometry yet (the viewer then shows the radar).
+    if replay3d.has_replay(match_id):
+        has_map = replay3d.map_asset_rel(row["map_name"]) is not None
+        tip = ("Watch this round in 3D on the real map geometry" if has_map else
+               "Watch this round in 3D -- this map isn't converted yet, "
+               "so the viewer falls back to the flat radar")
+        replay3d_link = (f'<a class="sn-3d" href="/matches/{match_id}/3d" '
+                         f'title="{html.escape(tip)}">&#9654; Watch in 3D</a>')
+    else:
+        replay3d_link = ""
     site_nav = (
         '<div class="site-nav">'
         '<a href="/profile">&#8592; My matches</a>'
@@ -252,9 +341,46 @@ def match_view(request: Request, match_id: int):
         f'<span class="sn-user">{avatar}{html.escape(user["persona_name"])}</span>'
         '</div>'
     )
+    # AI coaching: cached per (match, viewer) -- the report is about whoever is
+    # looking at it, not about the uploader. `error` comes back as a query param
+    # from a failed generate so the message lands on the card, not a blank page.
+    coaching_md = coaching.markdown(match_id, user["steamid64"])
+    error = request.query_params.get("coach_error")
+    label = "Regenerate" if coaching_md else "Generate report"
+    coaching_action = (
+        (f'<span class="coach-err">{html.escape(error)}</span>' if error else "")
+        + f'<form method="post" action="/matches/{match_id}/coach" '
+          'class="coach-form" onsubmit="this.querySelector(\'button\').disabled=true;'
+          'this.querySelector(\'button\').textContent=\'Analysing\\u2026\';">'
+          f'<button class="coach-btn coach-gen" type="submit">{label}</button>'
+          '</form>'
+    )
     page = pipeline.render_match_html(
-        summary, rounds, row["original_filename"] or "match.dem", meta, site_nav=site_nav)
+        summary, rounds, row["original_filename"] or "match.dem", meta,
+        site_nav=site_nav, coaching_md=coaching_md, coaching_action=coaching_action)
     return HTMLResponse(page)
+
+
+@app.post("/matches/{match_id}/coach")
+def match_coach(request: Request, match_id: int):
+    """Generate (or refresh) this viewer's coaching report, then show the match.
+
+    Synchronous on purpose: the handler runs in Starlette's threadpool and the
+    call takes under a minute, so the user gets the finished report on the
+    redirect instead of a job to poll.
+    """
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    row = db.get_match(match_id, user["steamid64"])       # access-scoped, like match_view
+    if row is None:
+        raise HTTPException(status_code=404)
+    try:
+        coaching.generate(match_id, user["steamid64"], row["data_json"])
+        target = f"/matches/{match_id}"
+    except coaching.CoachUnavailable as exc:
+        target = f"/matches/{match_id}?coach_error={quote(str(exc)[:200])}"
+    return RedirectResponse(target, status_code=303)
 
 
 # ---- 3D replay ----
@@ -267,13 +393,27 @@ def match_replay3d(request: Request, match_id: int):
     row = db.get_match(match_id, user["steamid64"])       # access-scoped, like match_view
     if row is None:
         raise HTTPException(status_code=404)
+    map_asset = replay3d.map_asset_rel(row["map_name"])
+    # UNCOMPRESSED byte sizes for the loading progress bars: with
+    # Content-Encoding active, Content-Length is the compressed size while the
+    # page's stream reader counts decompressed bytes -- so the page needs the
+    # real denominators from us. 0 = unknown (bars fall back to indeterminate).
+    def _size(p):
+        try:
+            return p.stat().st_size
+        except OSError:
+            return 0
+    wasm_size = _size(WEB_DIR / "static" / "replay3d" / "pkg" / "viewer_bg.wasm")
+    map_size = _size(WEB_DIR / "static" / "replay3d" / "assets" / Path(map_asset)) if map_asset else 0
     return _page(request, "replay3d.html", {
         "user": user,
         "match_id": match_id,
         "map_name": row["map_name"] or "",
         "demo_name": row["original_filename"] or "match.dem",
         "has_replay": replay3d.has_replay(match_id),
-        "map_asset": replay3d.map_asset_rel(row["map_name"]),
+        "map_asset": map_asset,
+        "wasm_size": wasm_size,
+        "map_size": map_size,
     })
 
 

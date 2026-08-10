@@ -32,7 +32,17 @@
           <span class="tag warn" title="You weren't found in this demo &mdash; showing the uploader's spotlight">?</span>
         {% endif %}
       </td>
-      <td class="num"><a class="btn small" href="/matches/{{ m.id }}">View</a></td>
+      <td class="acts">
+        {% if m.has3d %}
+          <a class="btn small ghost" href="/matches/{{ m.id }}/3d"
+             title="{{ 'Watch this match in 3D on the real ' ~ m.map_name ~ ' geometry'
+                        if m.map3d else
+                        'Watch in 3D — ' ~ (m.map_name or 'this map') ~ " isn't converted yet, so it falls back to the flat radar" }}">
+            3D{% if not m.map3d %}<span class="tag warn" title="map geometry not converted yet">!</span>{% endif %}
+          </a>
+        {% endif %}
+        <a class="btn small" href="/matches/{{ m.id }}">View</a>
+      </td>
     </tr>
     {% endfor %}
   </tbody>
