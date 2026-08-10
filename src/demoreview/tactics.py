@@ -35,9 +35,19 @@ SIDE_OF = {2: "T", 3: "CT"}
 # per round so a future rate change doesn't silently rescale the analysis.
 TRADE_WINDOW_S = 4.0      # a kill this soon after a death counts as the trade
 TRADE_RANGE_U = 800.0     # ...and you had to be this close to have had a chance
-FLASH_CONVERT_S = 3.0     # enemy dies this soon after being blinded -> it worked
-EFFECTIVE_BLIND_S = 0.7   # below this a flash barely interrupts anything
+FLASH_CONVERT_S = 3.0     # someone dies this soon after being blinded -> the flash did it
 HOTSPOT_RADIUS_U = 450.0  # deaths inside this radius are "the same spot"
+
+# A CS2 `blind_duration` counts the whole effect including the fade-out tail, so
+# short values are a flicker nobody notices. This filter exists only to stop
+# those being called "blinded" -- it is NOT the metric. Measured over 932 team
+# blinds in this project's own matches, how long a teammate was blinded barely
+# predicts whether they then died (7.2% under 0.7 s, 7.8% at 0.7-1.5 s, 12.8% at
+# 1.5-2.5 s, 5.9% above that). Counting blinds therefore measures almost
+# nothing; counting what they COST measures the thing a player cares about,
+# which is why flash_assists / team_flash_cost below are the ranked numbers and
+# the blind counts are left as unranked context.
+REAL_BLIND_S = 1.5
 
 # Which way is up for each metric, for the lobby ranking. Anything absent is a
 # VOLUME stat with no inherent direction -- throwing the most flashes in the
@@ -56,10 +66,13 @@ BETTER = {
     "deaths_to_blinded_enemy": "low",
     "deaths_through_smoke": "low",
     "deaths_to_wallbang": "low",
-    "teammates_blinded": "low",
-    "team_blind_s": "low",
-    "bad_flash_pct": "low",
-    "flash_conversion_pct": "high",
+    # Utility is judged by what it did, not by how much of it happened: an
+    # assist is an enemy who was blinded and then died, a cost is a teammate who
+    # was. Raw blind counts and blind seconds are deliberately NOT ranked --
+    # see REAL_BLIND_S for the measurement that ruled them out.
+    "flash_assists": "high",
+    "flash_assist_pct": "high",
+    "team_flash_cost": "low",
     "rounds_died_with_no_util_thrown": "low",
 }
 
@@ -136,13 +149,13 @@ class _P:
         self.enemy_blind_s = 0.0
         self.team_blind_s = 0.0
         self.self_blind_s = 0.0
-        self.enemies_blinded = 0
+        self.enemies_blinded = 0      # blinded for REAL_BLIND_S or more
         self.mates_blinded = 0
-        self.flashes_converted = 0
+        self.flash_assists = 0        # ...and then died: the flash did something
+        self.team_flash_cost = 0      # ...and it was your own teammate
         self.rounds_no_util = 0       # died having thrown nothing that round
 
     def summary(self):
-        blind_total = self.enemy_blind_s + self.team_blind_s + self.self_blind_s
         return {
             "name": self.name,
             "rounds": self.rounds,
@@ -169,13 +182,15 @@ class _P:
                                 if self.rounds else None),
             "nades_by_type": dict(self.nades),
             "flashes_thrown": self.flashes,
+            # Context, not judgement: "blinded" here means REAL_BLIND_S or more.
             "enemies_blinded": self.enemies_blinded,
             "teammates_blinded": self.mates_blinded,
             "enemy_blind_s": round(self.enemy_blind_s, 1),
             "team_blind_s": round(self.team_blind_s + self.self_blind_s, 1),
-            "bad_flash_pct": _pct(round(self.team_blind_s + self.self_blind_s),
-                                  round(blind_total)) if blind_total else None,
-            "flash_conversion_pct": _pct(self.flashes_converted, self.flashes),
+            # What the utility actually did.
+            "flash_assists": self.flash_assists,
+            "flash_assist_pct": _pct(self.flash_assists, self.flashes),
+            "team_flash_cost": self.team_flash_cost,
             "rounds_died_with_no_util_thrown": self.rounds_no_util,
         }
 
@@ -391,27 +406,29 @@ def analyse(artifacts_dir, ref_sid):
                 continue
             pt.flashes += 1
             thrower_team = by_sid.get(thrower, {}).get("team")
-            converted = False
+            det = item.get("detSample", 0)
             for victim in item.get("affected", []):
                 vsid = victim.get("sid")
                 secs = float(victim.get("blindDuration") or 0.0)
                 if vsid == thrower:
                     pt.self_blind_s += secs
-                elif by_sid.get(vsid, {}).get("team") == thrower_team:
+                    continue
+                # Did being blinded actually end this player's round? That is
+                # the only part of a flash anyone can feel.
+                died = any(f["vic"] == vsid and 0 <= f["sample"] - det <= convert_win
+                           for f in events)
+                if by_sid.get(vsid, {}).get("team") == thrower_team:
                     pt.team_blind_s += secs
-                    if secs >= EFFECTIVE_BLIND_S:
+                    if secs >= REAL_BLIND_S:
                         pt.mates_blinded += 1
+                        if died:
+                            pt.team_flash_cost += 1
                 else:
                     pt.enemy_blind_s += secs
-                    if secs < EFFECTIVE_BLIND_S:
-                        continue
-                    pt.enemies_blinded += 1
-                    det = item.get("detSample", 0)
-                    if any(f["vic"] == vsid and 0 <= f["sample"] - det <= convert_win
-                           for f in events):
-                        converted = True
-            if converted:
-                pt.flashes_converted += 1
+                    if secs >= REAL_BLIND_S:
+                        pt.enemies_blinded += 1
+                        if died:
+                            pt.flash_assists += 1
 
         # Rounds a player died in without contributing utility. Not damning on
         # an eco -- the buy type lives in the 2D layer -- but the count is a

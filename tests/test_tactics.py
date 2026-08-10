@@ -28,20 +28,24 @@ DIRECTIONS = [
     ("deaths_to_blinded_enemy", 6, 0),             # losing to a flashed enemy
     ("deaths_through_smoke", 5, 0),
     ("deaths_to_wallbang", 4, 0),
-    ("teammates_blinded", 20, 1),                  # blinding your own team
-    ("team_blind_s", 70.0, 5.0),
-    ("bad_flash_pct", 80, 10),
-    ("flash_conversion_pct", 0, 50),               # flashes that led to a kill
+    ("flash_assists", 0, 6),                       # flashes that led to a kill
+    ("flash_assist_pct", 0, 25),
+    ("team_flash_cost", 5, 0),                     # ...that got a teammate killed
     ("rounds_died_with_no_util_thrown", 9, 0),
 ]
 
 # Counts with no inherent direction: throwing the most flashes in the server is
 # neither good nor bad, so they must stay UNRANKED -- "rank 1 of 10 in flashes
 # thrown" would read as praise for something that isn't an achievement.
+#
+# `teammates_blinded` / `team_blind_s` sit here deliberately, and it is the
+# whole point of this rewrite: measurement showed how long a teammate was
+# blinded barely predicts whether they died, so ranking it manufactured a
+# critical-looking problem out of noise. Only the outcome is ranked now.
 VOLUME_STATS = {
     "rounds", "opening_duels", "trade_chances", "trades_made",
     "median_enemy_dist_at_death_u", "nades_per_round", "flashes_thrown",
-    "enemies_blinded", "enemy_blind_s",
+    "enemies_blinded", "enemy_blind_s", "teammates_blinded", "team_blind_s",
 }
 
 
@@ -221,14 +225,32 @@ def test_summary_folds_self_blindness_into_team_blindness():
     p.team_blind_s = 6.0
     p.self_blind_s = 4.0
 
+    assert p.summary()["team_blind_s"] == 10.0        # 6 own + 4 self
+
+
+def test_utility_is_scored_by_outcome_not_by_volume():
+    """The point of the flash rewrite: assists and costs, not blind counts."""
+    p = tactics._P("1", "flasher")
+    p.flashes = 20
+    p.enemies_blinded = 12
+    p.mates_blinded = 9        # would have looked terrible under the old metric
+    p.flash_assists = 5
+    p.team_flash_cost = 1
+
     summary = p.summary()
 
-    assert summary["team_blind_s"] == 10.0            # 6 own + 4 self
-    assert summary["bad_flash_pct"] == 50             # 10 of 20 seconds wasted
+    assert summary["flash_assists"] == 5
+    assert summary["flash_assist_pct"] == 25          # 5 of 20 flashes
+    assert summary["team_flash_cost"] == 1
+    # The counts survive as context but must not be ranked.
+    assert summary["teammates_blinded"] == 9
+    assert "teammates_blinded" not in tactics.BETTER
+    assert "bad_flash_pct" not in summary
 
 
-def test_summary_counts_effective_blinds_not_flickers():
-    """EFFECTIVE_BLIND_S is what separates a real flash from a flicker."""
-    assert tactics.EFFECTIVE_BLIND_S == 0.7
+def test_window_constants():
+    """A flicker is not a flash, and a late kill is not caused by one."""
+    assert tactics.REAL_BLIND_S == 1.5
+    assert tactics.FLASH_CONVERT_S == 3.0
     assert tactics.TRADE_WINDOW_S == 4.0
     assert tactics.TRADE_RANGE_U == 800.0

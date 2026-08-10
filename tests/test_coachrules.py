@@ -38,7 +38,8 @@ def _you(**over):
         "deaths_to_wallbang": 0, "nades_per_round": 2.1,
         "nades_by_type": {"flash": 12, "smoke": 20}, "flashes_thrown": 12,
         "enemies_blinded": 9, "teammates_blinded": 3, "enemy_blind_s": 40.0,
-        "team_blind_s": 8.0, "bad_flash_pct": 17, "flash_conversion_pct": 33,
+        "team_blind_s": 8.0, "flash_assists": 3, "flash_assist_pct": 25,
+        "team_flash_cost": 0,
         "rounds_died_with_no_util_thrown": 2,
     })
     base.update(over)
@@ -95,8 +96,9 @@ def _everything_wrong():
         trades_made=1, trade_conversion_pct=7, median_isolation_u=1400,
         shots_per_kill=41.0, deaths_to_blinded_enemy=5, deaths_through_smoke=4,
         deaths_to_wallbang=3, flashes_thrown=28, teammates_blinded=23,
-        enemy_blind_s=30.0, team_blind_s=75.0, bad_flash_pct=71,
-        flash_conversion_pct=4, rounds_died_with_no_util_thrown=8,
+        enemy_blind_s=30.0, team_blind_s=75.0, enemies_blinded=6,
+        flash_assists=1, flash_assist_pct=4, team_flash_cost=5,
+        rounds_died_with_no_util_thrown=8,
     )
     rounds = _rounds()
     for row in rounds:
@@ -234,13 +236,46 @@ def test_severity_follows_the_position_in_the_lobby():
     assert coachrules._severity(6, 10) == "low"
 
 
-def test_teamflash_fires_on_a_bad_flash_share_even_at_a_decent_rank():
-    """Blinding your own team half the time is a problem at any rank."""
-    you = _you(teammates_blinded=14, team_blind_s=60.0, bad_flash_pct=62,
-               flashes_thrown=25, flash_conversion_pct=8)
-    facts = _facts(you=you, ranks={key: 4 for key in tactics.BETTER})
+def test_blinding_teammates_is_not_a_problem_unless_it_costs_something():
+    """The bug this rewrite exists for.
 
-    assert coachrules._rule_teamflash(facts, None) is not None
+    A player was told, as a CRITICAL finding, that he blinded 30 teammates in
+    one match. Exactly one of them died for it, and he had never had a single
+    complaint about his flashes in three years. Measurement backed him up: how
+    long a teammate is blinded barely predicts whether they die. So a pile of
+    blinded teammates with no deaths behind it must now say nothing at all.
+    """
+    you = _you(flashes_thrown=28, teammates_blinded=30, team_blind_s=75.0,
+               flash_assists=4, flash_assist_pct=14, team_flash_cost=0)
+    facts = _facts(you=you, ranks={key: 10 for key in tactics.BETTER})
+
+    assert coachrules._rule_teamflash(facts, None) is None
+    titles = [p["title"] for p in coachrules.build_report(facts)["problems"]]
+    assert not any("флешки" in t for t in titles), titles
+
+
+def test_a_flash_that_gets_teammates_killed_is_reported():
+    you = _you(flashes_thrown=25, teammates_blinded=12, team_flash_cost=4,
+               flash_assists=1, flash_assist_pct=4)
+    facts = _facts(you=you, ranks={"team_flash_cost": 10})
+
+    problem = coachrules._rule_teamflash(facts, None)
+
+    assert problem is not None
+    assert problem["severity"] == "high"
+    assert "4 раза" in problem["evidence"]
+
+
+def test_many_flashes_with_nothing_to_show_is_its_own_finding():
+    you = _you(flashes_thrown=28, flash_assists=1, flash_assist_pct=4,
+               enemies_blinded=6, team_flash_cost=0)
+    facts = _facts(you=you, ranks={"flash_assist_pct": 10})
+
+    problem = coachrules._rule_flash_no_impact(facts, None)
+
+    assert problem is not None
+    assert "28 флешек" in problem["evidence"]
+    assert problem["rounds"] == []          # a match-wide ratio cites no rounds
 
 
 # --------------------------------------------------------------------------- #
@@ -290,9 +325,9 @@ def test_at_most_three_problems_and_the_worst_comes_first():
 
 
 def test_the_drill_addresses_the_top_problem():
-    you = _you(teammates_blinded=25, team_blind_s=80.0, bad_flash_pct=74,
-               flashes_thrown=30, flash_conversion_pct=3)
-    facts = _facts(you=you, ranks={"teammates_blinded": 10, "bad_flash_pct": 10})
+    you = _you(flashes_thrown=30, teammates_blinded=25, team_flash_cost=5,
+               flash_assists=1, flash_assist_pct=3)
+    facts = _facts(you=you, ranks={"team_flash_cost": 10})
 
     report = coachrules.build_report(facts)
 

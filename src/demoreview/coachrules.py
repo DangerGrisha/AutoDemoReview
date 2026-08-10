@@ -28,11 +28,14 @@ WEIGHT = {
     "early_death": 100,
     "hotspot": 95,
     "opening_duels": 85,
-    "teamflash": 80,
     "isolation": 75,
+    # A flash that killed a teammate is worth saying; a flash that merely lit
+    # one up is not, and used to outrank real problems purely on volume.
+    "teamflash": 70,
     "no_trade": 60,
     "spray": 50,
     "no_util": 45,
+    "flash_no_impact": 40,
     "smoke_deaths": 30,
 }
 
@@ -155,33 +158,65 @@ def _rule_hotspot(facts, agg):
 
 
 def _rule_teamflash(facts, agg):
-    tb = _m(facts, "teammates_blinded")
-    bad = _m(facts, "bad_flash_pct")
+    """Fires on flashes that COST something, not on flashes that were noticed.
+
+    The old version counted every teammate who caught any of the light and
+    called 27 of them a critical problem. Measurement said that number predicts
+    nothing (see tactics.REAL_BLIND_S), and the player was right to distrust it:
+    in the match that reported 30 blinded teammates, exactly ONE of them died
+    for it. So the finding now needs real damage before it says a word.
+    """
+    cost = _m(facts, "team_flash_cost")
     you = facts["you"]
-    if not tb or (tb["rank"] < POOR_RANK and not (bad and bad["you"] >= 45)):
+    if not cost or cost["you"] < 2:
         return None
-    rounds = _worst_rounds(
-        facts, lambda r: (r.get("util") or []).count("flash") >= 2
-        and r.get("won") is False)
-    share = f" Это {bad['you']}% всего времени слепоты от твоих флешек." if bad else ""
+    if cost["rank"] < POOR_RANK and cost["you"] < 4:
+        return None
+    n = cost["you"]
     return {
         "code": "teamflash",
-        "title": "Твои флешки слепят команду не меньше, чем противника",
-        "severity": _severity(tb["rank"], tb["of"]),
-        "cause": "Флешки летят по прямой вместе с движением команды, а не за "
-                 "угол. Тиммейт, который идёт впереди тебя, попадает во "
-                 "вспышку раньше противника.",
-        "evidence": f"Ослеплено своих: {tb['you']} при медиане {tb['lobby_median']} "
-                    f"по лобби ({tb['rank']} место из {tb['of']}). Суммарная "
-                    f"слепота своих {you['team_blind_s']} с против "
-                    f"{you['enemy_blind_s']} с у противника.{share} "
-                    f"Флеш-ассистов при этом {you['flash_conversion_pct'] or 0}% "
-                    f"от {you['flashes_thrown']} брошенных флешек.",
-        "rounds": rounds,
-        "fix": "Перед броском проверяй, кто в 500 юнитах впереди тебя. Кидай "
-               "только из-за укрытия так, чтобы вспышка сработала за углом, вне "
-               "твоей линии взгляда и линии тиммейта. Лучше 1-2 флешки за раунд "
-               "под конкретный выход, чем пять на бегу.",
+        "title": "Твои флешки стоят тиммейтам жизни",
+        "severity": "high" if n >= 4 else "medium",
+        "cause": "Флешка срабатывает по ходу движения команды, а не за углом. "
+                 "Тиммейт, который идёт впереди, ловит вспышку первым и умирает "
+                 "ослеплённым.",
+        "evidence": f"{n} {_plu(n, 'раз', 'раза', 'раз')} тиммейт умирал в "
+                    f"течение 3 секунд после того, как твоя флешка ослепила его "
+                    f"минимум на 1.5 с (медиана по лобби {cost['lobby_median']}, "
+                    f"{cost['rank']} место из {cost['of']}). Всего ты бросил "
+                    f"{you['flashes_thrown']} {_plu(you['flashes_thrown'], 'флешку', 'флешки', 'флешек')}.",
+        "rounds": _worst_rounds(
+            facts, lambda r: (r.get("util") or []).count("flash") >= 1
+            and r.get("won") is False),
+        "fix": "Кидай из-за укрытия так, чтобы вспышка сработала за углом — вне "
+               "твоей линии взгляда и линии тиммейта. Если заходите вместе, "
+               "флешку бросает задний, а не идущий первым.",
+    }
+
+
+def _rule_flash_no_impact(facts, agg):
+    """Lots of flashes, nothing to show for them."""
+    m = _m(facts, "flash_assist_pct")
+    you = facts["you"]
+    if not m or m["rank"] < POOR_RANK or you["flashes_thrown"] < 10:
+        return None
+    return {
+        "code": "flash_no_impact",
+        "title": "Ты много флешишь, но толку от этого нет",
+        "severity": _severity(m["rank"], m["of"]),
+        "cause": "Флешки уходят «в никуда»: либо никто не заходит под них, либо "
+                 "они срабатывают раньше, чем команда готова выйти. Граната без "
+                 "захода за ней — это просто потраченные 200 долларов.",
+        "evidence": f"{you['flashes_thrown']} флешек за матч, "
+                    f"{you['flash_assists']} {_plu(you['flash_assists'], 'привёл', 'привели', 'привели')} "
+                    f"к убийству — это {m['you']}% против {m['lobby_median']}% по "
+                    f"лобби ({m['rank']} место из {m['of']}). Противник был "
+                    f"реально ослеплён {you['enemies_blinded']} "
+                    f"{_plu(you['enemies_blinded'], 'раз', 'раза', 'раз')}.",
+        "rounds": [],
+        "fix": "Договаривайся на заход: флешка бросается ПОД конкретный выход, и "
+               "кто-то идёт за ней в первую же секунду. Одна флешка с заходом "
+               "полезнее пяти брошенных «на всякий случай».",
     }
 
 
@@ -336,9 +371,9 @@ def _rule_smoke_deaths(facts, agg):
     }
 
 
-RULES = (_rule_early_death, _rule_hotspot, _rule_teamflash, _rule_opening_duels,
-         _rule_isolation, _rule_no_trade, _rule_spray, _rule_no_util,
-         _rule_smoke_deaths)
+RULES = (_rule_early_death, _rule_hotspot, _rule_teamflash, _rule_flash_no_impact,
+         _rule_opening_duels, _rule_isolation, _rule_no_trade, _rule_spray,
+         _rule_no_util, _rule_smoke_deaths)
 
 # One drill per failure mode, so the report ends on something to actually do.
 DRILLS = {
@@ -354,7 +389,11 @@ DRILLS = {
                   "бросков на каждый стандартный выход. Бросок из-за укрытия, "
                   "вспышка срабатывает за углом, ты в этот момент спиной к ней, "
                   "заход через полсекунды.",
-                  "Ослеплённых своих не больше 5 за матч и минимум 3 флеш-ассиста."),
+                  "Ни одной смерти тиммейта под твоей флешкой."),
+    "flash_no_impact": ("Флешка под заход", "Отработай связку на трёх выходах "
+                        "карты: бросок — и через полсекунды кто-то заходит. В "
+                        "матче не кидай флешку, если под неё никто не идёт.",
+                        "Флеш-ассистов не меньше 15% от брошенных флешек."),
     "opening_duels": ("Вход по утилите", "Отработай связку «флешка — заход» на "
                       "трёх выходах карты. Правило в матче: нет флешки — нет "
                       "первого контакта.",
@@ -391,8 +430,8 @@ def _strengths(facts):
          "по игре в связке"),
         ("trade_conversion_pct",
          f"конверсия разменов {you['trade_conversion_pct']}%", "по разменам"),
-        ("flash_conversion_pct",
-         f"конверсия флешек {you['flash_conversion_pct']}%", "по флешкам"),
+        ("flash_assist_pct",
+         f"{you['flash_assists']} флеш-ассистов", "по пользе от флешек"),
         ("untraded_death_pct",
          f"неразменянных смертей {you['untraded_death_pct']}%", "по разменянности смертей"),
     ]
