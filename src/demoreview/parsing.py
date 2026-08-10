@@ -12,7 +12,7 @@ from . import stats
 from . import replay as replay_mod
 from . import grenades as grenades_mod
 from . import analysis as analysis_mod
-from .parseutil import event_df
+from .parseutil import CT_NUM, SIDE_OF, T_NUM, event_df, side_name
 
 try:
     import pandas as pd
@@ -23,9 +23,8 @@ except ImportError:
         "Activate your venv and run:  pip install -r requirements.txt"
     )
 
-# In CS2 demos team_num 2 == Terrorists, 3 == Counter-Terrorists.
-T_NUM, CT_NUM = 2, 3
-SIDE_OF = {CT_NUM: "CT", T_NUM: "T"}
+# T_NUM / CT_NUM / SIDE_OF come from parseutil so grenades.py can share them
+# without an import cycle; re-exported here because this module's callers use them.
 
 # Buy-type thresholds on a player's equipment value ($). Heuristic: a full rifle
 # buy (rifle + armour + a little utility) lands around $3.5k+, a force/half buy
@@ -509,6 +508,11 @@ def collect(parser, highlight, rival, highlight_sid=None):
                     "victim_is_me": victim_is_me,
                     "killer_sid": a_steam,
                     "victim_sid": v_steam,
+                    # Which side each dot belongs to, so the heatmap can be read
+                    # one side at a time -- CT and T mistakes are different
+                    # mistakes, and averaging them hides both.
+                    "killer_side": side_name(a_side),
+                    "victim_side": side_name(v_side),
                 })
                 if attacker_is_me:
                     my_kills += 1

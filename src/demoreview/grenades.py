@@ -8,7 +8,7 @@ in lockstep with the players. Returns None if the map is unsupported.
 """
 
 from . import maps
-from .parseutil import event_df
+from .parseutil import event_df, side_name
 from .replay import STEP, TICKRATE
 
 # Projectile entity class -> our normalized grenade type. Incendiary and molotov
@@ -144,6 +144,9 @@ def build_grenades(parser, map_name, freeze_ticks, end_ticks,
 
             map_out.append({
                 "t": d["type"], "me": d["sid"] == ref_sid, "round": r,
+                # The thrower's side, so the map's CT/T filter also applies to
+                # utility instead of leaving grenades from both sides on screen.
+                "side": side_name(roster.get(d["sid"])),
                 "ox": round(oxp, 1), "oy": round(oyp, 1),
                 "dx": round(dxp, 1), "dy": round(dyp, 1),
             })

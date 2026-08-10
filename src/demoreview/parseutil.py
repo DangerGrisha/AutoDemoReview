@@ -9,6 +9,19 @@ try:
 except ImportError:                      # parsing.py reports this properly
     pd = None
 
+# In CS2 demos team_num 2 == Terrorists, 3 == Counter-Terrorists. Anything else
+# (0/1) is unassigned or spectating, which is not a side you can play a round on.
+T_NUM, CT_NUM = 2, 3
+SIDE_OF = {CT_NUM: "CT", T_NUM: "T"}
+
+
+def side_name(team_num):
+    """'CT' / 'T' for a raw team_num, or None when it isn't a playing side."""
+    try:
+        return SIDE_OF.get(int(team_num))
+    except (TypeError, ValueError):       # None, NaN, a stray string
+        return None
+
 
 def event_df(parser, name, **kwargs):
     """`parser.parse_event(...)` normalised to a DataFrame, or None.
