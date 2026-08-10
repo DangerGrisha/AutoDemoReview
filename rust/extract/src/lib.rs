@@ -118,7 +118,7 @@ pub struct GrenadeRow {
     pub z: Option<f64>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct KillEvent {
     pub tick: i64,
     pub attacker_name: Option<String>,
@@ -126,6 +126,25 @@ pub struct KillEvent {
     pub attacker_team: Option<i64>,
     pub total_rounds_played: i64,
     pub is_warmup: bool,
+    // player_death enrichment for the kill feed; defaults = "plain kill"
+    /// Event weapon name (internal, e.g. "ak47"); mapped to a display tag by
+    /// weapons::event_weapon_tag when building the manifest.
+    pub weapon: Option<String>,
+    pub headshot: bool,
+    /// Wallbang (the event carries a penetration count; true when > 0).
+    pub penetrated: bool,
+    pub thrusmoke: bool,
+    pub attackerblind: bool,
+    pub noscope: bool,
+}
+
+/// A `weapon_fire` event: tick + shooter steamid. The weapon isn't carried here —
+/// it's read from the shooter's own track at build time, so bullet/grenade
+/// classification depends only on the (reliable) shooter id, not the event field.
+#[derive(Clone, Debug)]
+pub struct FireEvent {
+    pub tick: i64,
+    pub sid: String,
 }
 
 /// `round_freeze_end` with the total_rounds_played enrichment (None when the
@@ -143,6 +162,36 @@ pub struct EndEvent {
     pub winner: Option<String>,
 }
 
+/// What happened to the C4. The plant starts the 40 s fuse; the round's bomb
+/// story ends with exactly one of Defused / Exploded (or neither, when the CTs
+/// were wiped and the round ended on the timer with the bomb still ticking).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BombKind {
+    Planted,
+    Defused,
+    Exploded,
+}
+
+/// One C4 lifecycle event. `site` is the bombsite letter when the demo carries
+/// it in a form we can read ("A"/"B"), else None — the viewer just omits it.
+#[derive(Clone, Debug)]
+pub struct BombEvent {
+    pub tick: i64,
+    pub kind: BombKind,
+    pub site: Option<String>,
+}
+
+/// One round's C4 story in TICKS (the tick -> sample conversion belongs to
+/// manifest.rs, which owns each round's start/stride). `end_*` is None when the
+/// round ended with the bomb still ticking (CTs wiped, time ran out).
+#[derive(Clone, Debug)]
+pub struct BombRound {
+    pub plant_tick: i64,
+    pub site: Option<String>,
+    pub end_tick: Option<i64>,
+    pub end_kind: Option<BombKind>,
+}
+
 /// The demo access surface (mirrors the demoparser2 calls replay3d.py makes).
 pub trait DemoSource {
     fn map_name(&mut self) -> Result<String>;
@@ -156,6 +205,16 @@ pub trait DemoSource {
     fn blind_events(&mut self) -> Result<Vec<BlindEvent>>;
     fn grenade_rows(&mut self) -> Result<Vec<GrenadeRow>>;
     fn kill_events(&mut self) -> Result<Vec<KillEvent>>;
+    /// `weapon_fire` events (tick + shooter steamid). Default empty so simple /
+    /// test sources need not implement it.
+    fn fire_events(&mut self) -> Result<Vec<FireEvent>> {
+        Ok(Vec::new())
+    }
+    /// C4 plant/defuse/explode events. Default empty so simple / test sources
+    /// need not implement it (their manifests then carry no `bomb` key).
+    fn bomb_events(&mut self) -> Result<Vec<BombEvent>> {
+        Ok(Vec::new())
+    }
     /// Round events with the fields `segment_rounds` pairs on. The default
     /// falls back to bare ticks (no enrichment) for simple/test sources.
     fn round_events(&mut self) -> Result<(Vec<FreezeEvent>, Vec<EndEvent>)> {
@@ -181,6 +240,12 @@ pub struct Meta3d {
     pub sample_rate: f64,
     pub n_rounds: usize,
     pub map_supported: bool,
+    /// Per-round winner ("CT"/"T"), index-aligned with the returned rounds.
+    /// None for sources without round_end enrichment (synthetic fixtures).
+    pub winners: Vec<Option<String>>,
+    /// Per-round C4 story, index-aligned with the rounds. None = never planted
+    /// (or a source that doesn't report bomb events).
+    pub bombs: Vec<Option<BombRound>>,
 }
 
 // --------------------------------------------------------------------------- //
@@ -215,6 +280,16 @@ pub fn norm_type(raw: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// True for a weapon-table tag that fires a bullet (so it gets a shot tracer).
+/// `weapon_fire` also fires for grenades / knife / zeus / c4-plant; those tags
+/// (from `weapons::weapon_tag`) are excluded, as is the empty "none" tag.
+pub fn is_bullet_weapon_tag(tag: &str) -> bool {
+    !matches!(
+        tag,
+        "" | "HE" | "FLASH" | "SMOKE" | "MOLLY" | "INC" | "DECOY" | "🔪" | "💣"
+    )
 }
 
 /// flash_duration seconds -> 0..255 byte (255 ~= 5.1 s). Python banker's rounding.
@@ -600,6 +675,8 @@ pub fn build_replay3d_hz(
 
     let utility_by_round =
         extract_utility(source, &freeze_ticks, &end_ticks, stride, tickrate);
+    // all weapon_fire events (tick + shooter sid); binned into rounds below.
+    let fire_events = source.fire_events().unwrap_or_default();
 
     let mut models = Vec::with_capacity(n_rounds);
     for i in 0..n_rounds {
@@ -684,6 +761,34 @@ pub fn build_replay3d_hz(
             });
         }
 
+        // shot tracers: weapon_fire events in this round -> (fractional sample,
+        // slot), keeping only bullet weapons (the shooter's held weapon at that
+        // sample, read from the track — so we never rely on the event's weapon
+        // field). The viewer reconstructs the muzzle ray from the shooter's pose.
+        let sid_to_slot: HashMap<&str, usize> =
+            slots.iter().enumerate().map(|(k, s)| (s.as_str(), k)).collect();
+        let mut shots: Vec<Value> = Vec::new();
+        for fe in &fire_events {
+            if fe.tick < freeze || fe.tick > end_ticks[i] {
+                continue;
+            }
+            let slot = match sid_to_slot.get(fe.sid.as_str()) {
+                Some(&s) => s,
+                None => continue,
+            };
+            let s = (fe.tick - freeze) as f64 / stride as f64;
+            let samp = (s.floor().max(0.0) as usize).min(n.saturating_sub(1));
+            let widx = tracks[slot].weapon.get(samp).copied().unwrap_or(255) as usize;
+            let tag = wi.table.get(widx).map(String::as_str).unwrap_or("");
+            if !is_bullet_weapon_tag(tag) {
+                continue;
+            }
+            let mut m = Map::new();
+            m.insert("s".into(), jnum_f(s));
+            m.insert("p".into(), Value::from(slot as i64));
+            shots.push(Value::Object(m));
+        }
+
         models.push(RoundModel {
             map: map_name.clone(),
             round: (i + 1) as i64,
@@ -697,8 +802,45 @@ pub fn build_replay3d_hz(
             weapon_table: wi.table,
             utility: utility_by_round[i].clone(),
             tracks,
+            shots,
         });
     }
+
+    // Per-round winner, looked up by the round's end tick (segment_rounds kept
+    // only real-winner ends when the source is enriched, so the tick is unique).
+    let winner_by_tick: HashMap<i64, &str> = ends
+        .iter()
+        .filter_map(|e| e.winner.as_deref().map(|w| (e.tick, w)))
+        .collect();
+    let winners: Vec<Option<String>> = end_ticks
+        .iter()
+        .map(|t| winner_by_tick.get(t).map(|w| w.to_string()))
+        .collect();
+
+    // Per-round C4 story: the first plant inside the round, then the defuse or
+    // explosion that closes it. The closing event is allowed slightly past the
+    // round_end tick — an explosion IS what ends the round, and the two land on
+    // neighbouring ticks in some demos.
+    let bomb_events = source.bomb_events().unwrap_or_default();
+    let bombs: Vec<Option<BombRound>> = (0..n_rounds)
+        .map(|i| {
+            let (start, end) = (freeze_ticks[i], end_ticks[i]);
+            let plant = bomb_events
+                .iter()
+                .find(|b| b.kind == BombKind::Planted && b.tick >= start && b.tick <= end)?;
+            let closing = bomb_events.iter().find(|b| {
+                matches!(b.kind, BombKind::Defused | BombKind::Exploded)
+                    && b.tick >= plant.tick
+                    && b.tick <= end + 2 * tickrate
+            });
+            Some(BombRound {
+                plant_tick: plant.tick,
+                site: plant.site.clone(),
+                end_tick: closing.map(|b| b.tick),
+                end_kind: closing.map(|b| b.kind),
+            })
+        })
+        .collect();
 
     let meta = Meta3d {
         map: map_name.clone(),
@@ -707,6 +849,8 @@ pub fn build_replay3d_hz(
         sample_rate,
         n_rounds,
         map_supported: mapscal::map_info(&map_name).is_some(),
+        winners,
+        bombs,
     };
     Ok((models, meta))
 }

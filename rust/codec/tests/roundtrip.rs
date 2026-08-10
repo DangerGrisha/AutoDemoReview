@@ -119,6 +119,7 @@ fn make_model(n: usize, tracks: Vec<Track>) -> RoundModel {
                              "detTick": 1150, "throwSample": 25, "detSample": 37,
                              "pos": [100.0, 200.0, -150.0], "radius": 144, "duration": 18.0})],
         tracks,
+        shots: Vec::new(),
     }
 }
 

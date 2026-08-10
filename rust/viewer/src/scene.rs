@@ -7,13 +7,25 @@ use bevy::prelude::*;
 use c2r3::DecodedRound;
 use serde_json::Value;
 
+use bevy::animation::graph::{AnimationGraph, AnimationNodeIndex};
+use bevy::asset::RenderAssetUsages;
 use bevy::gltf::{GltfAssetLabel, GltfLoaderSettings};
 
 use crate::coords::{radar_ground_rect, world_to_scene, Calibration};
-use crate::state::{GreyboxTag, ManifestData, MapTag, PlayerBody, PlayerNose};
+use crate::state::{GreyboxTag, ManifestData, MapTag, PlayerBody};
 use crate::util::hex_color;
 
-pub const CAP_H: f32 = 0.35 * 2.0 + 1.0; // capsule total height (r 0.35, cylinder 1.0)
+pub const CAP_H: f32 = 0.35 * 2.0 + 1.0; // player height reference (also label anchor)
+
+// --- humanoid player model (Soldier.glb: Mixamo rig, clips Idle/Run/TPose/Walk) ---
+pub const MODEL_PATH: &str = "models/player.glb";
+/// Soldier.glb stands 1.832 units tall; scale to ~CAP_H (1.7). Tunable.
+pub const MODEL_SCALE: f32 = 0.93;
+/// The model's bind-pose forward vs our yaw (+X at yaw 0). Calibrated visually.
+pub const MODEL_YAW_OFFSET: f32 = -std::f32::consts::FRAC_PI_2;
+/// Locomotion speed thresholds (Source units/sec) for idle->walk->run.
+pub const WALK_SPEED: f64 = 25.0;
+pub const RUN_SPEED: f64 = 150.0;
 
 pub fn parse_manifest(json: &str) -> Result<ManifestData, String> {
     let v: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
@@ -169,6 +181,9 @@ pub fn spawn_map(commands: &mut Commands, asset_server: &AssetServer, m: &Manife
             s.load_cameras = false;
             s.load_lights = false;
             s.load_animations = false;
+            // GPU-only meshes: nothing CPU-reads the map (no raycasts/picking),
+            // so drop the default MAIN_WORLD copy — halves map mesh memory.
+            s.load_meshes = RenderAssetUsages::RENDER_WORLD;
         })
         .load(GltfAssetLabel::Scene(0).from_asset(path));
     commands.spawn((
@@ -227,40 +242,55 @@ mod hidden_material_tests {
     }
 }
 
-/// Spawn the per-round player entities (body capsule + nose cone), team-colored.
-pub fn spawn_players(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-    m: &ManifestData,
-    dec: &DecodedRound,
+/// Handles for the shared humanoid player model + its animation graph. Built once
+/// at startup; the glTF scene + clips load asynchronously.
+#[derive(Resource, Clone)]
+pub struct PlayerModel {
+    pub scene: Handle<WorldAsset>,
+    pub graph: Handle<AnimationGraph>,
+    pub idle: AnimationNodeIndex,
+    pub walk: AnimationNodeIndex,
+    pub run: AnimationNodeIndex,
+}
+
+/// Startup: load the character scene + Idle/Walk/Run clips into one AnimationGraph.
+pub fn setup_player_model(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
 ) {
-    let body_mesh = meshes.add(Capsule3d::new(0.35, 1.0));
-    let nose_mesh = meshes.add(Cone { radius: 0.18, height: 0.5 });
-    for (slot, player) in dec.players.iter().enumerate() {
-        let color = m
-            .team_colors
-            .get(&player.team)
-            .copied()
-            .unwrap_or(Color::srgb_u8(0xcc, 0xcc, 0xcc));
-        let mat = materials.add(StandardMaterial {
-            base_color: color,
-            perceptual_roughness: 0.7,
-            ..default()
-        });
-        commands.spawn((
-            Mesh3d(body_mesh.clone()),
-            MeshMaterial3d(mat.clone()),
-            Transform::default(),
-            Visibility::Hidden,
-            PlayerBody { slot },
-        ));
-        commands.spawn((
-            Mesh3d(nose_mesh.clone()),
-            MeshMaterial3d(mat),
-            Transform::default(),
-            Visibility::Hidden,
-            PlayerNose { slot },
-        ));
+    let scene = asset_server.load(GltfAssetLabel::Scene(0).from_asset(MODEL_PATH));
+    // Soldier.glb clip order: 0 Idle, 1 Run, 2 TPose, 3 Walk.
+    let idle_clip = asset_server.load(GltfAssetLabel::Animation(0).from_asset(MODEL_PATH));
+    let run_clip = asset_server.load(GltfAssetLabel::Animation(1).from_asset(MODEL_PATH));
+    let walk_clip = asset_server.load(GltfAssetLabel::Animation(3).from_asset(MODEL_PATH));
+    let mut graph = AnimationGraph::new();
+    let idle = graph.add_clip(idle_clip, 1.0, graph.root);
+    let walk = graph.add_clip(walk_clip, 1.0, graph.root);
+    let run = graph.add_clip(run_clip, 1.0, graph.root);
+    let graph = graphs.add(graph);
+    commands.insert_resource(PlayerModel { scene, graph, idle, walk, run });
+}
+
+/// Spawn one humanoid model per player slot. The `PlayerBody` parent carries the
+/// per-frame pose (translation + yaw, set in `update_players`); the `WorldAssetRoot`
+/// child carries the fixed model scale + forward offset. Team tint and animation are
+/// wired post-load once the scene's meshes / `AnimationPlayer` appear (see lib.rs).
+pub fn spawn_players(commands: &mut Commands, model: &PlayerModel, dec: &DecodedRound) {
+    let child = Transform::from_scale(Vec3::splat(MODEL_SCALE))
+        .with_rotation(Quat::from_rotation_y(MODEL_YAW_OFFSET));
+    for slot in 0..dec.players.len() {
+        commands
+            .spawn((Transform::default(), Visibility::Hidden, PlayerBody { slot }))
+            .with_children(|p| {
+                p.spawn((WorldAssetRoot(model.scene.clone()), child));
+                // chest weapon mount: weapons_viz swaps the held kit under it
+                p.spawn((
+                    Transform::from_translation(crate::weapons_viz::MOUNT_POS)
+                        .with_scale(Vec3::splat(crate::weapons_viz::THIRD_SCALE)),
+                    Visibility::Inherited,
+                    crate::weapons_viz::WeaponMount { slot, current: None },
+                ));
+            });
     }
 }

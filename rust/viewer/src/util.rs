@@ -1,7 +1,10 @@
 //! Utility (smoke / molotov / HE / flash / decoy) visuals + throw tracers.
-//! All constants ported 1:1 from the Three.js template in build3d_app.py; every
-//! item's on-screen state is recomputed from the playback clock each frame so
-//! arbitrary scrubbing stays correct. Meshes are built once per round load.
+//! Smokes are churning multi-puff volumes, molotovs are flickering flame beds,
+//! and HE/flash pops are an expanding core plus a ground shockwave — every item's
+//! on-screen state is recomputed from the playback clock each frame so arbitrary
+//! scrubbing stays correct. Meshes are built once per round load. Players render
+//! x-ray on top of all of this (see lib.rs), so even a dense smoke never hides
+//! them — you see everyone through it, like a demo with wallhack.
 
 use bevy::prelude::*;
 use serde_json::Value;
@@ -15,6 +18,11 @@ pub const UTIL_COLORS: &[(&str, &str)] = &[
     ("he", "#ff5040"),
     ("decoy", "#9aa4b2"),
 ];
+
+/// Soft puffs per smoke cloud (golden-angle scattered into a ball, then churned).
+const SMOKE_PUFFS: usize = 12;
+/// Flame tongues per molotov fire bed.
+const MOLOTOV_FLAMES: usize = 15;
 
 pub fn util_color(kind: &str) -> Color {
     let hex = UTIL_COLORS
@@ -33,7 +41,8 @@ pub fn hex_color(hex: &str) -> Color {
 
 pub enum UtilKind {
     Smoke {
-        mesh: Entity,
+        /// individual puff spheres making up the volume
+        puffs: Vec<Entity>,
         /// grow window in samples: max(1, 1.2*rate)
         grow: f64,
     },
@@ -41,9 +50,11 @@ pub enum UtilKind {
         disc: Entity,
         flames: Vec<Entity>,
     },
-    /// HE and flash detonation pops share the same expand+fade behavior.
+    /// HE and flash detonation pops: an expanding core sphere, plus (HE only) a
+    /// flat ground shockwave ring that races outward and fades.
     Burst {
         mesh: Entity,
+        ring: Option<Entity>,
         scale: f32,
         base: f32,
     },
@@ -67,7 +78,25 @@ pub struct UtilItem {
     pub s1: f64,
     /// radius * SCENE_SCALE (meaning varies slightly per kind, as in the template)
     pub r_s: f32,
+    /// scene-space detonation center — the anchor puffs/ring animate around
+    pub pos: Vec3,
     pub tracer: Option<Tracer>,
+}
+
+/// Deterministic golden-angle point on the UNIT sphere (no RNG, reproducible
+/// across scrubs). Smoke puffs are laid on a shell of radius 0.5*r_s and drawn
+/// 0.5*r_s across, so the cloud's outer radius is exactly r_s (CS 1:1) and the
+/// big puffs overlap into one coherent mass rather than distinct balloons.
+pub fn puff_offset(i: usize, n: usize) -> Vec3 {
+    let y = 1.0 - 2.0 * (i as f32 + 0.5) / n as f32; // -1 .. 1
+    let r = (1.0 - y * y).max(0.0).sqrt();
+    let theta = 2.399_963_2 * i as f32; // golden angle (radians)
+    Vec3::new(r * theta.cos(), y, r * theta.sin())
+}
+
+/// Per-puff / per-flame animation phase so neighbours churn out of sync.
+pub fn wobble_phase(i: usize) -> f32 {
+    i as f32 * 1.7
 }
 
 fn f(v: &Value, key: &str) -> Option<f64> {
@@ -109,20 +138,28 @@ pub fn build_util_item(
 
     let mut item = match utype {
         "smoke" => {
-            let mesh = commands
-                .spawn((
-                    Mesh3d(meshes.add(Sphere::new(1.0))),
-                    MeshMaterial3d(materials.add(blend(hex_color("#d6dae1"), false, false))),
-                    Transform::from_translation(p + Vec3::Y * (r_s * 0.55)).with_scale(Vec3::ZERO),
-                    Visibility::Hidden,
-                    crate::state::UtilTag,
-                ))
-                .id();
+            // a dozen lit puffs; each gets its own material so they can vary alpha
+            // independently as the cloud churns.
+            let mut puffs = Vec::with_capacity(SMOKE_PUFFS);
+            for _ in 0..SMOKE_PUFFS {
+                puffs.push(
+                    commands
+                        .spawn((
+                            Mesh3d(meshes.add(Sphere::new(1.0))),
+                            MeshMaterial3d(materials.add(blend(hex_color("#d9dde4"), false, false))),
+                            Transform::from_translation(p).with_scale(Vec3::ZERO),
+                            Visibility::Hidden,
+                            crate::state::UtilTag,
+                        ))
+                        .id(),
+                );
+            }
             UtilItem {
-                kind: UtilKind::Smoke { mesh, grow: (1.2 * rate).max(1.0) },
+                kind: UtilKind::Smoke { puffs, grow: (1.2 * rate).max(1.0) },
                 s0,
                 s1: s0 + (dur_s * rate).max(1.0),
                 r_s,
+                pos: p,
                 tracer: None,
             }
         }
@@ -130,7 +167,7 @@ pub fn build_util_item(
             let disc = commands
                 .spawn((
                     Mesh3d(meshes.add(Circle::new(1.0))),
-                    MeshMaterial3d(materials.add(blend(hex_color("#ff6a1a"), true, true))),
+                    MeshMaterial3d(materials.add(blend(hex_color("#ff7a1e"), true, true))),
                     Transform::from_translation(p + Vec3::Y * 0.03)
                         .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
                         .with_scale(Vec3::splat(r_s.max(0.1))),
@@ -138,17 +175,20 @@ pub fn build_util_item(
                     crate::state::UtilTag,
                 ))
                 .id();
-            let mut flames = Vec::with_capacity(7);
-            for k in 0..7 {
-                let a = k as f32 / 7.0 * 6.2832;
-                let rr = r_s * 0.5;
+            // flame tongues scattered across the fire bed (golden angle so they
+            // spread evenly), a mix of yellow cores and orange bodies.
+            let mut flames = Vec::with_capacity(MOLOTOV_FLAMES);
+            for k in 0..MOLOTOV_FLAMES {
+                let a = 2.399_963_2 * k as f32;
+                let rr = r_s * (0.12 + 0.82 * ((k as f32 + 0.5) / MOLOTOV_FLAMES as f32).sqrt());
+                let col = if k % 3 == 0 { "#ffd24a" } else { "#ff6a1a" };
                 flames.push(
                     commands
                         .spawn((
-                            Mesh3d(meshes.add(Cone { radius: 0.22, height: 1.0 })),
-                            MeshMaterial3d(materials.add(blend(hex_color("#ff9a2a"), true, false))),
+                            Mesh3d(meshes.add(Cone { radius: 0.17, height: 1.0 })),
+                            MeshMaterial3d(materials.add(blend(hex_color(col), true, false))),
                             Transform::from_translation(
-                                p + Vec3::new(a.cos() * rr, 0.4, a.sin() * rr),
+                                p + Vec3::new(a.cos() * rr, 0.35, a.sin() * rr),
                             ),
                             Visibility::Hidden,
                             crate::state::UtilTag,
@@ -161,6 +201,7 @@ pub fn build_util_item(
                 s0,
                 s1: s0 + (dur_s * rate).max(1.0),
                 r_s,
+                pos: p,
                 tracer: None,
             }
         }
@@ -168,17 +209,30 @@ pub fn build_util_item(
             let mesh = commands
                 .spawn((
                     Mesh3d(meshes.add(Sphere::new(1.0))),
-                    MeshMaterial3d(materials.add(blend(hex_color("#ffb060"), true, false))),
+                    MeshMaterial3d(materials.add(blend(hex_color("#ffd08a"), true, false))),
                     Transform::from_translation(p + Vec3::Y * (r_s * 0.3)).with_scale(Vec3::ZERO),
                     Visibility::Hidden,
                     crate::state::UtilTag,
                 ))
                 .id();
+            // ground shockwave ring: a flat annulus that expands fast and fades.
+            let ring = commands
+                .spawn((
+                    Mesh3d(meshes.add(Annulus::new(0.74, 1.0))),
+                    MeshMaterial3d(materials.add(blend(hex_color("#ffe0a0"), true, true))),
+                    Transform::from_translation(p + Vec3::Y * 0.05)
+                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2))
+                        .with_scale(Vec3::ZERO),
+                    Visibility::Hidden,
+                    crate::state::UtilTag,
+                ))
+                .id();
             UtilItem {
-                kind: UtilKind::Burst { mesh, scale: r_s * 0.5, base: 0.7 },
+                kind: UtilKind::Burst { mesh, ring: Some(ring), scale: r_s * 0.6, base: 0.85 },
                 s0,
-                s1: s0 + (0.45 * rate).max(1.0),
+                s1: s0 + (0.5 * rate).max(1.0),
                 r_s,
+                pos: p,
                 tracer: None,
             }
         }
@@ -193,10 +247,11 @@ pub fn build_util_item(
                 ))
                 .id();
             UtilItem {
-                kind: UtilKind::Burst { mesh, scale: 1.1, base: 0.95 },
+                kind: UtilKind::Burst { mesh, ring: None, scale: 1.1, base: 0.95 },
                 s0,
                 s1: s0 + (0.25 * rate).max(1.0),
                 r_s,
+                pos: p,
                 tracer: None,
             }
         }
@@ -215,6 +270,7 @@ pub fn build_util_item(
                 s0,
                 s1: s0 + (dur_s * rate).max(1.0),
                 r_s,
+                pos: p,
                 tracer: None,
             }
         }

@@ -9,18 +9,24 @@ mod orbit;
 mod scene;
 mod state;
 mod util;
+mod weapons_viz;
 
 pub use coords::*;
 
+use bevy::animation::graph::AnimationGraphHandle;
+use bevy::animation::transition::AnimationTransitions;
+use bevy::animation::AnimationPlayer;
 use bevy::asset::AssetMetaCheck;
+use bevy::camera::visibility::RenderLayers;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::gltf::{GltfMaterialExtras, GltfMaterialName};
 use bevy::prelude::*;
+use std::time::Duration;
 use wasm_bindgen::prelude::*;
 
 use state::{
-    ang_lerp, lerp, push_control, sample_pos, ControlMsg, GreyboxTag, MapTag, PlayerBody,
-    PlayerNose, RoundState, UtilTag, Viewer, QUEUE,
+    ang_lerp, lerp, push_control, sample_pos, CamMode, ControlMsg, GreyboxTag, MainCam, MapTag,
+    PlayerAnimSlot, PlayerBody, RoundState, ShotViz, UtilTag, Viewer, XrayCam, QUEUE,
 };
 use util::{tracer_frame, util_frame, UtilKind};
 
@@ -41,6 +47,7 @@ pub fn run(canvas_selector: String, asset_root: Option<String>) {
         .insert_resource(Viewer::default())
         .insert_resource(orbit::OrbitCam::default())
         .insert_resource(LabelsOut::default())
+        .insert_resource(PlayerPoses::default())
         .insert_resource(TracersOut::default())
         .add_plugins(
             DefaultPlugins
@@ -60,7 +67,11 @@ pub fn run(canvas_selector: String, asset_root: Option<String>) {
                     ..default()
                 }),
         )
-        .add_systems(Startup, setup)
+        .init_gizmo_group::<TracerGizmos>()
+        .add_systems(
+            Startup,
+            (setup, scene::setup_player_model, setup_tracer_gizmos, weapons_viz::setup_weapon_assets),
+        )
         .add_systems(
             Update,
             (
@@ -68,13 +79,26 @@ pub fn run(canvas_selector: String, asset_root: Option<String>) {
                 advance_clock,
                 update_players,
                 update_utility,
+                draw_tracers,
                 draw_grid,
                 orbit::orbit_camera,
+                spectator_camera,
+                sync_xray_camera,
                 report_frame,
             )
                 .chain(),
         )
-        .add_systems(Update, hide_tool_brushes)
+        .add_systems(
+            Update,
+            (
+                hide_tool_brushes,
+                setup_player_anim,
+                drive_player_anim,
+                tint_players,
+                weapons_viz::update_weapon_mounts,
+                weapons_viz::update_viewmodel,
+            ),
+        )
         .run();
 }
 
@@ -121,11 +145,38 @@ pub fn set_map_visible(on: bool) {
     push_control(ControlMsg::SetShowMap(on));
 }
 
+/// Spectate a player: lock the camera to `slot`'s POV, first-person (through their
+/// eyes) when `first_person`, otherwise a third-person chase cam behind them.
+#[wasm_bindgen]
+pub fn set_camera_follow(slot: u32, first_person: bool) {
+    push_control(ControlMsg::SetCamFollow { slot: slot as usize, first_person });
+}
+
+/// Release the spectator camera back to free orbit.
+#[wasm_bindgen]
+pub fn set_camera_free() {
+    push_control(ControlMsg::SetCamFree);
+}
+
+/// Toggle the x-ray overlay: when on (default), players are drawn on top of walls
+/// and smoke so you can always see them, like a demo watched with wallhack.
+#[wasm_bindgen]
+pub fn set_xray(on: bool) {
+    push_control(ControlMsg::SetXray(on));
+}
+
 // ---------------------------------------------------------------------------
 // WASM -> JS per-frame report. Flat f32 payload (see index.html for the layout):
 // [clock, duration, playing, flashOpacity, nPlayers, nTracers,
-//  {x, y, visible} * nPlayers,            (normalized viewport coords)
+//  {x, y, onScreen, alive, health, weapon, worldX, worldY, yawDeg, present} * nPlayers,
+//        (x,y normalized viewport coords, valid when onScreen; alive/health are
+//         real per-frame state independent of projection — drives the spec panel;
+//         weapon table idx; worldX/worldY/yawDeg are RAW demo coords for the
+//         page radar — dead players hold their death spot; present=0 -> no
+//         radar marker at all)
 //  {utilIdx, x, y, opacity} * nTracers]
+// KEEP THE PER-PLAYER STRIDE (10) IN LOCKSTEP with both HTML readers
+// (rust/viewer/www/index.html + web/templates/replay3d.html, PSTRIDE const).
 // ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "wasm32")]
@@ -138,9 +189,43 @@ extern "C" {
 #[cfg(not(target_arch = "wasm32"))]
 fn replay_frame(_data: &[f32]) {}
 
-/// Interpolated foot positions from update_players, consumed by report_frame.
+/// Per-player render/report state from update_players, consumed by report_frame.
+/// `draw_nametag` is false for a first-person self (own name hidden); `alive`/`health`
+/// stay real regardless, so the spectator panel shows every player's true state.
+/// `wx`/`wy`/`yaw_deg` are RAW demo-world values (pre scene-scale/axis-swap) — the
+/// page radar projects them with the manifest's calibration (mapscal formula).
+/// Dead players keep their frozen death position so the radar can draw an ✕ there.
+struct LabelInfo {
+    anchor: Vec3,
+    draw_nametag: bool,
+    alive: bool,
+    hp: u8,
+    wpn: u8,
+    wx: f32,
+    wy: f32,
+    yaw_deg: f32,
+    present: bool,
+}
+
 #[derive(Resource, Default)]
-struct LabelsOut(Vec<(Vec3, bool)>);
+struct LabelsOut(Vec<LabelInfo>);
+
+/// One player's interpolated eye pose for the spectator camera (scene space).
+#[derive(Clone, Copy)]
+struct PlayerPose {
+    /// feet position (the player origin, matching the model anchor)
+    feet: Vec3,
+    /// world yaw as a scene +Y rotation, radians
+    yaw: f32,
+    /// Source eye pitch, radians (+ = looking down)
+    pitch: f32,
+    crouch: bool,
+}
+
+/// Per-slot eye pose for `spectator_camera` (populated by update_players).
+/// `None` = dead / absent / no round this frame.
+#[derive(Resource, Default)]
+struct PlayerPoses(Vec<Option<PlayerPose>>);
 
 /// Tracer label anchors from update_utility: (utility index, tip, opacity).
 #[derive(Resource, Default)]
@@ -160,6 +245,10 @@ fn setup(mut commands: Commands) {
             far: 4000.0,
             ..default()
         }),
+        // 2x MSAA instead of Bevy's default 4x: two full-viewport WebGL2 passes
+        // (main + x-ray) at 4x cost real fill-rate/resolve time on weak GPUs for
+        // little visual gain at this art style. One-word revert if edges bother.
+        Msaa::Sample2,
         Tonemapping::None, // Three.js renders with NoToneMapping; keep colors comparable
         // hemisphere-light stand-in (AmbientLight is a per-camera component in 0.19)
         AmbientLight {
@@ -168,6 +257,47 @@ fn setup(mut commands: Commands) {
             ..default()
         },
         Transform::from_xyz(0.0, 58.0, 58.0).looking_at(Vec3::ZERO, Vec3::Y),
+        MainCam,
+    ))
+    // first-person viewmodel anchor: bottom-right of the camera, like in game;
+    // weapons_viz::update_viewmodel fills/hides it based on cam mode + held weapon
+    .with_children(|p| {
+        p.spawn((
+            Transform::from_translation(weapons_viz::VM_POS)
+                .with_rotation(Quat::from_rotation_y(weapons_viz::VM_YAW))
+                .with_scale(Vec3::splat(weapons_viz::VM_SCALE)),
+            Visibility::Hidden,
+            weapons_viz::ViewModel::default(),
+        ));
+    });
+    // X-ray overlay camera: renders ONLY the player layer (1), on top of the main
+    // view with no color clear (its own depth buffer starts empty), so players are
+    // always drawn over walls + smoke — the "wallhack" look the analyst wants. Its
+    // transform is copied from the main camera each frame (`sync_xray_camera`).
+    commands.spawn((
+        Camera3d::default(),
+        Camera {
+            order: 1,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
+        Projection::from(PerspectiveProjection {
+            fov: 55.0_f32.to_radians(),
+            near: 0.1,
+            far: 4000.0,
+            ..default()
+        }),
+        Msaa::Sample2, // keep in lockstep with the main camera
+        Tonemapping::None,
+        // flat, bright ambient so the through-wall players read cleanly as chams
+        AmbientLight {
+            color: Color::WHITE,
+            brightness: XRAY_AMBIENT,
+            ..default()
+        },
+        RenderLayers::layer(XRAY_LAYER),
+        Transform::from_xyz(0.0, 58.0, 58.0).looking_at(Vec3::ZERO, Vec3::Y),
+        XrayCam,
     ));
     commands.spawn((
         DirectionalLight {
@@ -177,6 +307,13 @@ fn setup(mut commands: Commands) {
         Transform::from_xyz(40.0, 80.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 }
+
+/// Render layer the player models (and the x-ray camera) live on, in addition to
+/// the default world layer 0. Nothing else is on this layer.
+pub(crate) const XRAY_LAYER: usize = 1;
+/// Ambient brightness for the x-ray overlay camera (players-only view). Flat and
+/// bright so through-wall players stay clearly legible. Tunable.
+const XRAY_AMBIENT: f32 = 2200.0;
 
 /// Ambient brightness: the greybox value matches the Three.js template; the map
 /// value compensates for PBR map materials having no baked lighting at all.
@@ -190,13 +327,15 @@ fn drain_controls(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
+    player_model: Option<Res<scene::PlayerModel>>,
     mut orbit_cam: ResMut<orbit::OrbitCam>,
     q_greybox: Query<Entity, With<GreyboxTag>>,
     q_map: Query<Entity, With<MapTag>>,
-    q_round: Query<Entity, Or<(With<PlayerBody>, With<PlayerNose>, With<UtilTag>)>>,
+    q_round: Query<Entity, Or<(With<PlayerBody>, With<UtilTag>)>>,
     mut q_greybox_vis: Query<&mut Visibility, (With<GreyboxTag>, Without<MapTag>)>,
     mut q_map_vis: Query<&mut Visibility, (With<MapTag>, Without<GreyboxTag>)>,
-    mut q_ambient: Query<&mut AmbientLight, With<Camera3d>>,
+    mut q_ambient: Query<&mut AmbientLight, With<MainCam>>,
+    mut q_xray_cam: Query<&mut Camera, With<XrayCam>>,
 ) {
     let msgs: Vec<ControlMsg> = std::mem::take(&mut *QUEUE.lock().unwrap());
     for msg in msgs {
@@ -243,7 +382,11 @@ fn drain_controls(
                 for e in &q_round {
                     commands.entity(e).despawn();
                 }
-                scene::spawn_players(&mut commands, &mut meshes, &mut materials, m, &dec);
+                let Some(pm) = player_model.as_deref() else {
+                    warn!("player model not ready; skipping round spawn");
+                    continue;
+                };
+                scene::spawn_players(&mut commands, pm, &dec);
 
                 let n = dec.n_samples;
                 let rate = dec.sample_rate;
@@ -263,8 +406,9 @@ fn drain_controls(
                     })
                     .collect();
 
+                let shots = build_shots(&dec, m);
                 viewer.flash_focus = resolve_focus(viewer.flash_focus_name.as_deref(), &dec);
-                viewer.round = Some(RoundState { dec: *dec, n, rate, duration, utils });
+                viewer.round = Some(RoundState { dec: *dec, n, rate, duration, utils, shots });
                 viewer.clock = 0.0;
             }
             ControlMsg::Seek(t) => {
@@ -288,6 +432,16 @@ fn drain_controls(
                 viewer.flash_focus = viewer.round.as_ref().and_then(|r| {
                     resolve_focus(viewer.flash_focus_name.as_deref(), &r.dec)
                 });
+            }
+            ControlMsg::SetXray(on) => {
+                viewer.xray = on;
+                for mut cam in &mut q_xray_cam {
+                    cam.is_active = on;
+                }
+            }
+            ControlMsg::SetCamFree => viewer.cam_mode = CamMode::Free,
+            ControlMsg::SetCamFollow { slot, first_person } => {
+                viewer.cam_mode = CamMode::Follow { slot, first_person };
             }
         }
     }
@@ -315,10 +469,11 @@ fn advance_clock(time: Res<Time>, mut viewer: ResMut<Viewer>) {
 fn update_players(
     viewer: Res<Viewer>,
     mut labels: ResMut<LabelsOut>,
-    mut q_body: Query<(&PlayerBody, &mut Transform, &mut Visibility), Without<PlayerNose>>,
-    mut q_nose: Query<(&PlayerNose, &mut Transform, &mut Visibility), Without<PlayerBody>>,
+    mut poses_out: ResMut<PlayerPoses>,
+    mut q_body: Query<(&PlayerBody, &mut Transform, &mut Visibility)>,
 ) {
     labels.0.clear();
+    poses_out.0.clear();
     let (Some(m), Some(r)) = (viewer.manifest.as_ref(), viewer.round.as_ref()) else {
         return;
     };
@@ -326,11 +481,25 @@ fn update_players(
     let (i0, i1, f, _s) = sample_pos(viewer.clock, r.rate, r.n);
     let cap_h = scene::CAP_H;
 
-    // per-slot interpolated pose (computed once, applied to body + nose + label)
+    // The player we're inside in first-person: hide their own body + nametag so the
+    // camera isn't looking at the inside of their head / their floating name.
+    let self_fp_slot = match viewer.cam_mode {
+        CamMode::Follow { slot, first_person: true } => Some(slot),
+        _ => None,
+    };
+
+    // per-slot interpolated pose (computed once, applied to the model + label + camera)
+    // + raw demo-world (x, y, yaw°, present) per slot for the page radar
     let mut poses: Vec<Option<(Vec3, f32)>> = Vec::with_capacity(r.dec.tracks.len());
+    let mut radar: Vec<(f32, f32, f32, bool)> = Vec::with_capacity(r.dec.tracks.len());
     for tr in &r.dec.tracks {
         if r.n == 0 || tr.flags[i0] & c2r3::F_ALIVE == 0 {
+            // dead/absent: frozen (death) coords; tracks freeze-on-death upstream
+            let present = r.n > 0 && tr.flags[i0] & c2r3::F_PRESENT != 0;
+            let (wx, wy) = if r.n > 0 { (tr.x[i0] as f32, tr.y[i0] as f32) } else { (0.0, 0.0) };
+            radar.push((wx, wy, 0.0, present));
             poses.push(None);
+            poses_out.0.push(None);
             continue;
         }
         // never interpolate into a dead/frozen frame
@@ -338,43 +507,58 @@ fn update_players(
         let x = lerp(tr.x[i0], tr.x[i1], g);
         let y = lerp(tr.y[i0], tr.y[i1], g);
         let z = lerp(tr.z[i0], tr.z[i1], g);
-        let yaw = ang_lerp(tr.yaw[i0], tr.yaw[i1], g).to_radians() as f32;
+        let yaw_deg = ang_lerp(tr.yaw[i0], tr.yaw[i1], g);
+        let yaw = yaw_deg.to_radians() as f32;
+        let pitch = lerp(tr.pitch[i0], tr.pitch[i1], g).to_radians() as f32;
+        let crouch = tr.flags[i0] & c2r3::F_CROUCH != 0;
         let sc = Vec3::from_array(world_to_scene(x, y, z, s_scale));
+        radar.push((x as f32, y as f32, yaw_deg as f32, true));
         poses.push(Some((sc, yaw)));
+        poses_out.0.push(Some(PlayerPose { feet: sc, yaw, pitch, crouch }));
     }
 
+    // The PlayerBody parent carries feet position + yaw; the model child adds the
+    // fixed scale + forward offset (see scene::spawn_players). Model origin is at
+    // the feet, so it sits directly at `sc` (no capsule half-height offset).
     for (body, mut tf, mut vis) in &mut q_body {
         match poses.get(body.slot).copied().flatten() {
             Some((sc, yaw)) => {
-                *tf = Transform::from_translation(sc + Vec3::Y * (cap_h / 2.0))
-                    .with_rotation(Quat::from_rotation_y(yaw));
-                *vis = Visibility::Visible;
+                *tf = Transform::from_translation(sc).with_rotation(Quat::from_rotation_y(yaw));
+                *vis = if self_fp_slot == Some(body.slot) {
+                    Visibility::Hidden
+                } else {
+                    Visibility::Visible
+                };
             }
             None => *vis = Visibility::Hidden,
         }
     }
-    for (nose, mut tf, mut vis) in &mut q_nose {
-        match poses.get(nose.slot).copied().flatten() {
-            Some((sc, yaw)) => {
-                *tf = Transform::from_translation(Vec3::new(
-                    sc.x + yaw.cos() * 0.4,
-                    sc.y + cap_h * 0.62,
-                    sc.z - yaw.sin() * 0.4,
-                ))
-                .with_rotation(
-                    Quat::from_rotation_y(yaw)
-                        * Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2),
-                );
-                *vis = Visibility::Visible;
-            }
-            None => *vis = Visibility::Hidden,
-        }
-    }
-    for pose in &poses {
-        match pose {
-            Some((sc, _)) => labels.0.push((*sc + Vec3::Y * (cap_h + 0.8), true)),
-            None => labels.0.push((Vec3::ZERO, false)),
-        }
+    for (slot, pose) in poses.iter().enumerate() {
+        let tr = &r.dec.tracks[slot];
+        let alive = pose.is_some();
+        // hp/weapon stay real even when off-screen or self-hidden, so the panel
+        // reflects true state; the nametag is only drawn for a visible non-self.
+        let (hp, wpn) = if alive {
+            (tr.health[i0], tr.weapon[i0])
+        } else {
+            (0, c2r3::WEAPON_NONE)
+        };
+        let (wx, wy, yaw_deg, present) = radar[slot];
+        let (anchor, draw_nametag) = match pose {
+            Some((sc, _)) => (*sc + Vec3::Y * (cap_h + 0.8), self_fp_slot != Some(slot)),
+            None => (Vec3::ZERO, false),
+        };
+        labels.0.push(LabelInfo {
+            anchor,
+            draw_nametag,
+            alive,
+            hp,
+            wpn,
+            wx,
+            wy,
+            yaw_deg,
+            present,
+        });
     }
 }
 
@@ -428,18 +612,41 @@ fn update_utility(
         let frame = util_frame(item, s);
         let p = frame.p;
         match &item.kind {
-            UtilKind::Smoke { mesh, grow } => {
+            UtilKind::Smoke { puffs, grow } => {
                 if !frame.in_window {
-                    set_vis(&mut q_vis, *mesh, false);
+                    for &pe in puffs {
+                        set_vis(&mut q_vis, pe, false);
+                    }
                     continue;
                 }
-                let growf = ((s - item.s0) / grow).min(1.0);
-                let fade = if p > 0.9 { (1.0 - p) / 0.1 } else { 1.0 };
-                set_vis(&mut q_vis, *mesh, true);
-                if let Ok(mut tf) = q_tf.get_mut(*mesh) {
-                    tf.scale = Vec3::splat(item.r_s * growf as f32);
+                // Puffs sit on a shell of radius 0.5*r and are 0.5*r across, so
+                // the cloud's outer radius is exactly r_s (=144u, CS 1:1) and the
+                // big puffs overlap into one solid mass — no balloons, no per-puff
+                // inflation. Bloom in at deploy, hold full size, thin out at the end.
+                let grow_t = ((s - item.s0) / grow).min(1.0) as f32;
+                let ease = grow_t * (2.0 - grow_t); // easeOutQuad bloom-in
+                let fade = if p > 0.85 { ((1.0 - p) / 0.15) as f32 } else { 1.0 };
+                let env = ease.min(fade);
+                let rad = item.r_s;
+                let center = item.pos + Vec3::Y * (rad * 0.55);
+                let t = tsec as f32;
+                for (i, &pe) in puffs.iter().enumerate() {
+                    set_vis(&mut q_vis, pe, true);
+                    let ph = util::wobble_phase(i);
+                    let off = util::puff_offset(i, puffs.len());
+                    // slow, tiny internal drift only — keeps it alive, not bubbly
+                    let drift = Vec3::new(
+                        (t * 0.25 + ph).sin(),
+                        (t * 0.20 + ph).cos(),
+                        (t * 0.23 + ph).sin(),
+                    ) * (0.02 * rad);
+                    if let Ok(mut tf) = q_tf.get_mut(pe) {
+                        tf.translation = center + off * (0.5 * rad * ease) + drift;
+                        tf.scale = Vec3::splat(0.5 * rad * ease);
+                    }
+                    // dense (players draw x-ray on top, so opacity is safe)
+                    set_alpha(&mut materials, &q_mat, pe, (0.34 * env).clamp(0.0, 0.85));
                 }
-                set_alpha(&mut materials, &q_mat, *mesh, (0.34 * growf.min(fade)) as f32);
             }
             UtilKind::Molotov { disc, flames } => {
                 if !frame.in_window {
@@ -449,29 +656,47 @@ fn update_utility(
                     }
                     continue;
                 }
-                let growf = ((s - item.s0) / ((item.s1 - item.s0) * 0.06).max(1.0)).min(1.0);
-                let fade = if p > 0.85 { (1.0 - p) / 0.15 } else { 1.0 };
+                let growf = ((s - item.s0) / ((item.s1 - item.s0) * 0.06).max(1.0)).min(1.0) as f32;
+                let fade = if p > 0.85 { ((1.0 - p) / 0.15) as f32 } else { 1.0 };
+                let t = tsec as f32;
+                // ground glow breathes gently
                 set_vis(&mut q_vis, *disc, true);
-                set_alpha(&mut materials, &q_mat, *disc, (0.42 * fade * growf) as f32);
-                for (k, fl) in flames.iter().enumerate() {
-                    set_vis(&mut q_vis, *fl, true);
-                    let flicker = 0.55 + 0.45 * (tsec * 10.0 + k as f64 * 1.7).sin();
-                    if let Ok(mut tf) = q_tf.get_mut(*fl) {
-                        tf.scale = Vec3::new(1.0, (flicker * 1.7) as f32, 1.0);
+                set_alpha(&mut materials, &q_mat, *disc, (0.4 + 0.08 * (t * 3.0).sin()) * fade * growf);
+                for (k, &fl) in flames.iter().enumerate() {
+                    set_vis(&mut q_vis, fl, true);
+                    let ph = util::wobble_phase(k);
+                    // fast, out-of-phase flicker; tongues lick up and sway a little
+                    let flick = 0.5 + 0.5 * (t * 9.0 + ph).sin();
+                    if let Ok(mut tf) = q_tf.get_mut(fl) {
+                        tf.scale = Vec3::new(0.85 + 0.25 * flick, 1.1 + 1.3 * flick, 0.85 + 0.25 * flick);
+                        tf.rotation = Quat::from_rotation_z(0.12 * (t * 2.3 + ph).sin());
                     }
-                    set_alpha(&mut materials, &q_mat, *fl, (0.5 * fade * growf * flicker) as f32);
+                    set_alpha(&mut materials, &q_mat, fl, (0.35 + 0.45 * flick) * fade * growf);
                 }
             }
-            UtilKind::Burst { mesh, scale, base } => {
+            UtilKind::Burst { mesh, ring, scale, base } => {
                 if !frame.in_window {
                     set_vis(&mut q_vis, *mesh, false);
+                    if let Some(re) = ring {
+                        set_vis(&mut q_vis, *re, false);
+                    }
                     continue;
                 }
+                let pf = p as f32;
                 set_vis(&mut q_vis, *mesh, true);
                 if let Ok(mut tf) = q_tf.get_mut(*mesh) {
-                    tf.scale = Vec3::splat(scale * (0.3 + p as f32));
+                    tf.scale = Vec3::splat(scale * (0.25 + 1.1 * pf));
                 }
-                set_alpha(&mut materials, &q_mat, *mesh, (1.0 - p as f32) * base);
+                set_alpha(&mut materials, &q_mat, *mesh, (1.0 - pf) * base);
+                if let Some(re) = ring {
+                    // ground shockwave: races outward and thins to nothing (kept
+                    // near the core's size, not the huge 350u he "radius")
+                    set_vis(&mut q_vis, *re, true);
+                    if let Ok(mut tf) = q_tf.get_mut(*re) {
+                        tf.scale = Vec3::splat((scale * (0.3 + 0.9 * pf)).max(0.001));
+                    }
+                    set_alpha(&mut materials, &q_mat, *re, (1.0 - pf) * 0.9);
+                }
             }
             UtilKind::Decoy { mesh } => {
                 if !frame.in_window {
@@ -495,6 +720,128 @@ fn hide_tool_brushes(
     for (e, name, extras) in &q {
         if scene::is_hidden_material(&name.0, extras.map(|x| x.value.as_str())) {
             commands.entity(e).despawn();
+        }
+    }
+}
+
+/// Walk up the parent chain from `e` to the owning PlayerBody's slot, if any.
+fn find_body_slot(
+    mut e: Entity,
+    q_childof: &Query<&ChildOf>,
+    q_body: &Query<&PlayerBody>,
+) -> Option<usize> {
+    loop {
+        if let Ok(b) = q_body.get(e) {
+            return Some(b.slot);
+        }
+        e = q_childof.get(e).ok()?.parent();
+    }
+}
+
+/// When a spawned character's `AnimationPlayer` appears, attach our animation graph,
+/// start it on Idle, and tag it with the owning player slot for `drive_player_anim`.
+fn setup_player_anim(
+    mut commands: Commands,
+    model: Option<Res<scene::PlayerModel>>,
+    mut q_new: Query<(Entity, &mut AnimationPlayer), Added<AnimationPlayer>>,
+    q_childof: Query<&ChildOf>,
+    q_body: Query<&PlayerBody>,
+) {
+    let Some(model) = model else { return };
+    for (e, mut player) in &mut q_new {
+        let mut transitions = AnimationTransitions::new();
+        transitions.play(&mut player, model.idle, Duration::ZERO).repeat();
+        let mut ec = commands.entity(e);
+        ec.insert((AnimationGraphHandle(model.graph.clone()), transitions));
+        if let Some(slot) = find_body_slot(e, &q_childof, &q_body) {
+            ec.insert(PlayerAnimSlot(slot));
+        }
+    }
+}
+
+/// Pick idle/walk/run each frame from the player's synthesized ground speed and
+/// crossfade to it. Speed = horizontal position delta between the two bracketing
+/// samples, in Source units/sec (freeze-on-death => speed 0 when not alive).
+fn drive_player_anim(
+    viewer: Res<Viewer>,
+    model: Option<Res<scene::PlayerModel>>,
+    mut q: Query<(&PlayerAnimSlot, &mut AnimationPlayer, &mut AnimationTransitions)>,
+) {
+    let (Some(model), Some(r)) = (model, viewer.round.as_ref()) else {
+        return;
+    };
+    let (i0, i1, _f, _s) = sample_pos(viewer.clock, r.rate, r.n);
+    for (slot, mut player, mut transitions) in &mut q {
+        let Some(tr) = r.dec.tracks.get(slot.0) else {
+            continue;
+        };
+        let alive = r.n > 0 && tr.flags[i0] & c2r3::F_ALIVE != 0;
+        let speed = if alive && i1 != i0 {
+            let (dx, dy) = (tr.x[i1] - tr.x[i0], tr.y[i1] - tr.y[i0]);
+            (dx * dx + dy * dy).sqrt() * r.rate
+        } else {
+            0.0
+        };
+        let target = if speed >= scene::RUN_SPEED {
+            model.run
+        } else if speed >= scene::WALK_SPEED {
+            model.walk
+        } else {
+            model.idle
+        };
+        if transitions.get_main_animation() != Some(target) {
+            transitions
+                .play(&mut player, target, Duration::from_millis(180))
+                .repeat();
+        }
+    }
+}
+
+/// Tint each spawned character mesh by its player's team color (post-load material
+/// override). Skips non-player meshes (no PlayerBody ancestor — e.g. the map).
+fn tint_players(
+    mut commands: Commands,
+    viewer: Res<Viewer>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    q_new: Query<
+        (Entity, &MeshMaterial3d<StandardMaterial>),
+        (
+            Added<MeshMaterial3d<StandardMaterial>>,
+            // weapon kits hang under PlayerBody too but must stay gunmetal
+            Without<weapons_viz::WeaponPart>,
+        ),
+    >,
+    q_childof: Query<&ChildOf>,
+    q_body: Query<&PlayerBody>,
+) {
+    let (Some(m), Some(r)) = (viewer.manifest.as_ref(), viewer.round.as_ref()) else {
+        return;
+    };
+    for (e, mat_handle) in &q_new {
+        let Some(slot) = find_body_slot(e, &q_childof, &q_body) else {
+            continue;
+        };
+        // player meshes live on the world layer AND the x-ray layer, so the
+        // overlay camera can redraw them on top of walls + smoke.
+        commands
+            .entity(e)
+            .insert(RenderLayers::from_layers(&[0, XRAY_LAYER]));
+        let team = r.dec.players.get(slot).map(|p| p.team).unwrap_or(0);
+        let color = m
+            .team_colors
+            .get(&team)
+            .copied()
+            .unwrap_or(Color::srgb_u8(0xcc, 0xcc, 0xcc));
+        if let Some(base) = materials.get(&mat_handle.0).cloned() {
+            let lin = color.to_linear();
+            let tinted = StandardMaterial {
+                base_color: color,
+                // subtle self-lit team glow so players stay legible through walls
+                emissive: LinearRgba::rgb(lin.red * 0.16, lin.green * 0.16, lin.blue * 0.16),
+                ..base
+            };
+            let h = materials.add(tinted);
+            commands.entity(e).insert(MeshMaterial3d(h));
         }
     }
 }
@@ -530,11 +877,227 @@ fn draw_grid(viewer: Res<Viewer>, mut gizmos: Gizmos) {
     }
 }
 
+// Source view offsets (world units) — eye height above the feet origin, used to
+// place the first/third-person camera. Standing 64, crouched 46 (engine constants).
+const EYE_STAND: f32 = 64.0;
+const EYE_CROUCH: f32 = 46.0;
+/// Third-person chase framing: how far behind / above the eye the camera sits (world units).
+const CHASE_DIST: f32 = 135.0;
+const CHASE_UP: f32 = 35.0;
+/// Sign applied to the stored eye pitch when building the look vector. Source
+/// convention is +pitch = looking down (forward.z = -sin(pitch)); flip to -1.0
+/// if a demo's pitch reads inverted. Verified visually.
+const PITCH_SIGN: f32 = 1.0;
+
+/// World-unit length of a shot tracer beam (the data has no bullet impact point,
+/// so we cast a fixed ray along the aim; walls occlude it through the depth test). Tunable.
+const TRACER_LEN_WU: f32 = 3000.0;
+/// Tracer timing, in PLAYBACK-CLOCK seconds (so streaks stretch out under slo-mo and
+/// scrub to the right spot). The hot head races the full beam in TRACER_TRAVEL, then
+/// the whole streak fades out by TRACER_LIFE. Tunable.
+const TRACER_TRAVEL: f64 = 0.045;
+const TRACER_LIFE: f64 = 0.20;
+/// Length of the bright dash trailing the head, as a fraction of the beam length.
+const TRACER_STREAK_FRAC: f32 = 0.42;
+/// Tracer gizmo line width (pixels) — chunkier than the thin map grid so shots pop.
+const TRACER_WIDTH: f32 = 3.5;
+
+/// Dedicated gizmo group for shot tracers, so their line width / depth bias are set
+/// independently of the thin default-group gizmos (map grid, grenade throw arcs).
+#[derive(Default, Reflect, GizmoConfigGroup)]
+struct TracerGizmos;
+
+/// One-time: widen the tracer group and pull it a hair toward the camera in depth so
+/// streaks read cleanly against surfaces without z-fighting.
+fn setup_tracer_gizmos(mut store: ResMut<GizmoConfigStore>) {
+    let (config, _) = store.config_mut::<TracerGizmos>();
+    config.line.width = TRACER_WIDTH;
+    config.depth_bias = -0.1;
+}
+
+/// Precompute a round's shot tracers from its `shots` header records + each
+/// shooter's interpolated eye pose (same muzzle math as the POV camera). Each
+/// becomes a fixed world-space line, flashed briefly at the shot time by
+/// `draw_tracers`. Empty when the round carries no shots (old `.3dr` files).
+fn build_shots(dec: &c2r3::DecodedRound, m: &crate::state::ManifestData) -> Vec<ShotViz> {
+    let arr = match dec.header.get("shots").and_then(|v| v.as_array()) {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+    let s_scale = m.scene_scale;
+    let rate = dec.sample_rate;
+    let n = dec.n_samples;
+    if n == 0 || rate <= 0.0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(arr.len());
+    for sh in arr {
+        let (Some(s), Some(p)) = (
+            sh.get("s").and_then(|v| v.as_f64()),
+            sh.get("p").and_then(|v| v.as_u64()),
+        ) else {
+            continue;
+        };
+        let slot = p as usize;
+        let Some(tr) = dec.tracks.get(slot) else {
+            continue;
+        };
+        // interpolate the shooter's eye pose at the fractional sample `s`
+        let sc = s.clamp(0.0, (n as f64 - 1.0).max(0.0));
+        let i0 = sc.floor() as usize;
+        let i1 = (i0 + 1).min(n - 1);
+        let f = sc - i0 as f64;
+        if tr.flags[i0] & c2r3::F_ALIVE == 0 {
+            continue; // never-alive / frozen: skip (avoids an origin tracer)
+        }
+        let x = lerp(tr.x[i0], tr.x[i1], f);
+        let y = lerp(tr.y[i0], tr.y[i1], f);
+        let z = lerp(tr.z[i0], tr.z[i1], f);
+        let yaw = ang_lerp(tr.yaw[i0], tr.yaw[i1], f).to_radians() as f32;
+        let pitch = lerp(tr.pitch[i0], tr.pitch[i1], f).to_radians() as f32;
+        let crouch = tr.flags[i0] & c2r3::F_CROUCH != 0;
+        let feet = Vec3::from_array(world_to_scene(x, y, z, s_scale));
+        let eye_off = if crouch { EYE_CROUCH } else { EYE_STAND } * s_scale as f32;
+        let a = feet + Vec3::Y * eye_off;
+        // Source AngleVectors forward relabelled to scene space (as spectator_camera)
+        let (sy, cy) = yaw.sin_cos();
+        let pitch = (pitch * PITCH_SIGN).clamp(-1.535, 1.535);
+        let (sp, cp) = pitch.sin_cos();
+        let fwd = Vec3::new(cp * cy, -sp, -cp * sy);
+        let b = a + fwd * (TRACER_LEN_WU * s_scale as f32);
+        // bright, team-tinted tracer (lifted toward warm white so it reads as fire)
+        let team = dec.players.get(slot).map(|pl| pl.team).unwrap_or(0);
+        let base = m.team_colors.get(&team).copied().unwrap_or(Color::srgb(1.0, 0.82, 0.35));
+        let l = base.to_linear();
+        let color = Color::LinearRgba(LinearRgba::rgb(
+            (l.red * 0.55 + 0.45).min(1.0),
+            (l.green * 0.55 + 0.45).min(1.0),
+            (l.blue * 0.55 + 0.30).min(1.0),
+        ));
+        out.push(ShotViz { t: s / rate, slot, a, b, color });
+    }
+    out
+}
+
+/// Draw each shot as a travelling tracer streak: a hot-headed dash that flies out
+/// from the muzzle along the aim (crossing the beam in `TRACER_TRAVEL`) and then
+/// fades out by `TRACER_LIFE`, plus a brief muzzle flash at the origin. Keyed to the
+/// playback clock, so scrubbing lands on the right tracers and slo-mo stretches the
+/// streak. Rendered on the dedicated `TracerGizmos` group (thicker than the map grid).
+fn draw_tracers(viewer: Res<Viewer>, mut gizmos: Gizmos<TracerGizmos>) {
+    let Some(r) = viewer.round.as_ref() else {
+        return;
+    };
+    let clock = viewer.clock;
+    // hot muzzle-white: the bright core of every tracer, whatever the team tint.
+    let head_col = Color::srgb(1.0, 0.95, 0.80);
+    for sh in &r.shots {
+        let dt = clock - sh.t;
+        if !(0.0..=TRACER_LIFE).contains(&dt) {
+            continue;
+        }
+        let seg = sh.b - sh.a;
+        let len = seg.length();
+        if len < 1e-4 {
+            continue;
+        }
+        let dir = seg / len;
+        // head races along the beam over TRACER_TRAVEL, then holds at the far end
+        let head_d = (dt / TRACER_TRAVEL).min(1.0) as f32 * len;
+        // trailing dash grows from the muzzle, then rides at a fixed length behind the head
+        let streak = (TRACER_STREAK_FRAC * len).min(head_d);
+        let tail_d = head_d - streak;
+        // full brightness while travelling, then fade to nothing over the remainder
+        let fade = if dt <= TRACER_TRAVEL {
+            1.0
+        } else {
+            (1.0 - (dt - TRACER_TRAVEL) / (TRACER_LIFE - TRACER_TRAVEL)).clamp(0.0, 1.0) as f32
+        };
+        // dim team-tinted trail -> hot white head
+        gizmos.line_gradient(
+            sh.a + dir * tail_d,
+            sh.a + dir * head_d,
+            sh.color.with_alpha(fade * 0.12),
+            head_col.with_alpha(fade),
+        );
+        // muzzle flash pop — skip it in the shooter's OWN first-person view, where the
+        // muzzle is glued to the camera and the flash would smear across the screen.
+        let own_fp = matches!(
+            viewer.cam_mode,
+            CamMode::Follow { slot, first_person: true } if slot == sh.slot
+        );
+        if !own_fp && dt < 0.05 {
+            let flash = (1.0 - dt / 0.05) as f32;
+            gizmos
+                .sphere(Isometry3d::from_translation(sh.a), 0.015 * len, head_col.with_alpha(flash))
+                .resolution(8);
+        }
+    }
+}
+
+/// When following a player, drive the camera from their interpolated eye pose:
+/// first-person sits at the eye looking along (yaw, pitch); third-person is a
+/// chase cam behind the shoulders. Runs after `orbit_camera`, overriding it while
+/// a follow is active. A dead/absent/out-of-range slot holds the last transform.
+fn spectator_camera(
+    viewer: Res<Viewer>,
+    poses: Res<PlayerPoses>,
+    mut cam: Query<&mut Transform, With<MainCam>>,
+) {
+    let CamMode::Follow { slot, first_person } = viewer.cam_mode else {
+        return;
+    };
+    let Some(Some(p)) = poses.0.get(slot) else {
+        return;
+    };
+    let s = viewer.manifest.as_ref().map(|m| m.scene_scale as f32).unwrap_or(0.02);
+
+    // Source AngleVectors → world forward (cosP·cosY, cosP·sinY, −sinP), then the
+    // world_dir_to_scene relabel (dx, dz, −dy) gives the scene look direction.
+    let (sy, cy) = p.yaw.sin_cos();
+    let pitch = (p.pitch * PITCH_SIGN).clamp(-1.535, 1.535); // ~±88° guards the up-vector
+    let (sp, cp) = pitch.sin_cos();
+    let fwd = Vec3::new(cp * cy, -sp, -cp * sy);
+
+    let eye_off = if p.crouch { EYE_CROUCH } else { EYE_STAND } * s;
+    let eye = p.feet + Vec3::Y * eye_off;
+
+    let Ok(mut tf) = cam.single_mut() else { return };
+    *tf = if first_person {
+        Transform::from_translation(eye).looking_at(eye + fwd, Vec3::Y)
+    } else {
+        // chase behind along the flat (yaw-only) aim, lifted; look toward the aim.
+        let flat = Vec3::new(cy, 0.0, -sy);
+        let pos = eye - flat * (CHASE_DIST * s) + Vec3::Y * (CHASE_UP * s);
+        Transform::from_translation(pos).looking_at(eye + fwd * (10.0 * s), Vec3::Y)
+    };
+}
+
+/// Copy the main camera's transform onto the x-ray overlay camera each frame, so
+/// the players-only overlay is rendered from exactly the same viewpoint. Runs
+/// after the camera controllers (orbit / spectator) have positioned the main cam.
+/// The disjoint `With`/`Without` filters keep the two Transform queries provably
+/// non-aliasing.
+fn sync_xray_camera(
+    q_main: Query<&Transform, (With<MainCam>, Without<XrayCam>)>,
+    mut q_xray: Query<&mut Transform, (With<XrayCam>, Without<MainCam>)>,
+) {
+    let Ok(src) = q_main.single() else {
+        return;
+    };
+    let Ok(mut dst) = q_xray.single_mut() else {
+        return;
+    };
+    if *dst != *src {
+        *dst = *src;
+    }
+}
+
 fn report_frame(
     viewer: Res<Viewer>,
     labels: Res<LabelsOut>,
     tracers: Res<TracersOut>,
-    q_cam: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    q_cam: Query<(&Camera, &GlobalTransform), With<MainCam>>,
 ) {
     let Ok((cam, cam_tf)) = q_cam.single() else {
         return;
@@ -567,11 +1130,23 @@ fn report_frame(
         labels.0.len() as f32,
         tracers.0.len() as f32,
     ];
-    for (world, visible) in &labels.0 {
-        match (visible, project(*world)) {
-            (true, Some(v)) => data.extend([v.x, v.y, 1.0]),
-            _ => data.extend([0.0, 0.0, 0.0]),
-        }
+    for li in &labels.0 {
+        let (x, y, on_screen) = match (li.draw_nametag, project(li.anchor)) {
+            (true, Some(v)) => (v.x, v.y, 1.0),
+            _ => (0.0, 0.0, 0.0),
+        };
+        data.extend([
+            x,
+            y,
+            on_screen,
+            if li.alive { 1.0 } else { 0.0 },
+            li.hp as f32,
+            li.wpn as f32,
+            li.wx,
+            li.wy,
+            li.yaw_deg,
+            if li.present { 1.0 } else { 0.0 },
+        ]);
     }
     for (idx, tip, op) in &tracers.0 {
         match project(*tip) {

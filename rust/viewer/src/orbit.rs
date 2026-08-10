@@ -25,12 +25,17 @@ impl Default for OrbitCam {
 }
 
 pub fn orbit_camera(
+    viewer: Res<crate::state::Viewer>,
     mut orbit: ResMut<OrbitCam>,
     buttons: Res<ButtonInput<MouseButton>>,
     mut motion: MessageReader<MouseMotion>,
     mut wheel: MessageReader<MouseWheel>,
-    mut cam: Query<&mut Transform, With<Camera3d>>,
+    mut cam: Query<&mut Transform, With<crate::state::MainCam>>,
 ) {
+    // While spectating a player, `spectator_camera` owns the transform.
+    if viewer.cam_mode != crate::state::CamMode::Free {
+        return;
+    }
     let mut delta = Vec2::ZERO;
     for ev in motion.read() {
         delta += ev.delta;

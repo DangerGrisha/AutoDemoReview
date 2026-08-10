@@ -246,6 +246,7 @@ impl DemoSource for FakeDemo {
                 attacker_team: Some(2),
                 total_rounds_played: 0,
                 is_warmup: false,
+                ..Default::default()
             },
             KillEvent {
                 tick: 500,
@@ -254,6 +255,7 @@ impl DemoSource for FakeDemo {
                 attacker_team: None,
                 total_rounds_played: 0,
                 is_warmup: true, // filtered out
+                ..Default::default()
             },
         ])
     }
@@ -446,7 +448,7 @@ fn manifest_shape() {
         fd.kill_events().unwrap()
     };
     let info = extract3d::mapscal::map_info("de_mirage").unwrap();
-    let man = extract3d::manifest::build_manifest(&decoded, &kills, &info);
+    let man = extract3d::manifest::build_manifest(&decoded, &kills, &info, &[], &[]);
 
     assert_eq!(man["map"], "de_mirage");
     assert_eq!(man["radarAsset"], "de_mirage.png");
@@ -462,10 +464,91 @@ fn manifest_shape() {
     assert_eq!(kills0[0]["atk"], "Player9");
     assert_eq!(kills0[0]["atkTeam"], 2);
     assert_eq!(man["rounds"][1]["kills"].as_array().unwrap().len(), 0);
+    // no winner enrichment -> the pre-winner manifest shape, byte-compatible
+    assert!(man["rounds"][0].get("winner").is_none());
+    assert!(man["rounds"][0].get("scoreCT").is_none());
     // top-level key order
     let keys: Vec<&str> = man.as_object().unwrap().keys().map(|s| s.as_str()).collect();
     assert_eq!(
         keys,
         ["map", "radarAsset", "calibration", "sceneScale", "teamColors", "elevationWorldZ", "rounds"]
     );
+}
+
+/// The C4 timeline: plant/defuse ticks land on the right SAMPLE indices, the
+/// key only appears for rounds that had a plant, and an empty `bombs` slice
+/// leaves the manifest exactly as it was before the feature existed.
+#[test]
+fn manifest_bomb_timeline() {
+    let (models, _) = build_replay3d(&mut FakeDemo).unwrap();
+    let decoded: Vec<(String, c2r3::DecodedRound)> = models
+        .iter()
+        .map(|m| {
+            let (bytes, _) = c2r3::encode_round(m).unwrap();
+            (format!("r{:02}.3dr", m.round), c2r3::decode_round(&bytes).unwrap())
+        })
+        .collect();
+    let info = extract3d::mapscal::map_info("de_mirage").unwrap();
+    let (start, stride) = (decoded[0].1.start_tick, decoded[0].1.sample_stride);
+
+    // round 0: planted then defused; round 1: no plant at all
+    let bombs = [
+        Some(extract3d::BombRound {
+            plant_tick: start + 3 * stride,
+            site: Some("B".to_string()),
+            end_tick: Some(start + 7 * stride),
+            end_kind: Some(extract3d::BombKind::Defused),
+        }),
+        None,
+    ];
+    let man = extract3d::manifest::build_manifest(&decoded, &[], &info, &[], &bombs);
+
+    assert_eq!(man["rounds"][0]["bomb"]["plant"], 3);
+    assert_eq!(man["rounds"][0]["bomb"]["site"], "B");
+    assert_eq!(man["rounds"][0]["bomb"]["defused"], 7);
+    assert!(man["rounds"][0]["bomb"].get("exploded").is_none());
+    assert!(man["rounds"][1].get("bomb").is_none(), "no plant -> no key");
+
+    // no bomb data at all -> byte-identical to the pre-feature manifest
+    let without = extract3d::manifest::build_manifest(&decoded, &[], &info, &[], &[]);
+    let with_empty = extract3d::manifest::build_manifest(&decoded, &[], &info, &[], &[None, None]);
+    assert_eq!(serde_json::to_vec(&without).unwrap(),
+               serde_json::to_vec(&with_empty).unwrap());
+}
+
+/// Winner + running score entering each round, including a halftime side swap:
+/// the score follows the TEAM (sid identity), displayed for the sides the teams
+/// hold in that specific round.
+#[test]
+fn manifest_winner_score() {
+    let (models, _) = build_replay3d(&mut FakeDemo).unwrap();
+    let mut decoded: Vec<(String, c2r3::DecodedRound)> = models
+        .iter()
+        .map(|m| {
+            let (bytes, _) = c2r3::encode_round(m).unwrap();
+            (format!("r{:02}.3dr", m.round), c2r3::decode_round(&bytes).unwrap())
+        })
+        .collect();
+    // synthesize a post-halftime round 3: same players, sides flipped
+    let mut r3 = decoded[1].1.clone();
+    for p in &mut r3.players {
+        p.team = if p.team == 3 { 2 } else { 3 };
+    }
+    decoded.push(("r03.3dr".into(), r3));
+
+    let winners = [Some("T".to_string()), Some("CT".to_string()), Some("CT".to_string())];
+    let info = extract3d::mapscal::map_info("de_mirage").unwrap();
+    let man = extract3d::manifest::build_manifest(&decoded, &[], &info, &winners, &[]);
+
+    // FakeDemo: "42" is CT -> team A = {"42"}. Score shown is ENTERING the round.
+    assert_eq!(man["rounds"][0]["winner"], "T");
+    assert_eq!(man["rounds"][0]["scoreCT"], 0);
+    assert_eq!(man["rounds"][0]["scoreT"], 0);
+    // T (team B) won round 1
+    assert_eq!(man["rounds"][1]["scoreCT"], 0);
+    assert_eq!(man["rounds"][1]["scoreT"], 1);
+    // CT (team A) won round 2 -> 1:1; sides flipped in round 3, so team A's win
+    // now sits on the T side of the display and team B's on the CT side
+    assert_eq!(man["rounds"][2]["scoreCT"], 1);
+    assert_eq!(man["rounds"][2]["scoreT"], 1);
 }

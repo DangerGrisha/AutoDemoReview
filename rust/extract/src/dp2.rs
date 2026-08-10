@@ -16,7 +16,8 @@ use parser::second_pass::parser_settings::create_huffman_lookup_table;
 use parser::second_pass::variants::{PropColumn, VarVec, Variant};
 
 use crate::{
-    BlindEvent, DemoSource, DetEvent, EndEvent, FreezeEvent, GrenadeRow, KillEvent, TickRow,
+    BlindEvent, BombEvent, BombKind, DemoSource, DetEvent, EndEvent, FireEvent, FreezeEvent,
+    GrenadeRow, KillEvent, TickRow,
 };
 
 /// The per-tick props the extraction samples (mirrors replay3d.TICK_PROPS; note
@@ -26,7 +27,7 @@ const TICK_PROPS: [&str; 13] = [
     "flash_duration", "ducked", "is_scoped", "is_defusing", "team_num",
 ];
 
-const EVENTS: [&str; 9] = [
+const EVENTS: [&str; 13] = [
     "round_freeze_end",
     "round_end",
     "player_death",
@@ -36,6 +37,10 @@ const EVENTS: [&str; 9] = [
     "flashbang_detonate",
     "inferno_startburn",
     "decoy_started",
+    "weapon_fire",
+    "bomb_planted",
+    "bomb_defused",
+    "bomb_exploded",
 ];
 
 pub struct Dp2Source {
@@ -396,6 +401,51 @@ impl DemoSource for Dp2Source {
                 attacker_team: v_i64(field(e, "attacker_team_num")),
                 total_rounds_played: v_i64(field(e, "total_rounds_played")).unwrap_or(0),
                 is_warmup: v_bool(field(e, "is_warmup_period")).unwrap_or(false),
+                weapon: v_string(field(e, "weapon")),
+                headshot: v_bool(field(e, "headshot")).unwrap_or(false),
+                penetrated: v_i64(field(e, "penetrated")).unwrap_or(0) > 0,
+                thrusmoke: v_bool(field(e, "thrusmoke")).unwrap_or(false),
+                attackerblind: v_bool(field(e, "attackerblind")).unwrap_or(false),
+                noscope: v_bool(field(e, "noscope")).unwrap_or(false),
+            })
+            .collect())
+    }
+
+    fn fire_events(&mut self) -> Result<Vec<FireEvent>> {
+        Ok(self
+            .events()?
+            .iter()
+            .filter(|e| e.name == "weapon_fire")
+            .map(|e| FireEvent {
+                tick: e.tick as i64,
+                sid: v_string(field(e, "user_steamid")).unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    fn bomb_events(&mut self) -> Result<Vec<BombEvent>> {
+        Ok(self
+            .events()?
+            .iter()
+            .filter_map(|e| {
+                let kind = match e.name.as_str() {
+                    "bomb_planted" => BombKind::Planted,
+                    "bomb_defused" => BombKind::Defused,
+                    "bomb_exploded" => BombKind::Exploded,
+                    _ => return None,
+                };
+                // `site` is a letter in some sources and a numeric bombsite in
+                // others (0/1, or a raw entity index in CS2). Only the forms we
+                // can map to a letter are kept; anything else -> None, and the
+                // viewer simply shows no site.
+                let site = v_string(field(e, "site"))
+                    .filter(|s| matches!(s.as_str(), "A" | "B"))
+                    .or_else(|| match v_i64(field(e, "site")) {
+                        Some(0) => Some("A".to_string()),
+                        Some(1) => Some("B".to_string()),
+                        _ => None,
+                    });
+                Some(BombEvent { tick: e.tick as i64, kind, site })
             })
             .collect())
     }

@@ -205,7 +205,7 @@ fn main() -> Result<()> {
         let kills = source.kill_events()?;
         let info = mapscal::map_info(&meta.map)
             .with_context(|| format!("no radar calibration for map {}", meta.map))?;
-        let man = manifest::build_manifest(&decoded, &kills, &info);
+        let man = manifest::build_manifest(&decoded, &kills, &info, &meta.winners, &meta.bombs);
         std::fs::write(out_dir.join("manifest.json"), serde_json::to_vec(&man)?)?;
         println!("  wrote {} .3dr sidecars + manifest.json to {}/", models.len(), out_dir.display());
 

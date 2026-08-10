@@ -108,6 +108,10 @@ pub struct RoundModel {
     pub weapon_table: Vec<String>,
     /// Opaque metadata carried VERBATIM into the header (object key order preserved).
     pub utility: Vec<Value>,
+    /// Per-shot tracer records (opaque, like `utility`): each `{s: fractional
+    /// sample, p: shooter slot}`. Emitted into the header ONLY when non-empty, so
+    /// shot-less rounds — and the golden fixtures — keep byte-identical headers.
+    pub shots: Vec<Value>,
     pub tracks: Vec<Track>,
 }
 
@@ -508,6 +512,11 @@ pub fn encode_round(model: &RoundModel) -> Result<(Vec<u8>, u32), CodecError> {
         Value::Array(model.weapon_table.iter().map(|s| Value::from(s.as_str())).collect()),
     );
     header.insert("utility".into(), Value::Array(model.utility.clone()));
+    // `shots` is a newer optional field: emit it only when present so shot-less
+    // rounds (and the golden parity fixtures) keep byte-for-byte identical headers.
+    if !model.shots.is_empty() {
+        header.insert("shots".into(), Value::Array(model.shots.clone()));
+    }
 
     let header_bytes = serde_json::to_vec(&Value::Object(header))
         .map_err(|e| CodecError::Header(e.to_string()))?;

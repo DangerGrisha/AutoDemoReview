@@ -23,10 +23,15 @@ fn round2(v: f64) -> f64 {
 }
 
 /// `(file_name, decoded_round)` pairs must be in round order (r01, r02, ...).
+/// `winners` is index-aligned with `rounds` ("CT"/"T" side that won each round;
+/// see Meta3d::winners). All-None (synthetic fixtures) leaves the manifest
+/// byte-identical to the pre-winner format.
 pub fn build_manifest(
     rounds: &[(String, DecodedRound)],
     kills: &[KillEvent],
     info: &MapInfo,
+    winners: &[Option<String>],
+    bombs: &[Option<crate::BombRound>],
 ) -> Value {
     // round_no (1-based) -> kill rows, warmup filtered
     let mut kills_by_round: HashMap<i64, Vec<&KillEvent>> = HashMap::new();
@@ -38,7 +43,24 @@ pub fn build_manifest(
     let mut rounds_meta = Vec::with_capacity(rounds.len());
     let mut map_name = String::new();
 
-    for (fname, dec) in rounds {
+    // Running score with correct halftime/overtime side swaps: "team A" = the
+    // sids on CT (team 3) in the first round with a roster; each round, A's
+    // CURRENT side comes from that round's own player list (majority vote), so
+    // the winner side maps to a stable team identity with no MR-format logic.
+    let team_a: std::collections::HashSet<&str> = rounds
+        .iter()
+        .find(|(_, d)| !d.players.is_empty())
+        .map(|(_, d)| {
+            d.players
+                .iter()
+                .filter(|p| p.team == 3)
+                .map(|p| p.sid.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    let (mut wins_a, mut wins_b) = (0i64, 0i64);
+
+    for (ri, (fname, dec)) in rounds.iter().enumerate() {
         map_name = dec.map.clone();
         let (start, stride, rate, n) = (
             dec.start_tick,
@@ -74,6 +96,29 @@ pub fn build_manifest(
                             Value::from(non_empty(k.victim_name.as_deref(), "?")),
                         );
                         m.insert("atkTeam".into(), Value::from(k.attacker_team.unwrap_or(0)));
+                        // kill-feed enrichment; keys present only when meaningful,
+                        // so pre-enrichment sources keep the old mark shape
+                        if let Some(w) = k.weapon.as_deref() {
+                            let tag = crate::weapons::event_weapon_tag(w);
+                            if !tag.is_empty() {
+                                m.insert("w".into(), Value::from(tag));
+                            }
+                        }
+                        if k.headshot {
+                            m.insert("hs".into(), Value::from(true));
+                        }
+                        if k.penetrated {
+                            m.insert("wb".into(), Value::from(true));
+                        }
+                        if k.thrusmoke {
+                            m.insert("ts".into(), Value::from(true));
+                        }
+                        if k.attackerblind {
+                            m.insert("ab".into(), Value::from(true));
+                        }
+                        if k.noscope {
+                            m.insert("ns".into(), Value::from(true));
+                        }
                         Value::Object(m)
                     })
                     .collect()
@@ -91,6 +136,51 @@ pub fn build_manifest(
             jf(if n > 1 { round2((n as f64 - 1.0) / rate) } else { 0.0 }),
         );
         rm.insert("kills".into(), Value::Array(kmarks));
+        // winner + score ENTERING the round, expressed for the sides as seen in
+        // this round (what a CS2-style top bar shows while it plays). Emitted
+        // only when the source had round_end enrichment.
+        if let Some(Some(w)) = winners.get(ri) {
+            let (mut on_ct, mut on_t) = (0u32, 0u32);
+            for p in &dec.players {
+                if team_a.contains(p.sid.as_str()) {
+                    match p.team {
+                        3 => on_ct += 1,
+                        2 => on_t += 1,
+                        _ => {}
+                    }
+                }
+            }
+            let a_is_ct = on_ct >= on_t;
+            let (score_ct, score_t) = if a_is_ct { (wins_a, wins_b) } else { (wins_b, wins_a) };
+            rm.insert("winner".into(), Value::from(w.as_str()));
+            rm.insert("scoreCT".into(), Value::from(score_ct));
+            rm.insert("scoreT".into(), Value::from(score_t));
+            if (w == "CT") == a_is_ct {
+                wins_a += 1;
+            } else {
+                wins_b += 1;
+            }
+        }
+        // C4 timeline, in the same sample units as the kill marks. Emitted only
+        // for rounds that actually had a plant, so a source without bomb events
+        // (or a round that never got one) keeps the old manifest shape exactly.
+        if let Some(Some(b)) = bombs.get(ri) {
+            let to_sample =
+                |t: i64| (t - start).div_euclid(stride).clamp(0, n as i64 - 1);
+            let mut bm = Map::new();
+            bm.insert("plant".into(), Value::from(to_sample(b.plant_tick)));
+            if let Some(site) = b.site.as_deref() {
+                bm.insert("site".into(), Value::from(site));
+            }
+            if let (Some(t), Some(kind)) = (b.end_tick, b.end_kind) {
+                let key = match kind {
+                    crate::BombKind::Defused => "defused",
+                    _ => "exploded",
+                };
+                bm.insert(key.into(), Value::from(to_sample(t)));
+            }
+            rm.insert("bomb".into(), Value::Object(bm));
+        }
         rounds_meta.push(Value::Object(rm));
     }
 

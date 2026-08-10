@@ -19,6 +19,21 @@ pub enum ControlMsg {
     SetSpeed(f64),
     SetFlashFocus(Option<String>),
     SetShowMap(bool),
+    /// Toggle the x-ray overlay (players drawn through walls + smoke, wallhack-style).
+    SetXray(bool),
+    /// Release the camera back to free orbit.
+    SetCamFree,
+    /// Lock the camera to a player slot in first- (true) or third-person (false).
+    SetCamFollow { slot: usize, first_person: bool },
+}
+
+/// Spectator camera mode. `Free` = the orbit controls; `Follow` locks onto a
+/// player slot and drives the camera from their interpolated eye pose — the
+/// CS2-demo POV feature (first-person through their eyes, or a third-person chase).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum CamMode {
+    Free,
+    Follow { slot: usize, first_person: bool },
 }
 
 pub static QUEUE: Mutex<Vec<ControlMsg>> = Mutex::new(Vec::new());
@@ -41,12 +56,29 @@ pub struct ManifestData {
     pub map_asset: Option<String>,
 }
 
+/// One precomputed shot tracer (built at round load from a `weapon_fire` record
+/// plus the shooter's interpolated eye pose): a bright line `a`→`b` flashed
+/// briefly at time `t`. Fixed in world space (it does not follow the shooter).
+pub struct ShotViz {
+    /// shot time, seconds from round start
+    pub t: f64,
+    /// shooter slot — lets the renderer drop the muzzle flash in that player's own
+    /// first-person POV (where the muzzle sits right on the camera).
+    pub slot: usize,
+    /// muzzle / eye position (scene space)
+    pub a: Vec3,
+    /// tracer endpoint along the aim (scene space)
+    pub b: Vec3,
+    pub color: Color,
+}
+
 pub struct RoundState {
     pub dec: DecodedRound,
     pub n: usize,
     pub rate: f64,
     pub duration: f64,
     pub utils: Vec<crate::util::UtilItem>,
+    pub shots: Vec<ShotViz>,
 }
 
 #[derive(Resource)]
@@ -61,6 +93,10 @@ pub struct Viewer {
     pub flash_focus: Option<usize>,
     /// real map geometry shown (true) vs the radar greybox (false)
     pub show_map: bool,
+    /// spectator camera mode (free orbit, or following a player's POV)
+    pub cam_mode: CamMode,
+    /// x-ray overlay active: players drawn on top of walls + smoke (wallhack-style)
+    pub xray: bool,
 }
 
 impl Default for Viewer {
@@ -74,6 +110,8 @@ impl Default for Viewer {
             flash_focus_name: None,
             flash_focus: None,
             show_map: false,
+            cam_mode: CamMode::Free,
+            xray: true,
         }
     }
 }
@@ -86,15 +124,25 @@ pub struct GreyboxTag;
 #[derive(Component)]
 pub struct MapTag;
 
+/// The primary scene camera: orbit / spectator drive its transform and it renders
+/// the world layer (0). Distinct from the x-ray overlay camera.
+#[derive(Component)]
+pub struct MainCam;
+
+/// The x-ray overlay camera: renders only the player layer (1) on top of the main
+/// view with a cleared depth buffer, so players stay visible through walls + smoke.
+#[derive(Component)]
+pub struct XrayCam;
+
 #[derive(Component)]
 pub struct PlayerBody {
     pub slot: usize,
 }
 
+/// Placed on the glTF `AnimationPlayer` entity (a descendant of a `PlayerBody`),
+/// linking it back to the player slot so `drive_player_anim` can pick a clip.
 #[derive(Component)]
-pub struct PlayerNose {
-    pub slot: usize,
-}
+pub struct PlayerAnimSlot(pub usize);
 
 #[derive(Component)]
 pub struct UtilTag;
