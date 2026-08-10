@@ -130,8 +130,8 @@ def test_rank_does_not_treat_booleans_as_numbers():
 # death hotspot
 # --------------------------------------------------------------------------- #
 
-def _spot(rnd, x, y):
-    return (rnd, 100, x, y)               # (round, sample, x, y)
+def _spot(rnd, x, y, z=0.0):
+    return (rnd, 100, x, y, z)            # (round, sample, x, y, z)
 
 
 def test_hotspot_finds_repeated_deaths_in_one_place():

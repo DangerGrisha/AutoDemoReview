@@ -27,7 +27,7 @@ import math
 from collections import defaultdict
 from pathlib import Path
 
-from . import c2r3
+from . import c2r3, zones
 
 SIDE_OF = {2: "T", 3: "CT"}
 
@@ -192,11 +192,16 @@ def _round_files(artifacts_dir):
     return manifest, pairs
 
 
-def _hotspot(spots):
-    """Largest cluster of death positions, as (count, x, y, [rounds]).
+def _hotspot(spots, map_name=None):
+    """Largest cluster of death positions, as a dict, or None.
 
     Greedy single-pass clustering: good enough to answer "do you keep dying in
     the same place?", which is the only question being asked of it.
+
+    `zone` is the callout the cluster sits in, by majority vote of its deaths
+    rather than by the centroid's position -- a cluster straddling a boundary
+    should be named after where the deaths are, not after the midpoint between
+    them, which can land in a third place entirely.
     """
     best = None
     for anchor in spots:
@@ -206,12 +211,20 @@ def _hotspot(spots):
             best = near
     if not best or len(best) < 3:
         return None
-    return {
+
+    out = {
         "deaths": len(best),
         "x": round(sum(s[2] for s in best) / len(best)),
         "y": round(sum(s[3] for s in best) / len(best)),
         "rounds": sorted({s[0] for s in best}),
     }
+    if map_name:
+        named = [z for z in (zones.zone_of(map_name, s[2], s[3], s[4]) for s in best) if z]
+        if named:
+            winner = max(set(named), key=named.count)
+            out["zone"] = zones.label(winner)
+            out["zone_deaths"] = named.count(winner)
+    return out
 
 
 def analyse(artifacts_dir, ref_sid):
@@ -224,6 +237,7 @@ def analyse(artifacts_dir, ref_sid):
     manifest, pairs = _round_files(artifacts_dir)
     if not pairs:
         return None
+    map_name = manifest.get("map")
 
     # Persistent team identity: whichever side the reference player starts on.
     # Sides swap at half, so "teammate" has to be decided per round from that
@@ -343,7 +357,10 @@ def analyse(artifacts_dir, ref_sid):
                     pv.isolation.append(min(mates))
                 if foes:
                     pv.nearest_enemy.append(min(foes))
-                pv.death_spots.append((rnd.number, e["sample"], vx, vy))
+                # Height is carried so the callout lookup can tell a stacked
+                # map's levels apart (Nuke's lower site is under the upper one).
+                pv.death_spots.append((rnd.number, e["sample"], vx, vy,
+                                       vt["z"][sample]))
 
         # Opening duel: the round's first kill, both sides of it.
         if events:
@@ -435,6 +452,13 @@ def analyse(artifacts_dir, ref_sid):
                 row["killed_by"] = killer
             if players[ref_sid].isolation:
                 row["nearest_mate_u"] = round(players[ref_sid].isolation[-1])
+            # Where it happened, in the words the player would use.
+            spots = players[ref_sid].death_spots
+            if spots and spots[-1][0] == rnd.number:
+                zone = zones.zone_label(map_name, spots[-1][2], spots[-1][3],
+                                        spots[-1][4])
+                if zone:
+                    row["zone"] = zone
         nades = [i.get("type") for i in rnd.header.get("utility", [])
                  if i.get("thrower") == ref_sid]
         if nades:
@@ -466,11 +490,11 @@ def analyse(artifacts_dir, ref_sid):
             comparison[key] = entry
 
     return {
-        "map": manifest.get("map"),
+        "map": map_name,
         "rounds_analysed": len(per_round),
         "player": {"sid": ref_sid, "name": ref.name},
         "you": ref_sum,
         "vs_lobby": comparison,
-        "death_hotspot": _hotspot(ref.death_spots),
+        "death_hotspot": _hotspot(ref.death_spots, map_name),
         "rounds": per_round,
     }

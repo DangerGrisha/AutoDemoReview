@@ -45,15 +45,21 @@ def _you(**over):
     return base
 
 
-def _lobby(you, ranks):
-    """vs_lobby entries: `ranks` maps metric -> rank, everything else is mid-table."""
+def _lobby(you, ranks, medians=None):
+    """vs_lobby entries: `ranks` maps metric -> rank, everything else is mid-table.
+
+    `lobby_median` defaults to the player's own value (a dead tie) unless
+    `medians` overrides it, so a fixture has to say explicitly when the player
+    actually beats the field.
+    """
+    medians = medians or {}
     out = {}
     for key in tactics.BETTER:
         value = you.get(key)
         if value is None:
             continue
-        out[key] = {"you": value, "lobby_median": value, "of": 10,
-                    "rank": ranks.get(key, 5)}
+        out[key] = {"you": value, "lobby_median": medians.get(key, value),
+                    "of": 10, "rank": ranks.get(key, 5)}
     return out
 
 
@@ -68,14 +74,14 @@ def _rounds(n=22):
     return rows
 
 
-def _facts(you=None, ranks=None, rounds=None, hotspot=None):
+def _facts(you=None, ranks=None, rounds=None, hotspot=None, medians=None):
     you = you or _you()
     return {
         "map": "de_ancient",
         "rounds_analysed": 22,
         "player": {"sid": SID, "name": "you"},
         "you": you,
-        "vs_lobby": _lobby(you, ranks or {}),
+        "vs_lobby": _lobby(you, ranks or {}, medians),
         "death_hotspot": hotspot,
         "rounds": rounds if rounds is not None else _rounds(),
     }
@@ -321,13 +327,30 @@ def test_internal_rule_codes_never_reach_the_reader():
 
 
 def test_strengths_are_only_claimed_for_the_top_two_in_the_lobby():
-    top = coachrules.build_report(_facts(ranks={"kills": 1}))["strengths"]
+    beat = {"kills": 11}                    # the player has 18, the lobby 11
+    top = coachrules.build_report(
+        _facts(ranks={"kills": 1}, medians=beat))["strengths"]
     assert top and "лучший результат" in top[0]["evidence"]
 
-    second = coachrules.build_report(_facts(ranks={"kills": 2}))["strengths"]
+    second = coachrules.build_report(
+        _facts(ranks={"kills": 2}, medians=beat))["strengths"]
     assert second and "второй результат" in second[0]["evidence"]
 
-    assert coachrules.build_report(_facts(ranks={"kills": 3}))["strengths"] == []
+    assert coachrules.build_report(
+        _facts(ranks={"kills": 3}, medians=beat))["strengths"] == []
+
+
+def test_matching_the_lobby_is_not_a_strength():
+    """Everyone tied on a metric shares rank 1, which is not an achievement.
+
+    Real case: an old 3D artifact carries no headshot flags, so every player
+    scores 0% and the report opened with "0% в голову — лучший результат
+    в лобби". Praise has to require actually beating the field.
+    """
+    you = _you(hs_pct=0, kills=18)
+    facts = _facts(you=you, ranks={"hs_pct": 1, "kills": 1})   # medians == values
+
+    assert coachrules.build_report(facts)["strengths"] == []
 
 
 def test_a_missing_metric_skips_its_rule_instead_of_killing_the_report():

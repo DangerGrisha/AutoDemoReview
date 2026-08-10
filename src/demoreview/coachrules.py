@@ -116,6 +116,11 @@ def _rule_early_death(facts, agg):
     }
 
 
+def _zone(facts):
+    """The callout of the death hotspot, if the map's zones are known."""
+    return (facts.get("death_hotspot") or {}).get("zone")
+
+
 def _rule_hotspot(facts, agg):
     h = facts.get("death_hotspot")
     if not h or h["deaths"] < 3:
@@ -125,20 +130,27 @@ def _rule_hotspot(facts, agg):
             if r["n"] in rounds and r.get("won") is False]
     lost_note = (f" Из них проиграно {len(lost)} — "
                  f"{', '.join(str(n) for n in lost)}." if lost else "")
+    # A callout is what the player thinks in; coordinates are what is left when
+    # the map has no zone data (an unconverted or community map).
+    zone = h.get("zone")
+    where = f"на {zone}" if zone else "в одной точке карты"
+    place = (f"{where} (координаты {h['x']}, {h['y']})" if not zone else
+             f"{where} (радиус около 450 юнитов вокруг {h['x']}, {h['y']})")
     return {
         "code": "hotspot",
-        "title": "Ты умираешь в одной и той же точке",
+        "title": f"Ты раз за разом умираешь на {zone}" if zone else
+                 "Ты умираешь в одной и той же точке",
         "severity": "high" if h["deaths"] >= 4 else "medium",
         "cause": "Ты возвращаешься на одну и ту же позицию раунд за раундом. "
                  "К середине матча соперник знает, где ты стоишь, и заходит "
                  "туда с утилитой и заранее наведённым прицелом.",
-        "evidence": f"{h['deaths']} {_deaths_word(h['deaths'])} в одной точке "
-                    f"карты (координаты {h['x']}, {h['y']}, радиус около 450 "
-                    f"юнитов) — {_list_rounds(rounds)}.{lost_note}",
+        "evidence": f"{h['deaths']} {_deaths_word(h['deaths'])} {place} — "
+                    f"{_list_rounds(rounds)}.{lost_note}",
         "rounds": rounds,
-        "fix": "Держи эту позицию не чаще чем через раунд. Если всё же встал "
-               "туда второй раз подряд — меняй угол подхода и время выхода, "
-               "чтобы тебя не ждали на той же секунде.",
+        "fix": (f"Держи {zone} не чаще чем через раунд. " if zone else
+                "Держи эту позицию не чаще чем через раунд. ") +
+               "Если всё же встал туда второй раз подряд — меняй угол подхода "
+               "и время выхода, чтобы тебя не ждали на той же секунде.",
     }
 
 
@@ -205,8 +217,10 @@ def _rule_isolation(facts, agg):
     if len(far) < 3 and not median_bad:
         return None
     far.sort(key=lambda r: -r["nearest_mate_u"])
-    detail = ", ".join(f"раунд {r['n']} — {r['nearest_mate_u']} юнитов"
-                       for r in far[:3])
+    detail = ", ".join(
+        f"раунд {r['n']} — {r['nearest_mate_u']} юнитов"
+        + (f" ({r['zone']})" if r.get("zone") else "")
+        for r in far[:3])
     if median_bad:
         head = (f"Медианная дистанция до ближайшего живого тиммейта в момент "
                 f"смерти {med['you']} юнитов против {med['lobby_median']} по "
@@ -387,6 +401,15 @@ def _strengths(facts):
         m = _m(facts, key)
         if not m or m["rank"] > 2:
             continue
+        # Rank alone is not enough: ties all share rank 1, so a metric nobody in
+        # the lobby scored on (an old artifact with no headshot flags, say)
+        # would come out as "best in the server at 0% headshots". A strength has
+        # to actually beat the field, not merely match it.
+        direction = tactics.BETTER.get(key)
+        beats_lobby = (m["you"] < m["lobby_median"] if direction == "low"
+                       else m["you"] > m["lobby_median"])
+        if not beats_lobby:
+            continue
         place = "лучший результат" if m["rank"] == 1 else "второй результат"
         out.append({
             "point": phrase[0].upper() + phrase[1:],
@@ -397,7 +420,7 @@ def _strengths(facts):
     return out
 
 
-def _merge_early_hotspot(found):
+def _merge_early_hotspot(found, facts):
     """Fold "dies early" and "dies in the same spot" into one finding.
 
     When the same rounds trigger both, they are one habit seen from two angles.
@@ -412,19 +435,22 @@ def _merge_early_hotspot(found):
     if len(shared) < 2:
         return found
 
+    zone = _zone(facts)
     merged = dict(early)
-    merged["title"] = "Ты умираешь рано и в одной и той же точке"
+    merged["title"] = (f"Ты умираешь рано и всегда на {zone}" if zone else
+                       "Ты умираешь рано и в одной и той же точке")
     merged["severity"] = "high"
     merged["cause"] = (
-        "Ты каждый раунд возвращаешься на одну позицию и берёшь с неё первый "
-        "контакт до того, как вышла утилита. Соперник читает и точку, и время, "
-        "поэтому к середине матча тебя там просто ждут.")
+        f"Ты каждый раунд возвращаешься на {zone or 'одну позицию'} и берёшь "
+        "оттуда первый контакт до того, как вышла утилита. Соперник читает и "
+        "точку, и время, поэтому к середине матча тебя там просто ждут.")
     merged["evidence"] = early["evidence"] + " " + hot["evidence"]
     merged["rounds"] = sorted(set(early["rounds"]) | set(hot["rounds"]))
     merged["fix"] = (
-        "Первые 20 секунд раунда — никакого сухого пика с этой позиции: либо "
-        "открывай её утилитой и заходи вторым номером, либо меняй точку каждый "
-        "второй раунд. " + early["fix"].split(". ", 1)[-1])
+        f"Первые 20 секунд раунда — никакого сухого пика "
+        f"{'с ' + zone if zone else 'с этой позиции'}: либо открывай точку "
+        "утилитой и заходи вторым номером, либо меняй её каждый второй раунд. "
+        + early["fix"].split(". ", 1)[-1])
     return [p for p in found if p["code"] not in ("early_death", "hotspot")] + [merged]
 
 
@@ -448,7 +474,7 @@ def build_report(facts, agg=None):
         if problem:
             found.append(problem)
 
-    found = _merge_early_hotspot(found)
+    found = _merge_early_hotspot(found, facts)
     order = {"high": 2, "medium": 1, "low": 0}
     found.sort(key=lambda p: (order[p["severity"]], WEIGHT.get(p["code"], 0)),
                reverse=True)
