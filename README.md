@@ -108,3 +108,24 @@ demoReview/
 ```
 
 You can also run it as a module: `python -m demoreview demos/match.dem`.
+
+## Tests
+
+```bash
+python tests/run_tests.py          # everything, no dependencies needed
+python tests/run_tests.py tests    # just the analysis suite
+```
+
+The runner needs nothing but the stdlib, so it works with the same interpreter
+that runs the app. Every test file is also a plain pytest module, so
+`python -m pytest` works where pytest is installed.
+
+What is covered: the C2R3 reader (`tests/test_c2r3.py` — a reference encoder
+written from the format spec, plus a parity check against a real artifact from
+the Rust writer), the tactical facts engine (`tests/test_tactics.py` — above all
+that every metric is ranked the way a human would rank it, which is the bug
+class that silently praises a player for what is losing them the match), the
+free coach (`tests/test_coachrules.py` — no finding may cite a round that isn't
+in the fact sheet), report rendering and its link whitelist
+(`tests/test_coachreport.py`), and the Steam sharecode codec
+(`steambot/tests/`).
