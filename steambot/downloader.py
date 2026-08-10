@@ -20,6 +20,12 @@ _TIMEOUT = httpx.Timeout(connect=15.0, read=120.0, write=30.0, pool=15.0)
 _CHUNK = 1 << 16
 
 
+class DemoNotReady(RuntimeError):
+    """The replay server answered 5xx -- the demo isn't published yet, or the
+    server is busy. Seen in the wild as a plain 502 minutes after a match ends,
+    so callers must treat it as "come back later", never as a hard failure."""
+
+
 def download_demo(url: str, dest_dir: Path, log: StepLogger) -> Path:
     """Download ``url`` (a .dem.bz2) into ``dest_dir`` and decompress it.
 
@@ -41,6 +47,11 @@ def download_demo(url: str, dest_dir: Path, log: StepLogger) -> Path:
             if resp.status_code == 404:
                 raise FileNotFoundError(
                     f"demo not found (404) -- likely expired/pruned by Valve: {url}"
+                )
+            if 500 <= resp.status_code < 600:
+                raise DemoNotReady(
+                    f"replay server returned {resp.status_code} -- the demo is most "
+                    f"likely still being published: {url}"
                 )
             resp.raise_for_status()
             declared = int(resp.headers.get("content-length", 0))

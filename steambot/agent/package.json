@@ -1,0 +1,19 @@
+{
+  "name": "steambot-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Loopback HTTP bridge to the CS2 Game Coordinator and Steam chat for the Python worker.",
+  "main": "agent.mjs",
+  "scripts": {
+    "start": "node agent.mjs"
+  },
+  "dependencies": {
+    "globaloffensive": "^3.1.2",
+    "steam-totp": "^2.1.2",
+    "steam-user": "^5.2.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

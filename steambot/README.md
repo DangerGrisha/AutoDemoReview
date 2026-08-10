@@ -1,9 +1,16 @@
-# steambot — automatic CS2 match detection + demo download (proof of concept)
+# steambot — automatic CS2 match detection + demo download
 
-**Scope of this pass:** prove, for **one account (yours)**, that we can
+> **This package now has two layers.** The original **single-account PoC**
+> (`python -m steambot …`, driven entirely by `.env`) is still here and is the
+> right tool for debugging the protocol one step at a time. On top of it sits the
+> **multi-user auto-import** the web app actually uses: subscriptions live in the
+> database, players sign up on `/connect`, and reports are delivered on the site
+> and (opt-in) over Steam chat. See [Multi-user auto-import](#multi-user-auto-import)
+> below; the PoC sections that follow describe the layers both share.
+
+**Scope of the original pass:** prove, for **one account (yours)**, that we can
 (1) automatically detect a new match and (2) download its raw `.dem` file, end to
-end. Deliberately **not** wired into the parsing pipeline, database, or Steam chat
-— that comes later, and only if this foundation proves out.
+end.
 
 This README doubles as the honest write-up you asked for: *does the
 reverse-engineered GC protocol still work against current CS2?*
@@ -174,10 +181,70 @@ single-file change (`gc_client.py`), no churn elsewhere.
 
 ---
 
+## Multi-user auto-import
+
+What the web app runs. Same three layers as the PoC, but subscriptions come from
+the database instead of `.env`, and the Game-Coordinator step moved to Node.
+
+```
+  player on /connect                     steambot/worker.py (python -m steambot.worker)
+  ──────────────────                     ──────────────────────────────────────────────
+  auth code + sharecode  ──► steam_links ──► 1. GetNextMatchSharingCode   (Web API)
+                                             2. POST /resolve             (Node agent → GC)
+                                             3. download + bunzip2
+                                             4. web.ingest.ingest_demo    (same path as /upload)
+                                             5. POST /message             (Node agent → Steam chat)
+```
+
+**Why the agent is Node.** `ValvePython/csgo` has been unmaintained since 2020 and
+does not reliably reach the CS2 GC (see the honest status above). `steam-user` +
+`globaloffensive` are maintained and cover *both* things we need — GC lookups and
+chat — over one session. Everything else stays Python; the two talk over loopback
+HTTP (`steambot/agent/agent.mjs`, port 8790, `X-Agent-Token`).
+
+**Friend policy.** The bot **never sends invites**: players add it from `/connect`
+and it accepts only SteamIDs the worker allow-lists. Outgoing invites from a bot
+are a spam-flag trigger, and Steam caps friends at **250** — which is also why
+chat is a delivery bonus, not the only channel. Note that a *limited* Steam
+account (no ≥$5 purchase) can neither add friends nor send messages at all.
+
+**Setup**
+
+```bash
+pip install -r requirements-steambot.txt        # httpx is all the worker needs
+cd steambot/agent && npm install && cd ../..    # steam-user + globaloffensive + steam-totp
+```
+
+Fill in `.env`: `STEAM_API_KEY` (required — the sharecode chain is dead without
+it), `STEAMBOT_USERNAME` / `STEAMBOT_PASSWORD` / `STEAMBOT_SHARED_SECRET`,
+`STEAMBOT_AGENT_TOKEN` (any random string), and `STEAMBOT_PROFILE_URL` (the bot's
+Steam profile, shown on `/connect`).
+
+**Run** — two processes beside the web app:
+
+```bash
+node steambot/agent/agent.mjs         # keeps the Steam session + GC alive
+python -m steambot.worker             # sweeps due subscriptions every minute
+python -m steambot.worker --once      # single sweep (cron/Task Scheduler)
+python -m steambot.worker --steamid 76561198…   # force one subscription now
+curl http://127.0.0.1:8790/health -H "X-Agent-Token: …"   # is the GC up?
+```
+
+**The three outcomes the worker keeps apart** (conflating them is how this loop
+breaks): *caught up* — nothing new; *waiting* — the match exists but Valve hasn't
+published its demo yet, which takes minutes and sometimes ~an hour, so the cursor
+must not move and the failure streak must not grow (bounded by
+`MAX_PENDING_TRIES`, after which the match is skipped — Valve prunes demos after
+1–2 weeks and a missing one would otherwise block the cursor forever); *broken* —
+a revoked auth code, which does count as a failure and parks the subscription
+after ten of them, telling the player to paste a fresh code.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
+| `worker.py` | multi-user sweep: detect → resolve → download → ingest → notify |
+| `agent/agent.mjs` | Node Steam agent: GC resolve, chat, friend accepts (loopback HTTP) |
 | `sharecode.py` | base-57 sharecode codec (decode/encode) — **verified** |
 | `sharecode_api.py` | Layer 1: `GetNextMatchSharingCode` client — **verified shape** |
 | `gc_client.py` | Layer 2: ValvePython GC resolve — **the uncertain layer** |

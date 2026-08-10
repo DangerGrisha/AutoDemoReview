@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Auto-import &mdash; demoReview{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Automatic match import</h1>
+  {% if st.linked %}<form method="post" action="/connect/off">
+    <button class="btn small ghost" type="submit">Turn off</button></form>{% endif %}
+</div>
+
+<p class="muted lead">
+  Connect your CS2 match history once, and every match you finish shows up here on
+  its own &mdash; parsed, with the 3D replay ready. No uploading, no waiting around.
+</p>
+
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+{% if saved %}<p class="ok-note">Connected. Your next finished match will appear
+  automatically &mdash; it usually takes a few minutes after the match ends.</p>{% endif %}
+
+{% if st.linked %}
+<div class="card">
+  <h2>Status</h2>
+  <table class="matches slim">
+    <tr><td class="muted">Auto-import</td>
+        <td>{% if st.paused %}<span class="tag warn">paused</span>
+            {% elif st.enabled %}<span class="tag win">on</span>
+            {% else %}<span class="tag loss">off</span>{% endif %}</td></tr>
+    <tr><td class="muted">Authentication code</td><td class="mono">{{ st.auth_code_masked }}</td></tr>
+    <tr><td class="muted">Last imported match</td><td class="mono">{{ st.last_sharecode }}</td></tr>
+    <tr><td class="muted">Matches imported</td><td>{{ st.matches_found }}</td></tr>
+    <tr><td class="muted">Last checked</td>
+        <td class="mono muted">{{ st.last_checked_at or 'not yet' }}</td></tr>
+    {% if st.last_error %}
+    <tr><td class="muted">Last error</td><td class="err-cell">{{ st.last_error }}</td></tr>
+    {% endif %}
+  </table>
+  {% if st.paused %}
+  <p class="muted">Checking stopped after repeated failures &mdash; most often a
+     revoked authentication code. Paste a fresh one below to resume.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Reports in Steam chat</h2>
+  {% if not st.bot_url %}
+    <p class="muted">Steam delivery isn't set up on this server yet. Matches still
+       import automatically &mdash; they just appear in <a href="/profile">My matches</a>
+       instead of arriving as a message.</p>
+  {% elif st.friend_state == 'friends' %}
+    <p><span class="tag win">connected</span> {{ st.bot_name }} will message you a link
+       to each new report.</p>
+  {% else %}
+    <p>Add <a href="{{ st.bot_url }}" target="_blank" rel="noopener">{{ st.bot_name }}</a>
+       on Steam and it will accept your invite automatically &mdash; then each finished
+       match arrives as a chat message with a link to its report.</p>
+    <p class="muted">We never send friend invites ourselves, so the request has to come
+       from you. Matches import either way; the chat is just delivery.</p>
+  {% endif %}
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>{% if st.linked %}Update your codes{% else %}Connect your account{% endif %}</h2>
+  <ol class="steps">
+    <li>Open the <a href="{{ st.help_url }}" target="_blank" rel="noopener">Steam
+        help page for CS2 match history</a> (you'll be asked to sign in to Steam).</li>
+    <li>Copy the <b>authentication code</b> it shows you.</li>
+    <li>On the same page, copy the <b>sharecode</b> of your most recent match.</li>
+  </ol>
+
+  <form class="stack" method="post" action="/connect">
+    <label>Match history authentication code
+      <input type="text" name="auth_code" required autocomplete="off" spellcheck="false"
+             placeholder="ABCD-EFGH2-IJKL">
+    </label>
+    <label>Sharecode of a recent match
+      <input type="text" name="share_code" required autocomplete="off" spellcheck="false"
+             placeholder="CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx"
+             value="{{ st.form_sharecode or '' }}">
+    </label>
+    <label class="check">
+      <input type="checkbox" name="chat_optin" value="1"
+             {% if st.chat_optin is not defined or st.chat_optin %}checked{% endif %}>
+      Also send me a Steam message when a report is ready
+    </label>
+    <button class="btn" type="submit">
+      {% if st.linked %}Save{% else %}Connect{% endif %}</button>
+  </form>
+
+  <p class="muted small">
+    The authentication code only grants read access to your match-sharing history
+    &mdash; it is not your Steam password, and you can revoke it any time on the same
+    Steam page. We store it to check for new matches and never show it back in full.
+    Demos are deleted right after parsing.
+  </p>
+</div>
+{% endblock %}
