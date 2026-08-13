@@ -80,7 +80,45 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_matches_hash ON matches(dem_sha256) WHERE 
 CREATE INDEX IF NOT EXISTS idx_participants_sid ON match_participants(steamid64);
 """
 
-SCHEMA = _USERS_DDL + _MATCHES_DDL + PARTICIPANTS_DDL + INDEXES_DDL
+# --- v2: Steam-bot auto-import subscriptions (one row per opted-in player) ---
+#
+# `match_auth_code` is the player's CS2 match-history authentication code: a
+# scoped, revocable token that only authorises reading their match-sharing
+# history -- NOT a Steam password. It still must never be logged or shown back in
+# full (see steambot/README.md). `last_sharecode` is the walking cursor: the most
+# recent match we have already imported; GetNextMatchSharingCode walks forward
+# from it. `chat_optin` + `friend_state` govern Steam-chat delivery, which needs
+# the bot to be a friend -- the user adds the bot, the bot accepts (never the
+# other way round: outgoing bot invites are a spam-flag trigger, and Steam caps
+# friends at 250 anyway, so chat is a bonus channel, not the only one).
+STEAM_LINKS_DDL = """
+CREATE TABLE IF NOT EXISTS steam_links (
+    steamid64       TEXT PRIMARY KEY REFERENCES users(steamid64) ON DELETE CASCADE,
+    match_auth_code TEXT NOT NULL,
+    last_sharecode  TEXT NOT NULL,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    chat_optin      INTEGER NOT NULL DEFAULT 1,
+    friend_state    TEXT    NOT NULL DEFAULT 'none',   -- none | pending | friends
+    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    last_checked_at TEXT,
+    last_match_at   TEXT,
+    matches_found   INTEGER NOT NULL DEFAULT 0,
+    fail_count      INTEGER NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    -- A match is detected minutes before Valve publishes its demo, so the found
+    -- sharecode is parked here while we wait. Waiting is NOT a failure (it must
+    -- not trip fail_count), but it can't be endless either: Valve prunes demos
+    -- after ~1-2 weeks, and a match whose demo never appears would block the
+    -- cursor forever -- hence a try counter the worker uses to give up and skip.
+    pending_sharecode TEXT,
+    pending_tries     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_steam_links_due
+    ON steam_links(enabled, last_checked_at);
+"""
+
+SCHEMA = (_USERS_DDL + _MATCHES_DDL + PARTICIPANTS_DDL + INDEXES_DDL
+          + STEAM_LINKS_DDL)
 
 # Columns of match_participants that extract_participants() supplies (match_id added at insert).
 _PART_COLS = (
@@ -278,5 +316,190 @@ def career_blobs(steamid):
             "SELECT weapons_json, h2h_json FROM match_participants WHERE steamid64 = ?",
             (steamid,),
         ).fetchall()
+    finally:
+        conn.close()
+
+
+# ---- steam-bot subscriptions (auto-import of finished matches) ----
+
+def upsert_steam_link(steamid, match_auth_code, last_sharecode):
+    """Create or update a subscription, clearing any previous failure state.
+
+    Re-submitting the form is how a user fixes a revoked auth code, so the error
+    counters reset here -- otherwise a subscription paused by repeated failures
+    would stay paused after being fixed.
+    """
+    conn = connect()
+    try:
+        conn.execute(
+            """INSERT INTO steam_links (steamid64, match_auth_code, last_sharecode)
+                    VALUES (?, ?, ?)
+               ON CONFLICT(steamid64) DO UPDATE SET
+                    match_auth_code = excluded.match_auth_code,
+                    last_sharecode  = excluded.last_sharecode,
+                    enabled         = 1,
+                    fail_count      = 0,
+                    last_error      = NULL""",
+            (steamid, match_auth_code, last_sharecode),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_steam_link(steamid):
+    conn = connect()
+    try:
+        return conn.execute(
+            "SELECT * FROM steam_links WHERE steamid64 = ?", (steamid,)).fetchone()
+    finally:
+        conn.close()
+
+
+def delete_steam_link(steamid):
+    conn = connect()
+    try:
+        conn.execute("DELETE FROM steam_links WHERE steamid64 = ?", (steamid,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_steam_link_flags(steamid, *, enabled=None, chat_optin=None, friend_state=None):
+    """Patch the toggles/state of one subscription (only the given fields)."""
+    sets, args = [], []
+    for col, val in (("enabled", enabled), ("chat_optin", chat_optin)):
+        if val is not None:
+            sets.append(f"{col} = ?")
+            args.append(1 if val else 0)
+    if friend_state is not None:
+        sets.append("friend_state = ?")
+        args.append(friend_state)
+    if not sets:
+        return
+    args.append(steamid)
+    conn = connect()
+    try:
+        conn.execute(f"UPDATE steam_links SET {', '.join(sets)} WHERE steamid64 = ?", args)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_due_steam_links(max_age_s, limit=50, max_fails=10, pending_age_s=None):
+    """Enabled subscriptions due for a poll, oldest first.
+
+    Two cadences: a subscription with a match already detected but no demo yet
+    (`pending_sharecode`) is due after `pending_age_s`, everyone else after
+    `max_age_s`. Waiting for a demo only costs a Game Coordinator lookup, so it
+    can be checked often; the idle poll hits Steam's rate-limited Web API and a
+    new match cannot appear faster than it is played.
+
+    `max_fails` parks a subscription that keeps failing (revoked auth code, say)
+    instead of hammering the API with it forever -- re-submitting the form
+    resets the counter and revives it.
+    """
+    if pending_age_s is None:
+        pending_age_s = max_age_s
+    conn = connect()
+    try:
+        return conn.execute(
+            """SELECT * FROM steam_links
+                WHERE enabled = 1 AND fail_count < :max_fails
+                  AND (last_checked_at IS NULL
+                       OR (pending_sharecode IS NOT NULL
+                           AND last_checked_at <= datetime('now', :pending_cutoff))
+                       OR (pending_sharecode IS NULL
+                           AND last_checked_at <= datetime('now', :cutoff)))
+                ORDER BY last_checked_at IS NOT NULL, last_checked_at
+                LIMIT :limit""",
+            {"max_fails": max_fails,
+             "cutoff": f"-{int(max_age_s)} seconds",
+             "pending_cutoff": f"-{int(pending_age_s)} seconds",
+             "limit": limit},
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def steam_link_checked(steamid, *, error=None):
+    """Stamp a poll attempt. `error=None` clears the failure streak."""
+    conn = connect()
+    try:
+        if error is None:
+            conn.execute(
+                """UPDATE steam_links SET last_checked_at = datetime('now'),
+                        fail_count = 0, last_error = NULL WHERE steamid64 = ?""",
+                (steamid,))
+        else:
+            conn.execute(
+                """UPDATE steam_links SET last_checked_at = datetime('now'),
+                        fail_count = fail_count + 1, last_error = ?
+                    WHERE steamid64 = ?""",
+                (str(error)[:500], steamid))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def steam_link_advance(steamid, sharecode):
+    """Move the cursor to an imported match, count it, and clear the pending slot."""
+    conn = connect()
+    try:
+        conn.execute(
+            """UPDATE steam_links SET last_sharecode = ?, last_match_at = datetime('now'),
+                    matches_found = matches_found + 1,
+                    pending_sharecode = NULL, pending_tries = 0
+                WHERE steamid64 = ?""",
+            (sharecode, steamid))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def steam_link_skip_pending(steamid, sharecode):
+    """Give up on a match whose demo never appeared: move the cursor past it.
+
+    Without this the cursor would sit on a match Valve has already pruned and no
+    later match would ever be imported.
+    """
+    conn = connect()
+    try:
+        conn.execute(
+            """UPDATE steam_links SET last_sharecode = ?, pending_sharecode = NULL,
+                    pending_tries = 0 WHERE steamid64 = ?""",
+            (sharecode, steamid))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def steam_link_pending(steamid, sharecode):
+    """Record that `sharecode` is detected but still waiting for its demo."""
+    conn = connect()
+    try:
+        conn.execute(
+            """UPDATE steam_links
+                  SET pending_sharecode = :code,
+                      pending_tries = CASE WHEN pending_sharecode = :code
+                                           THEN pending_tries + 1 ELSE 1 END
+                WHERE steamid64 = :sid""",
+            {"code": sharecode, "sid": steamid})
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def steam_links_awaiting_friend():
+    """SteamIDs allowed to become the bot's friend: opted into chat, not yet friends.
+
+    The bot accepts invites ONLY from these -- otherwise it would collect random
+    people and burn through Steam's 250-friend cap.
+    """
+    conn = connect()
+    try:
+        return [r["steamid64"] for r in conn.execute(
+            """SELECT steamid64 FROM steam_links
+                WHERE chat_optin = 1 AND friend_state != 'friends'""").fetchall()]
     finally:
         conn.close()

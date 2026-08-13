@@ -6,6 +6,7 @@ front-end canvas can animate. Returns None if the map is unsupported.
 """
 
 from . import maps
+from .parseutil import event_df
 
 TICKRATE = 64      # CS2 demos are 64-tick; drives the frame<->seconds math
 STEP = 16          # sample every 16 ticks (~4 Hz at 64-tick) — smooth enough
@@ -192,7 +193,7 @@ def build_replay(parser, map_name, freeze_ticks, end_ticks, roster_by_round,
 def _bomb_plants(parser, freeze_ticks, end_ticks, info, step):
     """round -> {'pf': plant_frame, 'x': px, 'y': py} from bomb_planted events."""
     try:
-        bp = parser.parse_event("bomb_planted", player=["X", "Y"])
+        bp = event_df(parser, "bomb_planted", player=["X", "Y"])
     except Exception:
         return {}
     out = {}

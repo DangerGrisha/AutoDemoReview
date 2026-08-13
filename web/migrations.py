@@ -40,16 +40,56 @@ def _exec_each(conn, ddl):
             conn.execute(stmt)
 
 
+CURRENT_VERSION = 3
+
+
 def run(conn, full_schema):
     """Bring `conn` up to the current schema version (idempotent)."""
     conn.isolation_level = None                       # explicit transaction control
-    if _user_version(conn) >= 1:
+    if _user_version(conn) >= CURRENT_VERSION:
         return
     if not _table_exists(conn, "matches"):
-        _exec_each(conn, full_schema)                 # fresh install
-        conn.execute("PRAGMA user_version = 1")
+        _exec_each(conn, full_schema)                 # fresh install: already current
+        conn.execute(f"PRAGMA user_version = {CURRENT_VERSION}")
         return
-    _migrate_v0_to_v1(conn)
+    if _user_version(conn) < 1:
+        _migrate_v0_to_v1(conn)
+    if _user_version(conn) < 2:
+        _migrate_v1_to_v2(conn)
+    _migrate_v2_to_v3(conn)
+
+
+def _migrate_v1_to_v2(conn):
+    """Add the Steam-bot subscription table. Pure addition -- no data to move."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _exec_each(conn, db.STEAM_LINKS_DDL)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("PRAGMA user_version = 2")
+
+
+def _migrate_v2_to_v3(conn):
+    """Park a detected-but-not-yet-published match on the subscription row.
+
+    A DB created at v2 already has the columns (they live in STEAM_LINKS_DDL), so
+    each ADD COLUMN is guarded -- SQLite has no ADD COLUMN IF NOT EXISTS.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _exec_each(conn, db.STEAM_LINKS_DDL)          # no-op if it already exists
+        if not _has_column(conn, "steam_links", "pending_sharecode"):
+            conn.execute("ALTER TABLE steam_links ADD COLUMN pending_sharecode TEXT")
+        if not _has_column(conn, "steam_links", "pending_tries"):
+            conn.execute("ALTER TABLE steam_links ADD COLUMN pending_tries "
+                         "INTEGER NOT NULL DEFAULT 0")
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("PRAGMA user_version = 3")
 
 
 def _migrate_v0_to_v1(conn):

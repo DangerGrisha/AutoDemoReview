@@ -125,6 +125,11 @@ h1 { font-family: var(--display); font-weight: 700; letter-spacing: .02em; font-
 .matches .map { font-family: var(--display); letter-spacing: .03em; }
 .score { font-weight: 700; }
 
+/* Per-row actions (3D + View). Right-aligned, never wrapping onto two lines. */
+.matches td.acts { text-align: right; white-space: nowrap; }
+.matches td.acts .btn + .btn { margin-left: 8px; }
+.matches td.acts .btn .tag { padding: 0 5px; margin-left: 6px; font-size: .66rem; }
+
 .tag {
   font-family: var(--display); font-size: .72rem; font-weight: 700;
   padding: 2px 9px; border-radius: 4px; letter-spacing: .06em; text-transform: uppercase;
@@ -135,6 +140,39 @@ h1 { font-family: var(--display); font-weight: 700; letter-spacing: .02em; font-
 .tag.warn { background: rgba(222,155,53,.15); color: var(--t);   border-color: rgba(222,155,53,.4); }
 
 .empty { margin-top: 26px; color: var(--muted); }
+
+/* ---- auto-import (/connect) ---- */
+.card {
+  margin: 22px 0; padding: 18px 20px;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: rgba(255,255,255,.02);
+}
+.card h2 {
+  font-family: var(--display); text-transform: uppercase; letter-spacing: .06em;
+  font-size: .95rem; color: var(--muted); margin: 0 0 12px;
+}
+.lead { max-width: 62ch; }
+.ok-note {
+  padding: 10px 14px; border-radius: 8px; margin: 14px 0;
+  border: 1px solid rgba(107,158,107,.4); background: rgba(107,158,107,.12);
+}
+.steps { margin: 0 0 18px; padding-left: 22px; line-height: 1.7; }
+.steps li { margin-bottom: 2px; }
+form.stack { display: flex; flex-direction: column; gap: 14px; max-width: 46ch; }
+form.stack label { display: flex; flex-direction: column; gap: 6px;
+                   font-size: .9rem; color: var(--muted); }
+form.stack label.check { flex-direction: row; align-items: center; gap: 9px; }
+form.stack input[type=text] {
+  font-family: var(--mono); font-size: .95rem; padding: 10px 12px;
+  color: var(--text); background: rgba(0,0,0,.35);
+  border: 1px solid var(--line); border-radius: 8px;
+}
+form.stack input[type=text]:focus-visible {
+  outline: none; border-color: var(--ct);
+}
+form.stack button { align-self: flex-start; }
+.small { font-size: .84rem; }
+.err-cell { color: var(--neg); white-space: normal; max-width: 52ch; }
 .via { font-size: .72rem; margin-left: 6px; }
 
 /* ---- career page ---- */

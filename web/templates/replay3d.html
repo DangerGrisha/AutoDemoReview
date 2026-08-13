@@ -1,0 +1,856 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ demo_name }} · 3D replay · demoReview</title>
+{% if has_replay %}
+{# ?v= busts the 7-day static cache when the frame-payload layout changes; keep
+   the token in lockstep with the import + fetch URLs below #}
+<link rel="preload" as="fetch" crossorigin href="/static/replay3d/pkg/viewer_bg.wasm?v=3">
+{% if map_asset %}<link rel="preload" as="fetch" crossorigin href="/static/replay3d/assets/{{ map_asset }}">{% endif %}
+{% endif %}
+<style>
+  :root {
+    --bg:#0b0e14; --fg:#e6e9ef; --muted:#8b93a5; --dim:#5f6875;
+    --ct:#3b82f6; --t:#f59e0b; --accent:#2b6cff;
+    --panel:rgba(13,17,26,.86); --line:#232a36; --line2:#2a3342;
+    --good:#7CFFA6; --warn:#ffd166; --bad:#ff6b6b;
+    --radius:12px; --shadow:0 10px 34px rgba(0,0,0,.5);
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font:13px/1.5 -apple-system,Segoe UI,Roboto,Inter,sans-serif; overflow:hidden;
+    -webkit-font-smoothing:antialiased; }
+  #canvas { position:fixed; inset:0; width:100%; height:100%; display:block; outline:none; }
+
+  /* floating player nametags */
+  #labels { position:fixed; inset:0; pointer-events:none; z-index:5; overflow:hidden; }
+  .plabel { position:absolute; transform:translate(-50%,-100%); text-align:center; line-height:1.12;
+    text-shadow:0 0 3px #000,0 0 4px #000,0 1px 5px #000; white-space:nowrap; }
+  .plabel .pname { font-weight:700; font-size:14px; color:#fff; letter-spacing:.01em; }
+  .plabel .psub { font-weight:600; font-size:11px; font-variant-numeric:tabular-nums; }
+  .tlabel { position:absolute; transform:translate(-50%,-100%); font-weight:700; font-size:12px;
+    text-shadow:0 0 3px #000,0 0 4px #000; white-space:nowrap; opacity:.92; }
+
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
+    box-shadow:var(--shadow); backdrop-filter:blur(10px); }
+
+  /* top-left HUD (sits below the radar) */
+  #hud { position:fixed; top:246px; left:14px; z-index:10; padding:12px 14px; min-width:196px; }
+  #hud h1 { margin:0; font-size:15px; font-weight:700; letter-spacing:.01em; }
+  #hud .sub { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin:3px 0 10px; }
+  #hud .back { display:inline-flex; align-items:center; gap:5px; margin-bottom:8px; color:#8ab4ff;
+    text-decoration:none; font-size:12px; }
+  #hud .back:hover { text-decoration:underline; }
+  #hud .row { display:flex; align-items:center; gap:8px; margin-top:8px; }
+  #hud select { flex:1; background:#121826; color:var(--fg); border:1px solid var(--line2);
+    border-radius:8px; padding:5px 8px; font:inherit; }
+  #hud .k { color:var(--muted); font-size:11px; }
+  #hud .stat { font-variant-numeric:tabular-nums; color:var(--muted); font-size:11px; }
+  #hud .stat b { color:var(--fg); font-weight:600; }
+  .legend { display:flex; gap:14px; margin-top:11px; }
+  .legend span { display:inline-flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; }
+  .dot { width:9px; height:9px; border-radius:50%; display:inline-block; }
+
+  button { background:#182234; color:var(--fg); border:1px solid var(--line2); border-radius:8px;
+    padding:6px 11px; font:inherit; cursor:pointer; transition:background .12s,border-color .12s,color .12s; }
+  button:hover { background:#202c42; border-color:#38475f; }
+  button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+
+  /* bottom control bar */
+  #bar { position:fixed; left:0; right:0; bottom:0; z-index:10; padding:14px 18px 16px;
+    background:linear-gradient(transparent, rgba(6,9,14,.92) 42%); }
+  #bar .ctl { display:flex; align-items:center; gap:9px; margin-bottom:10px; }
+  #time { font-variant-numeric:tabular-nums; color:#c7cdd8; font-weight:600; letter-spacing:.02em; margin-left:4px; }
+  .spacer { flex:1; }
+  #track { position:relative; height:26px; }
+  #scrub { position:absolute; inset:0; width:100%; margin:0; -webkit-appearance:none;
+    background:transparent; cursor:pointer; z-index:3; }
+  #scrub::-webkit-slider-runnable-track { height:6px; border-radius:3px; background:#222b3a; margin-top:10px; }
+  #scrub::-webkit-slider-thumb { -webkit-appearance:none; width:15px; height:15px; margin-top:5.5px;
+    border-radius:50%; background:#fff; border:2px solid var(--accent); box-shadow:0 1px 4px rgba(0,0,0,.55); }
+  #fill { position:absolute; left:0; top:10px; height:6px; border-radius:3px;
+    background:linear-gradient(90deg,#2b6cff,#5f8dff); z-index:1; pointer-events:none; }
+  #marks { position:absolute; left:0; right:0; top:6px; height:14px; z-index:2; pointer-events:none; }
+  #marks .m { position:absolute; top:0; width:3px; height:14px; border-radius:2px; transform:translateX(-1px);
+    pointer-events:auto; cursor:pointer; opacity:.9; }
+  #marks .u { position:absolute; bottom:-3px; width:8px; height:8px; border-radius:50%;
+    transform:translateX(-4px); border:1px solid rgba(0,0,0,.6); pointer-events:auto; cursor:pointer; }
+
+  /* spectator scoreboard (right) */
+  #spec { position:fixed; top:14px; right:14px; z-index:10; width:226px; padding:10px; }
+  #spec .grp { display:flex; align-items:center; justify-content:space-between;
+    font-weight:700; font-size:11px; letter-spacing:.06em; text-transform:uppercase; margin:9px 4px 4px; }
+  #spec .grp:first-child { margin-top:2px; }
+  #spec .grp .ct { color:var(--dim); font-weight:600; letter-spacing:.02em; }
+  #spec .pv { display:flex; flex-direction:column; gap:4px; padding:5px 7px; border-radius:8px;
+    cursor:pointer; border:1px solid transparent; transition:background .1s; }
+  #spec .pv:hover { background:#182234; }
+  #spec .pv.on { background:rgba(43,108,255,.18); border-color:var(--accent); }
+  #spec .pv.dead { opacity:.45; }
+  #spec .pv .top { display:flex; align-items:center; gap:7px; }
+  #spec .pv .sw { width:8px; height:8px; border-radius:50%; flex:none; }
+  #spec .pv .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+  #spec .pv .wp { color:var(--dim); font-size:10px; text-transform:uppercase; letter-spacing:.03em;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:64px; }
+  #spec .pv .hp { font-variant-numeric:tabular-nums; font-weight:700; min-width:24px; text-align:right; }
+  #spec .pv .hpbar { height:3px; border-radius:2px; background:#222b3a; overflow:hidden; }
+  #spec .pv .hpbar i { display:block; height:100%; width:100%; background:var(--good); border-radius:2px;
+    transition:width .12s linear; }
+  #spec .free { width:100%; margin-top:10px; }
+  #spec .hint { color:var(--dim); font-size:11px; line-height:1.7; margin-top:9px;
+    border-top:1px solid var(--line); padding-top:8px; }
+  #spec .hint b { color:var(--muted); font-weight:700; }
+
+  /* CS2-style top score bar (CT score · round/clock · T score) */
+  #score { position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:11;
+    display:none; align-items:stretch; overflow:hidden; padding:0; }
+  #score .side { display:flex; flex-direction:column; align-items:center; justify-content:center;
+    width:76px; padding:8px 0 7px; }
+  #score .tn { font-size:11px; font-weight:800; letter-spacing:.08em; }
+  #score .sc { font-size:20px; font-weight:800; font-variant-numeric:tabular-nums; line-height:1.15; }
+  #score .dots { display:flex; gap:3px; margin-top:4px; height:4px; }
+  #score .dots i { width:9px; height:4px; border-radius:2px; background:#2a3342; }
+  #score .mid { display:flex; flex-direction:column; align-items:center; justify-content:center;
+    min-width:86px; padding:8px 14px 7px; border-left:1px solid var(--line); border-right:1px solid var(--line); }
+  #score .clk { font-size:17px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.2; }
+  #score .rnd { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.07em; margin-top:1px; }
+
+  /* live radar (top-left, CS2-style) */
+  #radar { position:fixed; top:14px; left:14px; z-index:10; width:220px; height:220px; padding:8px; }
+  #radar canvas { width:100%; height:100%; display:block; border-radius:8px; }
+
+  /* kill feed (top-right, left of the scoreboard) */
+  #feed { position:fixed; top:14px; right:252px; z-index:9; display:flex; flex-direction:column;
+    align-items:flex-end; gap:6px; pointer-events:none; max-width:40vw; }
+  #feed .k { display:flex; align-items:center; gap:7px; padding:5px 11px; border-radius:8px;
+    background:var(--panel); border:1px solid var(--line); box-shadow:var(--shadow);
+    backdrop-filter:blur(10px); font-weight:700; font-size:12px; white-space:nowrap; }
+  #feed .k .w { color:var(--muted); font-weight:600; }
+  #feed .k .pill { background:#222b3a; border:1px solid var(--line2); border-radius:5px;
+    padding:1px 7px; font-size:11px; font-weight:700; letter-spacing:.02em; }
+  #feed .k .b { font-size:11px; opacity:.92; font-weight:700; }
+
+  /* "now spectating" banner (top center, below the score bar) */
+  #specbanner { position:fixed; top:128px; left:50%; transform:translateX(-50%); z-index:11; display:none;
+    align-items:center; gap:9px; padding:7px 15px; border-radius:999px;
+    background:var(--panel); border:1px solid var(--line); box-shadow:var(--shadow);
+    backdrop-filter:blur(10px); font-weight:600; }
+  #specbanner .sw { width:9px; height:9px; border-radius:50%; }
+  #specbanner .who { font-weight:700; }
+  #specbanner .mode { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
+
+  /* C4 panel (under the score bar): site, fuse countdown, outcome */
+  #bomb { position:fixed; top:84px; left:50%; transform:translateX(-50%); z-index:12; display:none;
+    align-items:center; gap:10px; padding:7px 14px; border-radius:10px;
+    background:var(--panel); border:1px solid #5a2b2b; box-shadow:var(--shadow);
+    backdrop-filter:blur(10px); font-weight:700; }
+  #bomb.armed { border-color:#7a3030; }
+  #bomb.hot { animation:bombpulse .5s ease-in-out infinite; }
+  #bomb .ico { font-size:15px; line-height:1; }
+  #bomb .site { font-size:12px; letter-spacing:.06em; color:var(--muted); text-transform:uppercase; }
+  #bomb .t { font-size:19px; font-variant-numeric:tabular-nums; min-width:52px; text-align:center; }
+  #bomb .fuse { width:104px; height:5px; border-radius:3px; background:#2a3342; overflow:hidden; }
+  #bomb .fuse i { display:block; height:100%; width:100%; background:#ff6b6b; border-radius:3px; }
+  #bomb .out { font-size:12px; letter-spacing:.07em; text-transform:uppercase; }
+  @keyframes bombpulse { 0%,100%{ box-shadow:var(--shadow); } 50%{ box-shadow:0 0 0 3px rgba(255,80,64,.35), var(--shadow); } }
+
+  /* first-person crosshair */
+  #xhair { position:fixed; left:50%; top:50%; width:0; height:0; z-index:6; pointer-events:none; display:none; }
+  #xhair i { position:absolute; background:#39ff14; box-shadow:0 0 2px rgba(0,0,0,.9); }
+  #xhair .v1 { width:2px; height:7px; left:-1px; top:-11px; }
+  #xhair .v2 { width:2px; height:7px; left:-1px; top:4px; }
+  #xhair .h1 { height:2px; width:7px; top:-1px; left:-11px; }
+  #xhair .h2 { height:2px; width:7px; top:-1px; left:4px; }
+
+  #flash { position:fixed; inset:0; background:#fff; opacity:0; pointer-events:none; z-index:8; }
+  #err { position:fixed; inset:0; display:none; place-items:center; padding:40px;
+    background:var(--bg); color:#ff8080; z-index:20; text-align:center; }
+  #notice { position:fixed; inset:0; display:grid; place-items:center; padding:40px;
+    background:var(--bg); color:#c7cdd8; z-index:20; text-align:center; line-height:1.9; }
+  #notice a { color:#8ab4ff; }
+
+  /* first-load progress overlay (above canvas/HUD at z<=11, below #err at 20) */
+  #loading { position:fixed; inset:0; z-index:15; display:grid; place-items:center;
+    background:var(--bg); transition:opacity .35s; }
+  #loading.hide { opacity:0; pointer-events:none; }
+  #loading .box { width:min(420px, calc(100vw - 48px)); padding:22px 24px 24px; }
+  #loading h2 { margin:0; font-size:16px; font-weight:700; letter-spacing:.01em; }
+  #loading .lsub { color:var(--muted); font-size:11px; text-transform:uppercase;
+    letter-spacing:.08em; margin-top:3px; }
+  .lrow { display:grid; grid-template-columns:64px 1fr 48px; align-items:center;
+    gap:10px; margin-top:15px; }
+  .lrow .lk { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+  .lrow .lp { text-align:right; font-variant-numeric:tabular-nums; color:var(--muted); font-size:11px; }
+  .lbar { height:6px; border-radius:3px; background:#222b3a; overflow:hidden; }
+  .lbar i { display:block; height:100%; width:0%; border-radius:3px;
+    background:linear-gradient(90deg,#2b6cff,#5f8dff); transition:width .15s linear; }
+  .lbar.ind i { width:40%; animation:lslide 1.1s ease-in-out infinite; }
+  @keyframes lslide { 0%{margin-left:-40%} 100%{margin-left:100%} }
+</style>
+</head>
+<body>
+{% if not has_replay %}
+<div id="notice">
+  <div>
+    <h2>3D replay is not available for this match</h2>
+    <p>It was analyzed before the 3D replay feature existed (the raw .dem is never kept).<br>
+       Re-upload the same demo file to generate it.</p>
+    <p><a href="/matches/{{ match_id }}">&#8592; Back to the match report</a>
+       &nbsp;·&nbsp; <a href="/upload">Upload</a></p>
+  </div>
+</div>
+{% else %}
+<canvas id="canvas"></canvas>
+<div id="loading">
+  <div class="box panel">
+    <h2>3D replay</h2>
+    <div class="lsub">{{ map_name or demo_name }} · загрузка</div>
+    <div class="lrow"><span class="lk">движок</span>
+      <div class="lbar" id="barWasm"><i></i></div><span class="lp" id="pctWasm">0%</span></div>
+    {% if map_asset %}
+    <div class="lrow"><span class="lk">карта</span>
+      <div class="lbar" id="barMap"><i></i></div><span class="lp" id="pctMap">0%</span></div>
+    {% endif %}
+  </div>
+</div>
+<div id="labels"></div>
+<div id="xhair"><i class="v1"></i><i class="v2"></i><i class="h1"></i><i class="h2"></i></div>
+<div id="spec" class="panel"></div>
+<div id="bomb"></div>
+<div id="specbanner"></div>
+<div id="score" class="panel">
+  <div class="side"><span class="tn" style="color:var(--ct)">CT</span>
+    <span class="sc" id="scCT">0</span><span class="dots" id="dotsCT"></span></div>
+  <div class="mid"><span class="clk" id="clk">0:00</span><span class="rnd" id="rndNo">Round 1</span></div>
+  <div class="side"><span class="tn" style="color:var(--t)">T</span>
+    <span class="sc" id="scT">0</span><span class="dots" id="dotsT"></span></div>
+</div>
+<div id="radar" class="panel"><canvas id="radarcv"></canvas></div>
+<div id="feed"></div>
+<div id="hud" class="panel">
+  <a class="back" href="/matches/{{ match_id }}">&#8592; Back to the match report</a>
+  <h1 id="title">3D replay</h1>
+  <div class="sub">3D replay · observer</div>
+  <div class="row"><span class="k">Round</span><select id="roundSel"></select></div>
+  <div class="row stat"><span class="k">FPS</span><b id="fps">–</b><span class="k">·</span>
+    <b id="upd">–</b><span class="k">ms/frame</span></div>
+  <div class="legend">
+    <span><i class="dot" style="background:var(--ct)"></i>CT</span>
+    <span><i class="dot" style="background:var(--t)"></i>T</span></div>
+  {% if map_asset %}
+  <div class="row"><button id="mapToggle" style="width:100%">Radar view</button></div>
+  {% endif %}
+</div>
+
+<div id="bar">
+  <div class="ctl">
+    <button id="play">⏸ Pause</button>
+    <span class="k">speed</span>
+    <button class="spd" data-s="0.5">0.5×</button>
+    <button class="spd on" data-s="1">1×</button>
+    <button class="spd" data-s="2">2×</button>
+    <button class="spd" data-s="4">4×</button>
+    <span id="time">0:00 / 0:00</span>
+    <span class="spacer"></span>
+    <button id="xray" class="on" title="Players visible through walls &amp; smoke (V)">X-ray</button>
+  </div>
+  <div id="track">
+    <div id="fill"></div>
+    <div id="marks"></div>
+    <input id="scrub" type="range" min="0" max="100" step="0.01" value="0">
+  </div>
+</div>
+<div id="flash"></div>
+<div id="err"></div>
+
+<!-- procedural match audio (gunfire / footsteps / utility / hits); defines
+     window.ReplaySfx and mounts its own button + mixer into the bottom bar -->
+<script src="/static/replay3d/sfx.js?v=4"></script>
+
+<script type="module">
+/* Same JS <-> WASM control interface as rust/viewer/www/index.html (the dev
+ * page); deltas here: wasm pkg + assets come from /static/replay3d/, round
+ * artifacts come from the auth-gated per-match route, and the server injects
+ * mapAsset when a converted map exists for this match's map_name.
+ * Per-frame payload is PSTRIDE (10) floats/player {x,y,onScreen,alive,health,
+ * weapon,worldX,worldY,yawDeg,present} — worldX/worldY/yawDeg are raw demo
+ * coords for the live radar. ?v= must match the preload hint above. */
+import init, { run, load_manifest, load_round, seek, set_playing, set_speed, set_flash_focus,
+  set_map_visible, set_camera_follow, set_camera_free, set_xray } from '/static/replay3d/pkg/viewer.js?v=3';
+
+const BASE = '/matches/{{ match_id }}/replay3d/';
+const MAP_ASSET = {{ (map_asset or "")|tojson }};
+// UNCOMPRESSED sizes injected by the server (progress denominators; the
+// on-wire Content-Length is the compressed size, so it is the wrong one).
+const WASM_SIZE = {{ wasm_size or 0 }};
+const MAP_SIZE = {{ map_size or 0 }};
+
+// ---- first-load overlay ----
+function hideLoading(){
+  const el=document.getElementById('loading'); if(!el) return;
+  el.classList.add('hide'); setTimeout(()=>el.remove(), 400);
+}
+// Progress sink for one bar. total>0 -> percent; total unknown -> indeterminate
+// animation with an MB counter; done -> snap to 100%.
+function barSetter(barId, pctId){
+  const bar=document.getElementById(barId);
+  if (!bar) return ()=>{};
+  const fill=bar.querySelector('i'), pct=document.getElementById(pctId);
+  return (loaded, total, done)=>{
+    if (done){ bar.classList.remove('ind'); fill.style.width='100%';
+      if (pct) pct.textContent='100%'; return; }
+    if (total>0){ const p=Math.min(99.9, loaded/total*100);
+      fill.style.width=p+'%'; if (pct) pct.textContent=p.toFixed(0)+'%'; }
+    else { bar.classList.add('ind');
+      if (pct) pct.textContent=(loaded/1048576).toFixed(0)+' MB'; }
+  };
+}
+// fetch() whose Response counts DECOMPRESSED bytes flowing through (exactly
+// what the reader yields when Content-Encoding is active). Headers/status are
+// preserved so streaming wasm instantiation still sees application/wasm;
+// content-encoding/length are dropped because the new body is already decoded.
+async function fetchWithProgress(url, totalBytes, onProgress){
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error('HTTP '+resp.status+' for '+url);
+  if (!resp.body){ onProgress(totalBytes, totalBytes, true); return resp; }
+  const reader = resp.body.getReader();
+  let got = 0;
+  const counting = new ReadableStream({
+    async pull(c){
+      const {done, value} = await reader.read();
+      if (done){ onProgress(got, totalBytes, true); c.close(); return; }
+      got += value.byteLength;
+      onProgress(got, totalBytes, false);
+      c.enqueue(value);
+    },
+    cancel(reason){ return reader.cancel(reason); }
+  });
+  const headers = new Headers(resp.headers);
+  headers.delete('content-encoding'); headers.delete('content-length');
+  return new Response(counting, {status:resp.status, statusText:resp.statusText, headers});
+}
+
+const $ = s => document.querySelector(s);
+function fail(m){ const e=$('#err'); e.style.display='grid'; e.textContent='Error: '+m; console.error(m); }
+const fmt = s => { s=Math.max(0,s|0); return (s/60|0)+':'+String(s%60).padStart(2,'0'); };
+const UTIL_COLOR = { smoke:'#d6dae1', molotov:'#ff6a1a', flash:'#ffffff', he:'#ff5040', decoy:'#9aa4b2' };
+const TEAM_HEX = { 3:'#3b82f6', 2:'#f59e0b' };      // canvas needs real colors, not CSS vars
+// kill modifiers ("как убил") as a readable suffix for tooltips
+const killMods = k => { const m=[]; if(k.w)m.push(k.w); if(k.hs)m.push('HS');
+  if(k.wb)m.push('wallbang'); if(k.ts)m.push('through smoke'); if(k.ab)m.push('blind');
+  if(k.ns)m.push('noscope'); return m.length ? '  ['+m.join(' · ')+']' : ''; };
+const teamCol = t => t===3 ? 'var(--ct)' : t===2 ? 'var(--t)' : '#9aa4b2';
+const hpCol   = hp => hp>66 ? 'var(--good)' : hp>33 ? 'var(--warn)' : 'var(--bad)';
+const PSTRIDE = 10;                                  // per-player floats in the frame payload
+const SFX = window.ReplaySfx || null;                // procedural audio (sfx.js)
+
+// Every seek must tell the audio engine to re-anchor, otherwise the clock jump
+// would either replay or skip every event between the old and the new position.
+function seekTo(t){ seek(t); if (SFX) SFX.resync(); }
+
+let MANIFEST=null, state=null, seeking=false, lastPlaying=true;
+let playerLabels=[], tracerLabels={};
+// spectator (POV) camera state + scoreboard rows
+let specRows=[], specNames=[], specGroups=[], lastVis=[], camSlot=-1, camFirst=true;
+// HUD: score bar / radar / kill feed state (rebuilt per round in loadRound)
+let teamBySlot=[], feedKills=[], feedShown={}, dotEls={ct:[],t:[]};
+let curMeta=null, lastSCT=null, lastST=null, advanceTimer=null;
+// C4 state for the bomb panel (manifest round.bomb, sample -> seconds)
+const C4_FUSE = 40;                                  // CS2 fuse length, seconds
+let bombInfo=null, bombEls=null;
+
+function buildLabels(header){
+  const layer=$('#labels');
+  playerLabels.forEach(el=>el.remove());
+  Object.values(tracerLabels).forEach(el=>el.remove());
+  playerLabels=[]; tracerLabels={};
+  header.players.forEach(pl=>{
+    const el=document.createElement('div'); el.className='plabel';
+    const nm=document.createElement('div'); nm.className='pname'; nm.textContent=pl.name||'?';
+    const sub=document.createElement('div'); sub.className='psub';
+    el.appendChild(nm); el.appendChild(sub); el._sub=sub;
+    el.style.display='none';
+    layer.appendChild(el); playerLabels.push(el);
+  });
+}
+
+function tracerLabel(idx){
+  if (tracerLabels[idx]) return tracerLabels[idx];
+  const u=state.header.utility[idx]||{};
+  const names={}; state.header.players.forEach(pl=>names[pl.sid]=pl.name);
+  const el=document.createElement('div'); el.className='tlabel';
+  el.textContent=names[u.thrower]||'?';
+  el.style.color=UTIL_COLOR[u.type]||'#ccc';
+  $('#labels').appendChild(el); tracerLabels[idx]=el;
+  return el;
+}
+
+function buildMarks(meta, header){
+  const marks=$('#marks'); marks.innerHTML='';
+  const dur=meta.durationS||1;
+  (meta.kills||[]).forEach(k=>{
+    const t=k.sample/meta.sampleRate, pct=t/dur*100;
+    const el=document.createElement('div'); el.className='m'; el.style.left=pct+'%';
+    el.style.background = k.atkTeam===3 ? 'var(--ct)' : 'var(--t)';
+    el.title = k.atk+' ✕ '+k.vic+killMods(k);
+    el.onclick = ()=>{ set_playing(false); seekTo(t); };
+    marks.appendChild(el);
+  });
+  if (meta.bomb){                                   // C4 plant marker on the bar
+    const t=meta.bomb.plant/meta.sampleRate;
+    const el=document.createElement('div'); el.className='m'; el.style.left=(t/dur*100)+'%';
+    el.style.background='#ff5040'; el.style.height='18px'; el.style.top='-2px';
+    el.title='bomb planted'+(meta.bomb.site?' @ '+meta.bomb.site:'');
+    el.onclick=()=>{ set_playing(false); seekTo(t); };
+    marks.appendChild(el);
+  }
+  ((header && header.utility)||[]).forEach(u=>{
+    if (u.detSample==null) return;
+    const t=u.detSample/meta.sampleRate, pct=t/dur*100;
+    const el=document.createElement('div'); el.className='u'; el.style.left=pct+'%';
+    el.style.background = UTIL_COLOR[u.type] || '#888';
+    el.title = u.type + (u.type==='smoke'?' deployed':u.type==='molotov'?' burning':' @ '+t.toFixed(1)+'s');
+    el.onclick = ()=>{ set_playing(false); seekTo(t); };
+    marks.appendChild(el);
+  });
+}
+
+// ---- CS2-style top score bar (score entering the round comes from the manifest;
+// alive dots + clock are driven per frame) ----
+function buildScore(meta){
+  $('#score').style.display='flex';
+  $('#rndNo').textContent='Round '+meta.n;
+  $('#scCT').textContent = meta.scoreCT!=null ? meta.scoreCT : '–';
+  $('#scT').textContent  = meta.scoreT !=null ? meta.scoreT  : '–';
+  const mk=(box,n,arr)=>{ box.innerHTML=''; arr.length=0;
+    for(let j=0;j<n;j++){ const i=document.createElement('i'); box.appendChild(i); arr.push(i); } };
+  mk($('#dotsCT'), teamBySlot.filter(t=>t===3).length, dotEls.ct);
+  mk($('#dotsT'),  teamBySlot.filter(t=>t===2).length, dotEls.t);
+}
+
+// ---- live radar (top-left): manifest radar PNG + per-frame player dots ----
+const radarCv=$('#radarcv'); let radarCtx=null, radarImg=null, radarOk=false;
+function radarInit(){
+  if (!radarCv || !MANIFEST || !MANIFEST.calibration) return;
+  const dpr=Math.min(2, devicePixelRatio||1), css=radarCv.clientWidth||204;
+  radarCv.width=Math.round(css*dpr); radarCv.height=Math.round(css*dpr);
+  radarCtx=radarCv.getContext('2d');
+  radarImg=new Image();
+  radarImg.onload=()=>{ radarOk=true; };
+  radarImg.src='/static/replay3d/assets/'+(MANIFEST.radarAsset||'');
+}
+function drawRadar(d,nP){
+  if(!radarCtx) return;
+  const cal=MANIFEST.calibration, size=cal.size||1024;
+  const W=radarCv.width, k=W/(size*cal.scale), u=W/220, ctx=radarCtx;
+  ctx.clearRect(0,0,W,W);
+  if(radarOk){ ctx.drawImage(radarImg,0,0,W,W);
+    ctx.fillStyle='rgba(8,10,16,.32)'; ctx.fillRect(0,0,W,W); }
+  else { ctx.fillStyle='#0c101a'; ctx.fillRect(0,0,W,W); }
+  for(let i=0;i<nP;i++){
+    const o=6+i*PSTRIDE;
+    if(d[o+9]<0.5) continue;                       // not in this round
+    const alive=d[o+3]>0.5;
+    const px=(d[o+6]-cal.pos_x)*k, py=(cal.pos_y-d[o+7])*k;
+    if(px<0||py<0||px>W||py>W) continue;
+    const col=TEAM_HEX[teamBySlot[i]]||'#9aa4b2';
+    if(!alive){                                    // ✕ frozen at the death spot
+      const r=3.5*u; ctx.strokeStyle=col; ctx.globalAlpha=.5; ctx.lineWidth=1.6*u;
+      ctx.beginPath(); ctx.moveTo(px-r,py-r); ctx.lineTo(px+r,py+r);
+      ctx.moveTo(px+r,py-r); ctx.lineTo(px-r,py+r); ctx.stroke(); ctx.globalAlpha=1;
+      continue;
+    }
+    const yaw=d[o+8]*Math.PI/180, dx=Math.cos(yaw), dy=-Math.sin(yaw);
+    ctx.strokeStyle='rgba(255,255,255,.8)'; ctx.lineWidth=1.4*u;   // view direction
+    ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(px+dx*9*u,py+dy*9*u); ctx.stroke();
+    ctx.fillStyle=col; ctx.beginPath(); ctx.arc(px,py,4*u,0,7); ctx.fill();
+    if(i===camSlot){ ctx.strokeStyle='#fff'; ctx.lineWidth=1.5*u;  // followed highlight
+      ctx.beginPath(); ctx.arc(px,py,6*u,0,7); ctx.stroke(); }
+  }
+}
+
+// ---- kill feed (top-right): manifest kills within the last FEED_S seconds of
+// the playback clock — scrub-safe because it is derived from clock each frame ----
+const FEED_S=6;
+function updateFeed(clock){
+  const box=$('#feed'); if(!box) return;
+  const vis=[];
+  for(let i=0;i<feedKills.length;i++)
+    if(clock>=feedKills[i].t && clock-feedKills[i].t<FEED_S) vis.push(i);
+  let changed=false;
+  for(const i of Object.keys(feedShown))
+    if(!vis.includes(+i)){ feedShown[i].remove(); delete feedShown[i]; changed=true; }
+  const badge=t=>{ const s=document.createElement('span'); s.className='b'; s.textContent=t; return s; };
+  for(const i of vis){
+    if(!feedShown[i]){
+      const kk=feedKills[i], el=document.createElement('div'); el.className='k';
+      el.title = kk.atk+' ✕ '+kk.vic+killMods(kk);
+      const a=document.createElement('span'); a.textContent=kk.atk; a.style.color=teamCol(kk.at);
+      el.append(a);
+      if (kk.w){                    // CS2-style: [blind] weapon [noscope/smoke/wall] [HS]
+        if (kk.ab) el.append(badge('🙈'));
+        const w=document.createElement('span'); w.className='pill'; w.textContent=kk.w; el.append(w);
+        if (kk.ns) el.append(badge('NS'));
+        if (kk.ts) el.append(badge('🌫'));
+        if (kk.wb) el.append(badge('🧱'));
+        if (kk.hs) el.append(badge('🎯'));
+      } else {                      // old manifest without weapon info
+        const x=document.createElement('span'); x.className='w'; x.textContent='✕'; el.append(x);
+      }
+      const v=document.createElement('span'); v.textContent=kk.vic; v.style.color=teamCol(kk.vt);
+      el.append(v); feedShown[i]=el; changed=true;
+    }
+    const age=clock-feedKills[i].t;
+    feedShown[i].style.opacity = age>FEED_S-1 ? Math.max(0,FEED_S-age).toFixed(2) : '1';
+  }
+  if(changed) for(const i of vis) box.appendChild(feedShown[i]);   // keep time order
+}
+
+// ---- C4 panel: shows the moment the bomb is planted, counts the 40s fuse
+// down, and ends on DEFUSED / EXPLODED. Like the feed it is derived from the
+// clock every frame, so scrubbing anywhere lands on the right state. ----
+function bombUi(){
+  if (bombEls) return bombEls;
+  const el=$('#bomb'); el.innerHTML='';
+  const mk=(cls,txt)=>{ const s=document.createElement('span'); s.className=cls;
+    if(txt) s.textContent=txt; return s; };
+  const ico=mk('ico','💣'), site=mk('site'), t=mk('t');
+  const fuse=document.createElement('div'); fuse.className='fuse';
+  const bar=document.createElement('i'); fuse.appendChild(bar);
+  const out=mk('out');
+  el.append(ico,site,t,fuse,out);
+  return (bombEls={el,ico,site,t,fuse,bar,out});
+}
+function updateBomb(clock){
+  const el=$('#bomb'); if(!el) return;
+  if(!bombInfo || clock < bombInfo.plant){ el.style.display='none'; return; }
+  const u=bombUi();
+  const defused = bombInfo.defused!=null && clock>=bombInfo.defused;
+  const blown   = bombInfo.exploded!=null && clock>=bombInfo.exploded;
+  // When the round has an explosion, THAT is the true end of the fuse — the
+  // measured gap is ~41.0 s, not the nominal 40 (the plant event fires as the
+  // planting animation completes). Without one, fall back to the nominal fuse.
+  const fuseEnd = bombInfo.exploded!=null ? bombInfo.exploded : bombInfo.plant+C4_FUSE;
+  const left    = Math.max(0, fuseEnd-clock);
+  const span    = Math.max(0.001, fuseEnd-bombInfo.plant);
+  el.style.display='flex'; el.classList.add('armed');
+  u.site.textContent = bombInfo.site ? 'site '+bombInfo.site : 'planted';
+  if (defused || blown){
+    u.t.style.display='none'; u.fuse.style.display='none'; u.out.style.display='inline';
+    u.ico.textContent = defused ? '✂️' : '💥';
+    u.out.textContent = defused ? 'defused' : 'exploded';
+    u.out.style.color = defused ? 'var(--good)' : '#ff6b6b';
+    el.classList.remove('hot');
+  } else {
+    u.out.style.display='none'; u.t.style.display='inline'; u.fuse.style.display='block';
+    u.ico.textContent='💣';
+    u.t.textContent = left.toFixed(1);
+    const col = left<=5 ? '#ff6b6b' : left<=10 ? 'var(--warn)' : '#fff';
+    u.t.style.color = col;
+    u.bar.style.width = (left/span*100).toFixed(1)+'%';
+    u.bar.style.background = left<=5 ? '#ff6b6b' : left<=10 ? 'var(--warn)' : '#ff8a5c';
+    el.classList.toggle('hot', left<=10);
+  }
+}
+
+// ---- auto-advance: chain to the next round ~1.5s after this one ends (only
+// while actually playing; pausing or scrubbing cancels). CS2-demo-like flow so
+// the match — and the top-bar score — keep counting without the dropdown ----
+function maybeAdvance(clock, duration){
+  if (advanceTimer || seeking || !lastPlaying || !MANIFEST) return;
+  if (!(duration>0) || clock < duration-0.02) return;
+  const sel=$('#roundSel'), next=+sel.value+1;
+  if (next >= MANIFEST.rounds.length) return;
+  advanceTimer = setTimeout(async ()=>{
+    advanceTimer=null;
+    if (!lastPlaying || seeking) return;               // paused meanwhile
+    if ((window.__clock||0) < duration-0.05) return;   // user rewound meanwhile
+    sel.value=next;
+    await loadRound(MANIFEST.rounds[next]);
+    set_playing(true);
+  }, 1500);
+}
+
+// ---- spectator (POV) scoreboard: CS2-demo-style per-player view ----
+function buildSpec(header){
+  const box=$('#spec'); box.innerHTML=''; specRows=[]; specNames=[]; specGroups=[]; lastVis=[];
+  const groups={};
+  header.players.forEach((pl,slot)=>{ specNames[slot]=pl.name||'?';
+    (groups[pl.team]||(groups[pl.team]=[])).push({pl,slot}); });
+  const order=[]; [3,2].forEach(t=>{ if(groups[t]) order.push(t); });   // CT, then T
+  Object.keys(groups).forEach(t=>{ t=+t; if(!order.includes(t)) order.push(t); });
+  const tName=t=> t===3?'CT':t===2?'T':'Players';
+  order.forEach(t=>{
+    const h=document.createElement('div'); h.className='grp';
+    const nm=document.createElement('span'); nm.textContent=tName(t); nm.style.color=teamCol(t);
+    const cnt=document.createElement('span'); cnt.className='ct';
+    h.append(nm,cnt); box.appendChild(h);
+    const slots=[];
+    groups[t].forEach(({pl,slot})=>{
+      slots.push(slot);
+      const row=document.createElement('div'); row.className='pv';
+      const top=document.createElement('div'); top.className='top';
+      const sw=document.createElement('span'); sw.className='sw'; sw.style.background=teamCol(t);
+      const nmw=document.createElement('span'); nmw.className='nm'; nmw.textContent=pl.name||'?';
+      const wp=document.createElement('span'); wp.className='wp';
+      const hp=document.createElement('span'); hp.className='hp'; hp.textContent='100';
+      top.append(sw,nmw,wp,hp);
+      const bar=document.createElement('div'); bar.className='hpbar';
+      const bi=document.createElement('i'); bar.appendChild(bi);
+      row.append(top,bar);
+      row.onclick=()=>follow(slot);
+      box.appendChild(row);
+      specRows[slot]={row,hp,wp,bar:bi};
+    });
+    specGroups.push({cnt,slots});
+  });
+  const free=document.createElement('button'); free.className='free';
+  free.textContent='◾ Free camera'; free.onclick=freeCam; box.appendChild(free);
+  const hint=document.createElement('div'); hint.className='hint';
+  hint.innerHTML='<b>1–0</b> spectate · <b>←/→</b> cycle · <b>X</b> 1st/3rd · <b>V</b> x-ray · <b>F</b> free';
+  box.appendChild(hint);
+  camSlot=-1; applyCam();   // new round starts in free cam
+}
+
+function applyCam(){
+  if (camSlot<0) set_camera_free(); else set_camera_follow(camSlot, camFirst);
+  specRows.forEach((r,slot)=>{ if(r) r.row.classList.toggle('on', slot===camSlot); });
+  $('#xhair').style.display = (camSlot>=0 && camFirst) ? 'block' : 'none';
+  const b=$('#specbanner');
+  if (camSlot>=0){
+    const team = state && state.header && state.header.players[camSlot] && state.header.players[camSlot].team;
+    b.innerHTML='';
+    const sw=document.createElement('span'); sw.className='sw'; sw.style.background=teamCol(team);
+    const who=document.createElement('span'); who.className='who'; who.textContent=specNames[camSlot]||'?';
+    const mode=document.createElement('span'); mode.className='mode'; mode.textContent=camFirst?'1st person':'3rd person';
+    b.append(sw,who,mode); b.style.display='flex';
+  } else b.style.display='none';
+  // the audio "ear" follows the camera: spectated player, or the free-cam fallback
+  if (SFX) SFX.setListener(camSlot, camFirst);
+}
+function follow(slot){ if(slot<0 || slot>=playerLabels.length) return; camSlot=slot; applyCam(); }
+function freeCam(){ camSlot=-1; applyCam(); }
+function togglePov(){ if(camSlot>=0){ camFirst=!camFirst; applyCam(); } }
+function cycle(dir){                                  // next/prev ALIVE player
+  const n=playerLabels.length; if(!n) return;
+  const start = camSlot<0 ? (dir>0 ? -1 : 0) : camSlot;
+  for(let k=1;k<=n;k++){
+    const s=(((start + dir*k)%n)+n)%n;
+    if(lastVis[s]){ follow(s); return; }
+  }
+  follow((((start + dir)%n)+n)%n);                    // nobody alive: just step one
+}
+
+async function loadRound(meta, bufPromise){
+  const buf = await (bufPromise || fetch(BASE + meta.file, {cache:'no-cache'}).then(r=>r.arrayBuffer()));
+  const header = JSON.parse(load_round(new Uint8Array(buf)));
+  state = { header, n:meta.nSamples, rate:meta.sampleRate, duration:meta.durationS };
+  // audio: shots/utility come from the header, kills + winner from the meta
+  if (SFX) SFX.setRound(header, meta);
+  buildLabels(header);
+  buildSpec(header);
+  buildMarks(meta, header);
+  // HUD: teams per slot, score bar, kill-feed source rows
+  teamBySlot = header.players.map(pl=>pl.team);
+  curMeta = meta; lastSCT = lastST = null;
+  if (advanceTimer){ clearTimeout(advanceTimer); advanceTimer=null; }
+  buildScore(meta);
+  const t4n={}; header.players.forEach(pl=>t4n[pl.name]=pl.team);
+  feedKills=(meta.kills||[]).map(k=>({t:k.sample/meta.sampleRate, atk:k.atk, vic:k.vic,
+    at:k.atkTeam, vt:t4n[k.vic]||0, w:k.w, hs:k.hs, wb:k.wb, ts:k.ts, ab:k.ab, ns:k.ns}));
+  // C4: sample indices -> playback seconds (absent key = never planted)
+  const bm=meta.bomb;
+  bombInfo = bm ? { plant: bm.plant/meta.sampleRate, site: bm.site||'',
+    defused: bm.defused!=null ? bm.defused/meta.sampleRate : null,
+    exploded: bm.exploded!=null ? bm.exploded/meta.sampleRate : null } : null;
+  Object.values(feedShown).forEach(el=>el.remove()); feedShown={};
+  $('#scrub').max = state.duration;
+}
+
+function syncPlayBtn(playing){ $('#play').textContent = playing ? '⏸ Pause' : '▶ Play'; }
+
+// ---- per-frame report from Bevy ----
+let frames=0, fpsT=performance.now(), lastFrameT=performance.now(), frameAcc=0;
+window.__replayFrame = (d) => {
+  const now=performance.now(); frameAcc+=now-lastFrameT; lastFrameT=now; frames++;
+  if (now-fpsT>=500){ const fps=frames/((now-fpsT)/1000);
+    $('#fps').textContent=fps.toFixed(0); $('#upd').textContent=(frameAcc/frames).toFixed(1);
+    window.__fps=fps; frames=0; frameAcc=0; fpsT=now; }
+
+  const clock=d[0], duration=d[1], playing=d[2]>0.5, flashOp=d[3];
+  const nP=d[4]|0, nT=d[5]|0;
+  window.__clock=clock; window.__playing=playing;   // headless-verify hooks
+  if (playing !== lastPlaying){ lastPlaying=playing; syncPlayBtn(playing); }
+  if (!seeking){
+    $('#scrub').value=clock;
+    $('#fill').style.width=(duration? clock/duration*100:0)+'%';
+    $('#time').textContent=fmt(clock)+' / '+fmt(duration);
+  }
+  $('#flash').style.opacity = Math.min(1, flashOp).toFixed(3);
+
+  const W=innerWidth, H=innerHeight;
+  const wtab=(state&&state.header&&state.header.weaponTable)||[];
+  for (let i=0;i<playerLabels.length;i++){
+    const el=playerLabels[i], o=6+i*PSTRIDE;
+    const onScreen = i<nP && d[o+2]>0.5;
+    const alive    = i<nP && d[o+3]>0.5;
+    const hp=d[o+4]|0, wn=wtab[d[o+5]|0]||'';
+    lastVis[i]=alive;
+    // floating 3D nametag (own name is hidden while inside a 1st-person POV)
+    if (onScreen){
+      el.style.display='block';
+      el.style.left=(d[o]*W)+'px'; el.style.top=(d[o+1]*H)+'px';
+      el._sub.textContent = hp + (wn ? '  '+wn : '');
+      el._sub.style.color = hpCol(hp);
+    } else el.style.display='none';
+    // scoreboard row (real state for every player, on-screen or not)
+    const row=specRows[i];
+    if (row){
+      row.hp.textContent = alive ? hp : '☠';
+      row.hp.style.color = alive ? hpCol(hp) : 'var(--dim)';
+      row.wp.textContent = alive ? wn : '';
+      row.bar.style.width = (alive ? Math.max(0,Math.min(100,hp)) : 0)+'%';
+      row.bar.style.background = hpCol(hp);
+      row.row.classList.toggle('dead', !alive);
+    }
+  }
+  // per-team alive counts in the group headers
+  for (const g of specGroups){ let a=0; for(const s of g.slots) if(lastVis[s]) a++;
+    g.cnt.textContent = a+' alive'; }
+
+  // HUD: score-bar clock + alive dots, radar, kill feed
+  $('#clk').textContent = fmt(clock);
+  // the score counts up the moment the round ends: winner side +1, team-tinted
+  if (curMeta){
+    const ended = curMeta.winner && duration>0 && clock>=duration-0.05;
+    const a = curMeta.scoreCT!=null ? curMeta.scoreCT+((ended&&curMeta.winner==='CT')?1:0) : '–';
+    const b = curMeta.scoreT !=null ? curMeta.scoreT +((ended&&curMeta.winner==='T')?1:0) : '–';
+    if (a!==lastSCT){ lastSCT=a; const el=$('#scCT'); el.textContent=a;
+      el.style.color = (ended&&curMeta.winner==='CT') ? 'var(--ct)' : ''; }
+    if (b!==lastST){ lastST=b; const el=$('#scT'); el.textContent=b;
+      el.style.color = (ended&&curMeta.winner==='T') ? 'var(--t)' : ''; }
+    maybeAdvance(clock, duration);
+  }
+  let aCT=0, aT=0;
+  for(let i=0;i<teamBySlot.length && i<nP;i++) if(lastVis[i]){
+    if(teamBySlot[i]===3) aCT++; else if(teamBySlot[i]===2) aT++; }
+  dotEls.ct.forEach((el,j)=>{ el.style.background = j<aCT ? TEAM_HEX[3] : '#2a3342'; });
+  dotEls.t.forEach((el,j)=>{ el.style.background = j<aT ? TEAM_HEX[2] : '#2a3342'; });
+  drawRadar(d, nP);
+  updateFeed(clock);
+  updateBomb(clock);
+  if (SFX) SFX.frame(d, nP);          // procedural audio (no-op until enabled)
+
+  const seen=new Set();
+  for (let k=0;k<nT;k++){
+    const off=6+nP*PSTRIDE+k*4, idx=d[off]|0, op=d[off+3];
+    const el=tracerLabel(idx); seen.add(idx);
+    el.style.display = op>0.06 ? 'block' : 'none';
+    el.style.opacity = op.toFixed(2);
+    el.style.left=(d[off+1]*W)+'px'; el.style.top=(d[off+2]*H)+'px';
+  }
+  for (const idx in tracerLabels) if (!seen.has(+idx)) tracerLabels[idx].style.display='none';
+};
+
+// First rendered frame -> the scene is alive: drop the loading overlay, then
+// restore the plain handler (zero per-frame overhead afterwards).
+{
+  const _frame = window.__replayFrame;
+  window.__replayFrame = (d)=>{ hideLoading(); window.__replayFrame=_frame; _frame(d); };
+}
+
+// ---- UI wiring ----
+$('#play').onclick = ()=>{ set_playing(!lastPlaying); };
+document.querySelectorAll('.spd').forEach(b=>b.onclick=()=>{
+  const s=parseFloat(b.dataset.s); set_speed(s); if (SFX) SFX.setSpeed(s);
+  document.querySelectorAll('.spd').forEach(x=>x.classList.toggle('on', x===b)); });
+const scrub=$('#scrub');
+scrub.addEventListener('pointerdown',()=>seeking=true);
+addEventListener('pointerup',()=>seeking=false);
+scrub.addEventListener('input',()=>{
+  if (advanceTimer){ clearTimeout(advanceTimer); advanceTimer=null; }
+  seekTo(parseFloat(scrub.value)); });
+// sound button + mixer (the module builds its own UI in the bottom bar)
+if (SFX) SFX.mountUI($('#bar .ctl'));
+
+// x-ray (see players through walls + smoke); default on, matches the wasm default
+const xrayBtn=$('#xray'); let xrayOn=true;
+xrayBtn.onclick=()=>{ xrayOn=!xrayOn; set_xray(xrayOn); xrayBtn.classList.toggle('on',xrayOn); };
+
+// spectator hotkeys (CS2-demo style): 1-0 pick, arrows cycle, X 1st/3rd, V x-ray, F free
+addEventListener('keydown', e=>{
+  if (e.target && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(e.target.tagName)) return;
+  const k=e.key;
+  if (k>='1' && k<='9'){ follow(+k-1); e.preventDefault(); }
+  else if (k==='0'){ follow(9); e.preventDefault(); }
+  else if (k==='ArrowRight' || k==='ArrowUp'){ cycle(1); e.preventDefault(); }
+  else if (k==='ArrowLeft' || k==='ArrowDown'){ cycle(-1); e.preventDefault(); }
+  else if (k==='x' || k==='X'){ togglePov(); e.preventDefault(); }
+  else if (k==='v' || k==='V'){ xrayOn=!xrayOn; set_xray(xrayOn); xrayBtn.classList.toggle('on',xrayOn); e.preventDefault(); }
+  else if (k==='f' || k==='F' || k==='Escape'){ freeCam(); e.preventDefault(); }
+  else if (k===' '){ set_playing(!lastPlaying); e.preventDefault(); }
+});
+
+async function main(){
+  // Everything big starts IN PARALLEL: the wasm streams straight into the
+  // compiler (init accepts a Promise<Response>), the map warm-fetch fills the
+  // HTTP cache (Cache-Control makes Bevy's later fetch of the SAME URL a
+  // deterministic disk-cache hit), and the manifest rides along.
+  const wasmReady = init({ module_or_path:
+    fetchWithProgress('/static/replay3d/pkg/viewer_bg.wasm?v=3', WASM_SIZE, barSetter('barWasm','pctWasm')) });
+  const mapWarm = MAP_ASSET
+    ? fetchWithProgress('/static/replay3d/assets/'+MAP_ASSET, MAP_SIZE, barSetter('barMap','pctMap'))
+        .then(r=>r.arrayBuffer())
+    : Promise.resolve(null);
+  // no-cache: re-processing a match rewrites these artifacts in place — always
+  // revalidate instead of trusting the heuristic HTTP cache (cheap 304s)
+  const manifestReq = fetch(BASE + 'manifest.json', {cache:'no-cache'}).then(r=>r.text());
+
+  await wasmReady;
+  await mapWarm;
+  run('#canvas', '/static/replay3d/assets');
+  MANIFEST = JSON.parse(await manifestReq);
+  if (MAP_ASSET) MANIFEST.mapAsset = MAP_ASSET;
+
+  // deep links: ?round=<1-based>&t=<seconds> (seek + pause) &flash=<player name>
+  const q=new URLSearchParams(location.search);
+  const qr=parseInt(q.get('round')), qt=parseFloat(q.get('t'));
+  const qflash=q.get('flash');
+  let idx = MANIFEST.rounds.findIndex(r=>r.n===qr); if (idx<0) idx=0;
+  // first round download races load_manifest()'s map load instead of following it
+  const firstRound = fetch(BASE + MANIFEST.rounds[idx].file, {cache:'no-cache'}).then(r=>r.arrayBuffer());
+
+  load_manifest(JSON.stringify(MANIFEST));
+  $('#title').textContent = MANIFEST.map || '3D replay';
+  radarInit();
+
+  const mapBtn = $('#mapToggle');
+  if (mapBtn){
+    let mapOn = true;
+    mapBtn.onclick = ()=>{ mapOn = !mapOn; set_map_visible(mapOn);
+      mapBtn.textContent = mapOn ? 'Radar view' : 'Map view'; };
+  }
+
+  const sel=$('#roundSel');
+  MANIFEST.rounds.forEach((r,i)=>{ const o=document.createElement('option');
+    o.value=i; o.textContent='Round '+r.n+(r.winner ? ' · '+r.winner+' win' : '');
+    sel.appendChild(o); });
+  sel.onchange=async()=>{ set_playing(false); await loadRound(MANIFEST.rounds[+sel.value]);
+    set_playing(true); };
+
+  if (qflash) set_flash_focus(qflash);
+  sel.value=idx;
+  await loadRound(MANIFEST.rounds[idx], firstRound);
+  if (!isNaN(qt)){ set_playing(false); seekTo(qt); lastPlaying=false; }
+  syncPlayBtn(lastPlaying);
+  // ?probe=1: log the playback clock every 2 s (headless playback verification)
+  if (q.get('probe')) setInterval(()=>console.log('replay-probe clock='
+    +(window.__clock||0).toFixed(2)+' playing='+window.__playing+' fps='+(window.__fps||0).toFixed(0)), 2000);
+}
+main().catch(e=>fail(e && e.message || String(e)));
+</script>
+{% endif %}
+</body>
+</html>

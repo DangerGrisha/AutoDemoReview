@@ -1,0 +1,7 @@
+# Wasm codegen features: all supported by every browser that runs WebGL2+wasm
+# today (Chrome/Firefox/Edge 2021+, Safari 16.4+). bulk-memory speeds memcpy-ish
+# ops, nontrapping-fptoint removes float->int guard code, simd128 lets glam use
+# wasm SIMD. wasm-opt must be invoked with matching --enable-* flags (the build
+# script passes --all-features).
+[target.wasm32-unknown-unknown]
+rustflags = ["-Ctarget-feature=+bulk-memory,+nontrapping-fptoint,+simd128"]

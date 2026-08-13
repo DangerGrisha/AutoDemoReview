@@ -1,0 +1,17 @@
+# Steam-bot proof-of-concept (steambot/) -- OPTIONAL, separate from the main app.
+# Install with:  pip install -r requirements-steambot.txt
+#
+# httpx and python-dotenv are already pulled in by the main requirements.txt;
+# repeated here so this file stands alone.
+
+httpx>=0.27
+python-dotenv>=1.0
+
+# --- The pure-Python Game Coordinator stack (ValvePython) ---
+# NOTE: `csgo` is effectively unmaintained (last release 2020) and its CS2 GC
+# support is unreliable -- see steambot/README.md "Honest protocol status".
+# It installs and imports fine on Python 3.13 (verified), which is why it's here,
+# but if the GC step fails at runtime use the documented Node/boiler-writter
+# fallback instead. `steam[client]` brings in gevent + protobuf for the GC.
+steam[client]>=1.4.4
+csgo>=1.0.0

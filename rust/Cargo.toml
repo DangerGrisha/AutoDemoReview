@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = ["codec", "extract", "viewer"]
+
+# Size-optimized release: the viewer's Rust-side math is trivial (interpolating
+# 10 players), so wasm download size dominates perceived load time, not opt-level.
+# panic=abort drops unwinding landing pads (~5-10% wasm); fine for the native CLI
+# too (no catch_unwind anywhere; a worker-thread panic aborts instead of unwinding
+# — same user outcome for a CLI). NOTE: `cargo test` uses the dev/test profile and
+# is unaffected, but `cargo test --release` would fail to build — don't use it.
+# strip=symbols also drops the wasm name section (redundant once wasm-opt runs,
+# but free and the fallback when wasm-opt isn't installed).
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+# ...but the demo parser is compute-heavy (native CLI only, never shipped to wasm):
+# keep it at full speed inside the size-optimized profile.
+[profile.release.package.parser]
+opt-level = 3
+
+[profile.release.package.csgoproto]
+opt-level = 3

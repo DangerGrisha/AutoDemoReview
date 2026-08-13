@@ -12,11 +12,19 @@ def esc(text) -> str:
     return html.escape(str(text))
 
 
+# The ONLY link shape allowed through: a round deep-link into this site's own
+# 3D replay, exactly as coach.render_markdown builds it. Anything else the model
+# writes stays literal text, so no href it invents can ever reach the page.
+_MD_ROUND_LINK = re.compile(
+    r"\[([^\]\[]{1,32})\]\((/matches/\d+/3d\?round=\d+(?:&amp;t=\d+(?:\.\d+)?)?)\)")
+
+
 def _md_inline(text) -> str:
-    """Escape text, then apply inline markdown (**bold**, `code`)."""
+    """Escape text, then apply inline markdown (**bold**, `code`, round links)."""
     out = esc(text)                                   # escape FIRST -> injection-safe
     out = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", out)
     out = re.sub(r"`(.+?)`", r"<code>\1</code>", out)
+    out = _MD_ROUND_LINK.sub(r'<a class="coach-round" href="\2">\1</a>', out)
     return out
 
 
@@ -80,29 +88,43 @@ def markdown_to_html(md: str) -> str:
     return "".join(parts)
 
 
-def render_coaching(coaching_md) -> str:
-    """The AI-coaching card: a toggle button + a hidden div with the baked report.
+def render_coaching(coaching_md, action_html=None) -> str:
+    """The AI-coaching card: a toggle button + a hidden div with the report.
 
-    `coaching_md` is the pre-generated markdown (from coach.generate_report_text),
+    `coaching_md` is the generated markdown (from coach.generate_report_text),
     or None/empty when it wasn't generated -- in which case we show a static
     placeholder so the visualiser still renders fine.
+
+    `action_html` is an optional control the web app injects to (re)generate the
+    report on demand; the CLI never passes one, so its card stays static.
     """
-    if coaching_md and coaching_md.strip():
+    has_report = bool(coaching_md and coaching_md.strip())
+    if has_report:
         body = markdown_to_html(coaching_md)
+    elif action_html:
+        body = ('<p class="coach-empty">No coaching report yet &mdash; generate '
+                'one to get a per-round breakdown of this match.</p>')
     else:
         body = ('<p class="coach-empty">Coaching report not available for this '
                 'match yet.</p>')
+    # With nothing to read yet, the card opens on the "generate" prompt rather
+    # than hiding it behind a toggle nobody would press.
+    open_now = bool(action_html) and not has_report
+    hidden = "" if open_now else " hidden"
+    toggle_label = "Hide coaching report" if open_now else "View coaching report"
 
     return (
         '<div class="card coach-card">'
         '<div class="coach-head">'
         '<div class="rounds-title" style="margin:0">AI coaching report '
         '<span class="muted" style="text-transform:none;letter-spacing:0">'
-        '(pre-generated &mdash; baked into this page)</span></div>'
-        '<button class="coach-btn" id="coach-toggle" aria-expanded="false" '
-        'aria-controls="coach-body">View coaching report</button>'
+        '(measured from this match)</span></div>'
+        f'{action_html or ""}'
+        f'<button class="coach-btn" id="coach-toggle" '
+        f'aria-expanded="{"true" if open_now else "false"}" '
+        f'aria-controls="coach-body">{toggle_label}</button>'
         '</div>'
-        f'<div class="coach-body" id="coach-body" hidden>{body}</div>'
+        f'<div class="coach-body" id="coach-body"{hidden}>{body}</div>'
         '<script>(function(){'
         'var b=document.getElementById("coach-toggle"),'
         'p=document.getElementById("coach-body");'
@@ -193,6 +215,14 @@ PAGE_HEAD = """<!doctype html>
               text-transform: uppercase; letter-spacing: .1em; color: var(--text); }
   .site-nav a { color: var(--you); text-decoration: none; font-weight: 600; }
   .site-nav a:hover { text-decoration: underline; }
+  /* 3D replay entry point: a pill, so it doesn't read as one more text link. */
+  .site-nav a.sn-3d { display: inline-flex; align-items: center; gap: 6px;
+              padding: 4px 12px; border-radius: 999px; font-size: .8rem;
+              letter-spacing: .04em; text-transform: uppercase;
+              color: var(--you); border: 1px solid rgba(74,144,217,.55);
+              background: rgba(74,144,217,.12); }
+  .site-nav a.sn-3d:hover { text-decoration: none;
+              background: rgba(74,144,217,.22); border-color: var(--you); }
   .site-nav .sn-note { color: var(--opp); font-style: italic; font-size: .82rem; }
   .site-nav .sn-user { margin-left: auto; color: var(--muted);
               display: inline-flex; align-items: center; gap: 8px; }
@@ -481,6 +511,17 @@ PAGE_HEAD = """<!doctype html>
                background: var(--me); border: 0; border-radius: 9px; padding: 8px 16px;
                cursor: pointer; white-space: nowrap; transition: filter .1s; }
   .coach-btn:hover { filter: brightness(1.08); }
+  /* Generate/regenerate sits next to the toggle but must not compete with it:
+     same shape, outline instead of fill. */
+  .coach-form { margin: 0 0 0 auto; }
+  .coach-btn.coach-gen { background: transparent; color: var(--me);
+                         box-shadow: inset 0 0 0 1px var(--me); }
+  .coach-btn.coach-gen:disabled { opacity: .6; cursor: progress; }
+  .coach-err { color: var(--opp); font-size: .8rem; }
+  .coach-round { color: var(--me); text-decoration: none;
+                 box-shadow: inset 0 0 0 1px var(--line); border-radius: 6px;
+                 padding: 1px 7px; margin-right: 2px; display: inline-block; }
+  .coach-round:hover { box-shadow: inset 0 0 0 1px var(--me); }
   .coach-body { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px;
                 font-size: .92rem; }
   .coach-body h3 { font-size: 1rem; margin: 18px 0 8px; color: var(--me); }
@@ -766,23 +807,26 @@ PAGE_SCRIPT = """<script>
     });
   }
 
-  // Map heatmap: toggle scope (you / everyone) and type (kills / deaths / both).
+  // Map heatmap: scope (you / everyone), side (CT / T), type (kills / deaths).
   var mapwrap = document.getElementById('mapwrap');
   if (mapwrap) {
     var els = Array.prototype.slice.call(mapwrap.querySelectorAll('.d'));
-    var mapScope = 'you', mapType = 'both', mapNades = 'off';
+    var mapScope = 'you', mapType = 'both', mapNades = 'off', mapSide = 'all';
     function updateMap() {
       els.forEach(function (c) {
         var dt = c.dataset.type;
+        // A dot with no side (an old report, or a world death) is only hidden
+        // by an explicit side filter, never by the default "both sides".
+        var sideOk = (mapSide === 'all') || (c.dataset.side === mapSide);
         if (dt === 'nade') {                       // grenades: own on/off toggle
-          c.style.display = (mapNades === 'on') ? 'block' : 'none';
+          c.style.display = (mapNades === 'on' && sideOk) ? 'block' : 'none';
           return;
         }
         var scopeOk = (mapScope === 'all') || c.dataset.me === '1';
         var typeOk = (mapType === 'both')
           || (mapType === 'kills' && dt === 'kill')
           || (mapType === 'deaths' && dt === 'death');
-        c.style.display = (scopeOk && typeOk) ? 'block' : 'none';
+        c.style.display = (scopeOk && typeOk && sideOk) ? 'block' : 'none';
       });
     }
     document.querySelectorAll('.mapcard .seg').forEach(function (seg) {
@@ -794,6 +838,7 @@ PAGE_SCRIPT = """<script>
         var grp = seg.dataset.group;
         if (grp === 'scope') mapScope = e.target.dataset.val;
         else if (grp === 'nades') mapNades = e.target.dataset.val;
+        else if (grp === 'side') mapSide = e.target.dataset.val;
         else mapType = e.target.dataset.val;
         updateMap();
       });
@@ -1389,10 +1434,12 @@ def render_scoreboard(players, ref_sid) -> str:
             f'<tbody>{"".join(rows)}</tbody></table>')
 
 
-def _map_dot(px, py, kind, is_me, title, sid=None) -> str:
+def _map_dot(px, py, kind, is_me, title, sid=None, side=None) -> str:
     me = " me" if is_me else ""
     sid_attr = f' data-sid="{esc(sid)}"' if sid else ""
-    return (f'<circle class="d {kind}{me}" data-type="{kind}" data-me="{1 if is_me else 0}"{sid_attr} '
+    side_attr = f' data-side="{esc(side)}"' if side else ""
+    return (f'<circle class="d {kind}{me}" data-type="{kind}" data-me="{1 if is_me else 0}"'
+            f'{sid_attr}{side_attr} '
             f'cx="{px:.1f}" cy="{py:.1f}" r="6"><title>{esc(title)}</title></circle>')
 
 
@@ -1404,15 +1451,70 @@ def _nade_map_svg(nade) -> str:
     """A detonation dot plus a faint line back to where it was thrown from."""
     me = 1 if nade["me"] else 0
     t = nade["t"]
+    side = nade.get("side")
+    side_attr = f' data-side="{esc(side)}"' if side else ""
     title = (f'R{nade["round"]} · {NADE_LABEL.get(t, t)} detonation'
+             + (f' · {side}' if side else '')
              + (' · you' if nade["me"] else ''))
-    line = (f'<line class="d nade {t}" data-type="nade" data-me="{me}" '
+    line = (f'<line class="d nade {t}" data-type="nade" data-me="{me}"{side_attr} '
             f'x1="{nade["ox"]:.1f}" y1="{nade["oy"]:.1f}" '
             f'x2="{nade["dx"]:.1f}" y2="{nade["dy"]:.1f}"></line>')
-    dot = (f'<circle class="d nade {t}" data-type="nade" data-me="{me}" '
+    dot = (f'<circle class="d nade {t}" data-type="nade" data-me="{me}"{side_attr} '
            f'cx="{nade["dx"]:.1f}" cy="{nade["dy"]:.1f}" r="5">'
            f'<title>{esc(title)}</title></circle>')
     return line + dot
+
+
+_OPPOSITE = {"CT": "T", "T": "CT"}
+
+
+def backfill_kill_sides(map_kills, rounds):
+    """Recover each dot's side for matches stored before sides were recorded.
+
+    A match analysed before the heatmap had a CT/T split carries no side on its
+    kills, and the raw .dem is deleted right after ingest -- so re-parsing is
+    not an option. It does not have to be: the stored rounds still say which
+    side the reference player was on, and each kill still says whether the
+    attacker was an ally or an enemy. That is enough to reconstruct both sides
+    exactly, with no guessing, straight out of the blob already in the database.
+
+    Mutates `map_kills` in place and only ever fills blanks. A kill whose
+    attacker and victim share a relation comes out with both dots on the same
+    side -- correct for a team kill, and the honest reading of the stored data
+    when a player's properties are missing from the demo (roughly 1% of kills,
+    usually someone with an invisible name). A kill the rounds cannot resolve
+    keeps no side at all and stays visible under "both sides".
+    """
+    if not map_kills or not rounds:
+        return map_kills
+
+    rel_by_round = {}
+    for rd in rounds:
+        label = rd.get("my_side_label")
+        if label not in _OPPOSITE:
+            continue
+        rel_by_round[rd.get("number")] = (label, {
+            (k.get("attacker_sid"), k.get("victim_sid")):
+                (k.get("attacker_rel"), k.get("victim_rel"))
+            for k in rd.get("kills") or []
+        })
+
+    def side_from(rel, mine):
+        return mine if rel == "ally" else _OPPOSITE[mine] if rel == "enemy" else None
+
+    for mk in map_kills:
+        if mk.get("killer_side") or mk.get("victim_side"):
+            continue
+        entry = rel_by_round.get(mk.get("round"))
+        if not entry:
+            continue
+        mine, by_pair = entry
+        rels = by_pair.get((mk.get("killer_sid"), mk.get("victim_sid")))
+        if not rels:
+            continue
+        mk["killer_side"] = side_from(rels[0], mine)
+        mk["victim_side"] = side_from(rels[1], mine)
+    return map_kills
 
 
 def render_map(map_kills, map_nades, meta, info) -> str:
@@ -1420,17 +1522,24 @@ def render_map(map_kills, map_nades, meta, info) -> str:
     size = info["size"]
 
     dots = []
+    sides_seen = set()
     for mk in map_kills:
+        k_side, v_side = mk.get("killer_side"), mk.get("victim_side")
+        sides_seen.update(s for s in (k_side, v_side) if s)
         if mk["kx"] is not None and mk["ky"] is not None:
             px, py = maps.world_to_radar(mk["kx"], mk["ky"], info)
+            side_note = f' · as {k_side}' if k_side else ''
             dots.append(_map_dot(px, py, "kill", mk["killer_is_me"],
-                                 f'R{mk["round"]} · {mk["killer"]} killed {mk["victim"]} · {mk["weapon"]}',
-                                 sid=mk.get("killer_sid")))
+                                 f'R{mk["round"]} · {mk["killer"]} killed {mk["victim"]} '
+                                 f'· {mk["weapon"]}{side_note}',
+                                 sid=mk.get("killer_sid"), side=k_side))
         if mk["vx"] is not None and mk["vy"] is not None:
             px, py = maps.world_to_radar(mk["vx"], mk["vy"], info)
+            side_note = f' · as {v_side}' if v_side else ''
             dots.append(_map_dot(px, py, "death", mk["victim_is_me"],
-                                 f'R{mk["round"]} · {mk["victim"]} killed by {mk["killer"]} · {mk["weapon"]}',
-                                 sid=mk.get("victim_sid")))
+                                 f'R{mk["round"]} · {mk["victim"]} killed by {mk["killer"]} '
+                                 f'· {mk["weapon"]}{side_note}',
+                                 sid=mk.get("victim_sid"), side=v_side))
     nade_svg = "".join(_nade_map_svg(n) for n in (map_nades or []))
 
     nade_seg = (
@@ -1448,11 +1557,21 @@ def render_map(map_kills, map_nades, meta, info) -> str:
         '<span class="muted">— line points back to the throw origin</span></div>'
     ) if map_nades else ""
 
+    # You attack on T and hold on CT, so the same map means two different games.
+    # Only offered when the match actually has both halves in it.
+    side_seg = (
+        '<div class="seg" data-group="side">'
+        '<button data-val="all" class="active">Both sides</button>'
+        '<button data-val="CT">as CT</button>'
+        '<button data-val="T">as T</button></div>'
+    ) if {"CT", "T"} <= sides_seen else ""
+
     controls = (
         '<div class="map-controls">'
         '<div class="seg" data-group="scope">'
         '<button data-val="you" class="active">You</button>'
         '<button data-val="all">Everyone</button></div>'
+        f'{side_seg}'
         '<div class="seg" data-group="type">'
         '<button data-val="both" class="active">Kills + deaths</button>'
         '<button data-val="kills">Kills</button>'
@@ -1519,7 +1638,8 @@ def render_replay(replay, meta, info) -> str:
     )
 
 
-def render_html(summary, rounds, demo_name, meta, coaching_md=None, site_nav=None) -> str:
+def render_html(summary, rounds, demo_name, meta, coaching_md=None, site_nav=None,
+                coaching_action=None) -> str:
     my, opp = summary["my_final"], summary["opp_final"]
     ref = meta["ref_name"]
     ref_sid = meta.get("ref_sid")
@@ -1566,10 +1686,10 @@ def render_html(summary, rounds, demo_name, meta, coaching_md=None, site_nav=Non
 
     # Layer 6: pre-generated AI coaching report (baked in at build time; the
     # button just toggles it -- no live/browser-side API call, no key exposure).
-    parts.append(render_coaching(coaching_md))
+    parts.append(render_coaching(coaching_md, coaching_action))
 
     if info:
-        parts.append(render_map(summary.get("map_kills", []),
+        parts.append(render_map(backfill_kill_sides(summary.get("map_kills", []), rounds),
                                 summary.get("map_nades", []), meta, info))
         parts.append(render_replay(summary.get("replay"), meta, info))
 
