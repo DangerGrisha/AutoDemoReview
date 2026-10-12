@@ -27,6 +27,8 @@ import math
 from collections import defaultdict
 from pathlib import Path
 
+from reviewkit import ranking
+
 from . import c2r3, zones
 
 SIDE_OF = {2: "T", 3: "CT"}
@@ -106,19 +108,12 @@ def rank_against(mine, others, direction):
     `avg_death_time_s` are both good news. Values that aren't comparable numbers
     are dropped; returns None when too few of the lobby had one.
     """
-    others = [o for o in others
-              if isinstance(o, (int, float)) and not isinstance(o, bool)]
-    if len(others) < MIN_LOBBY_SAMPLE:
+    ranked = ranking.rank_against(mine, others, higher_better=direction != "low",
+                                  min_sample=MIN_LOBBY_SAMPLE)
+    if ranked is None:
         return None
-    pool = others + [mine]
-    ahead = (sum(1 for o in pool if o < mine) if direction == "low"
-             else sum(1 for o in pool if o > mine))
-    return {
-        "you": mine,
-        "lobby_median": round(_median(others), 1),
-        "rank": ahead + 1,
-        "of": len(pool),
-    }
+    return {"you": mine, "lobby_median": round(ranked["median"], 1),
+            "rank": ranked["rank"], "of": ranked["of"]}
 
 
 class _P:

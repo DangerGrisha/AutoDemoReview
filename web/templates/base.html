@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ 'ru' if request.url.path.startswith('/blitz') else 'en' }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -10,15 +10,26 @@
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
+{# Which game's pages these are: Blitz by its path, else what the session
+   remembers (web/app.py RememberGame keeps it up to date). #}
+{% set game = 'blitz' if request.url.path.startswith('/blitz') else request.session.get('game', 'cs2') %}
 <header class="topbar">
   <a class="brand" href="/">demoReview</a>
+  <div class="game-switch" role="group" aria-label="Game">
+    <a href="/game/cs2" class="{{ 'on' if game != 'blitz' }}"{% if game != 'blitz' %} aria-current="true"{% endif %}>CS2</a>
+    <a href="/game/blitz" class="{{ 'on' if game == 'blitz' }}"{% if game == 'blitz' %} aria-current="true"{% endif %}>WoT Blitz</a>
+  </div>
   <nav>
     {% if user %}
+      {% if game == 'blitz' %}
+      <a href="/blitz">Мои бои</a>
+      <a href="/blitz/career">Карьера</a>
+      {% else %}
       <a href="/profile">My matches</a>
       <a href="/stats">Career</a>
       <a href="/upload">Upload</a>
       <a href="/connect">Auto-import</a>
-      <a href="/blitz">Blitz</a>
+      {% endif %}
       <span class="who">
         {% if user.avatar_url %}<img class="avatar" src="{{ user.avatar_url }}" alt="">{% endif %}
         <span class="pname">{{ user.persona_name }}</span>

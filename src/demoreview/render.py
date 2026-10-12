@@ -1,15 +1,12 @@
 """HTML/CSS/JS rendering of the report (single self-contained document)."""
 
-import html
-import json
 import re
 
+from reviewkit.html import embed_json, esc  # noqa: F401 -- re-exported for older callers
+from reviewkit.markdown import markdown_to_html as _markdown_to_html
+
 from . import maps
-from .parsing import buy_type
-
-
-def esc(text) -> str:
-    return html.escape(str(text))
+from .stats import buy_type
 
 
 # The ONLY link shape allowed through: a round deep-link into this site's own
@@ -19,73 +16,10 @@ _MD_ROUND_LINK = re.compile(
     r"\[([^\]\[]{1,32})\]\((/matches/\d+/3d\?round=\d+(?:&amp;t=\d+(?:\.\d+)?)?)\)")
 
 
-def _md_inline(text) -> str:
-    """Escape text, then apply inline markdown (**bold**, `code`, round links)."""
-    out = esc(text)                                   # escape FIRST -> injection-safe
-    out = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", out)
-    out = re.sub(r"`(.+?)`", r"<code>\1</code>", out)
-    out = _MD_ROUND_LINK.sub(r'<a class="coach-round" href="\2">\1</a>', out)
-    return out
-
-
 def markdown_to_html(md: str) -> str:
-    """Tiny, dependency-free markdown -> HTML for the coaching report.
-
-    Handles the subset the model actually emits: ATX headers (#..######),
-    unordered (-, *) and ordered (1.) lists, **bold**, `code`, and paragraphs.
-    Every text run is escaped before any tag is inserted, so a player name or
-    stray '<' in the report can't break out into the page.
-    """
-    parts, para, cur_list = [], [], None
-
-    def flush_para():
-        if para:
-            parts.append("<p>" + _md_inline(" ".join(para)) + "</p>")
-            para.clear()
-
-    def close_list():
-        nonlocal cur_list
-        if cur_list:
-            parts.append(f"</{cur_list}>")
-            cur_list = None
-
-    def open_list(kind):
-        nonlocal cur_list
-        if cur_list != kind:
-            close_list()
-            parts.append(f"<{kind}>")
-            cur_list = kind
-
-    for raw in (md or "").replace("\r\n", "\n").split("\n"):
-        line = raw.strip()
-        if not line:
-            flush_para(); close_list(); continue
-
-        h = re.match(r"^(#{1,6})\s+(.*)$", line)
-        if h:
-            flush_para(); close_list()
-            lvl = len(h.group(1))
-            tag = "h3" if lvl <= 1 else "h4" if lvl == 2 else "h5"
-            parts.append(f"<{tag}>{_md_inline(h.group(2))}</{tag}>")
-            continue
-
-        ul = re.match(r"^[-*]\s+(.*)$", line)
-        if ul:
-            flush_para(); open_list("ul")
-            parts.append(f"<li>{_md_inline(ul.group(1))}</li>")
-            continue
-
-        ol = re.match(r"^\d+\.\s+(.*)$", line)
-        if ol:
-            flush_para(); open_list("ol")
-            parts.append(f"<li>{_md_inline(ol.group(1))}</li>")
-            continue
-
-        close_list()
-        para.append(line)
-
-    flush_para(); close_list()
-    return "".join(parts)
+    """The coaching report's markdown as HTML (reviewkit.markdown: escaped
+    before any tag goes in), with the round deep-links as the only links."""
+    return _markdown_to_html(md, (_MD_ROUND_LINK, r'<a class="coach-round" href="\2">\1</a>'))
 
 
 def render_coaching(coaching_md, action_html=None) -> str:
@@ -138,18 +72,6 @@ def render_coaching(coaching_md, action_html=None) -> str:
         '});})();</script>'
         '</div>'
     )
-
-
-def embed_json(obj) -> str:
-    """Serialize for inlining inside a <script> tag.
-
-    json.dumps does not escape '<', so a player name containing '</script>'
-    would close the tag early and corrupt the blob. Escaping <, >, & to their
-    \\uXXXX form is valid JSON (parses back identically) and is inert to the HTML
-    tokenizer.
-    """
-    return (json.dumps(obj, separators=(",", ":"))
-            .replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026"))
 
 
 def kd_ratio(kills, deaths) -> str:

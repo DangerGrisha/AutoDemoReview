@@ -9,6 +9,24 @@
 
 from collections import defaultdict
 
+# Buy-type thresholds on a player's equipment value ($). Heuristic: a full rifle
+# buy (rifle + armour + a little utility) lands around $3.5k+, a force/half buy
+# sits in the SMG / upgraded-pistol range, and anything below is an eco/save.
+# Here, not in parsing.py, so the report renderer can use it without the parser
+# (parsing.py exits when demoparser2 is missing).
+ECO_MAX = 1500
+FORCE_MAX = 3500
+
+
+def buy_type(equip_value: float) -> str:
+    """Classify an equipment value into a buy type."""
+    if equip_value < ECO_MAX:
+        return "eco"
+    if equip_value < FORCE_MAX:
+        return "force"
+    return "full"
+
+
 # CS2 GOTV demos record at 64 tick; the trade window is ~5 seconds.
 TICK_RATE = 64
 TRADE_WINDOW = 5 * TICK_RATE

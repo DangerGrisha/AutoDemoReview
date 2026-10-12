@@ -102,8 +102,9 @@ shots / hp left, the kill feed with battle times), can dump the full battle
 dict as JSON and write the HTML report. Replays without `battle_results.dat`
 (recorder left early) still show the roster and kill feed.
 
-On the site: sign in, open **Blitz** in the top bar and drag replays onto the
-page (one or many at once). Each battle gets a report: your numbers with your
+On the site: sign in, pick **WoT Blitz** in the game switch of the top bar
+(it sits next to CS2; the site remembers which game you were in) and drag
+replays onto the page (one or many at once). Each battle gets a report: your numbers with your
 rank in the lobby; a free **coach's review** (rules, no AI service) -- what
 went well, up to three mistakes with the reason, the numbers and the moments
 in the replay (dying far from the team, under several guns, early or cheaply,
@@ -150,7 +151,10 @@ demoReview/
 ├── output/                   # generated HTML reports (gitignored)
 ├── src/
 │   ├── parse_demo.py         # thin shim -> demoreview.cli
-│   └── demoreview/           # the package
+│   ├── review_blitz.py       # thin shim -> blitzreview.cli (World of Tanks Blitz)
+│   ├── reviewkit/            # shared by both: escaping, markdown, lobby ranks, palette
+│   ├── blitzreview/          # the WoT Blitz analyzer (see its __init__ for the pipeline)
+│   └── demoreview/           # the CS2 package
 │       ├── parsing.py        # collect(): events + ticks -> raw data
 │       ├── stats.py          # ADR / KAST / rating / clutch / trade math
 │       ├── maps.py           # radar calibration + world->pixel

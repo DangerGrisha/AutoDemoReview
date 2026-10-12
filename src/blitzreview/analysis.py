@@ -1,14 +1,12 @@
 """Derived numbers for the report: rates, team totals, lobby ranks.
 
-Ranking follows demoreview/tactics.rank_against -- rank 1 is best, ties share
-the better rank, the median is over the OTHER players -- but is re-implemented
-here so the two games' packages stay independent until the UI merge.
+Ranking is reviewkit.ranking.rank_against, shared with the CS2 analyzer: rank
+1 is best, ties share the better rank, the median is over the OTHER players.
 """
 
 import statistics
 
-# Fewer comparable players than this and a rank means nothing.
-MIN_LOBBY_SAMPLE = 4
+from reviewkit.ranking import MIN_LOBBY_SAMPLE, rank_against  # noqa: F401 -- re-exported
 
 # metric -> True when higher is better. Shown-but-unranked numbers (damage
 # received: a heavy SHOULD soak) are deliberately absent.
@@ -41,16 +39,6 @@ def metric(vehicle, key):
     if key in stats:
         return stats[key]
     return rates(stats).get(key)
-
-
-def rank_against(mine, others, higher_better=True):
-    """{you, rank, of, median} or None when there is too little to compare."""
-    values = [v for v in others if v is not None]
-    if mine is None or len(values) < MIN_LOBBY_SAMPLE:
-        return None
-    better = sum(1 for v in values if (v > mine if higher_better else v < mine))
-    return {"you": mine, "rank": better + 1, "of": len(values) + 1,
-            "median": statistics.median(values)}
 
 
 def author(battle):

@@ -9,6 +9,7 @@ import unicodedata
 from collections import defaultdict
 
 from . import stats
+from .stats import ECO_MAX, FORCE_MAX, buy_type  # noqa: F401 -- re-exported
 from . import replay as replay_mod
 from . import grenades as grenades_mod
 from . import analysis as analysis_mod
@@ -25,12 +26,6 @@ except ImportError:
 
 # T_NUM / CT_NUM / SIDE_OF come from parseutil so grenades.py can share them
 # without an import cycle; re-exported here because this module's callers use them.
-
-# Buy-type thresholds on a player's equipment value ($). Heuristic: a full rifle
-# buy (rifle + armour + a little utility) lands around $3.5k+, a force/half buy
-# sits in the SMG / upgraded-pistol range, and anything below is an eco/save.
-ECO_MAX = 1500
-FORCE_MAX = 3500
 
 DEFAULT_HIGHLIGHT = "P1rat1C"
 
@@ -62,15 +57,6 @@ def clean_name(name) -> str:
     if text and any(unicodedata.category(ch) not in _INVISIBLE_CATS for ch in text):
         return text
     return "(unnamed)"
-
-
-def buy_type(equip_value: float) -> str:
-    """Classify an equipment value into a buy type."""
-    if equip_value < ECO_MAX:
-        return "eco"
-    if equip_value < FORCE_MAX:
-        return "force"
-    return "full"
 
 
 def other_side(side_num):

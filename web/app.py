@@ -3,6 +3,10 @@
 All route handlers are sync `def` so Starlette runs them in its threadpool --
 the ~1-minute demo parse then never blocks the event loop. A match is visible to
 any user who participated in it (their SteamID is a parsed player) or uploaded it.
+
+Two games share the site: CS2 (demos, these routes) and World of Tanks Blitz
+(replays, web/blitz.py under /blitz); web/games.py holds the switch between
+them.
 """
 
 import hashlib
@@ -21,7 +25,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import (autoimport, blitz, career, coaching, config, db, ingest, pipeline,
+from . import (autoimport, blitz, career, coaching, config, db, games, ingest, pipeline,
                replay3d, steam_openid)
 
 WEB_DIR = Path(__file__).resolve().parent
@@ -115,6 +119,7 @@ async def lifespan(app):
 
 
 app = FastAPI(title="demoReview", lifespan=lifespan)
+app.add_middleware(games.RememberGame)  # first, so the session middleware wraps it
 app.add_middleware(
     SessionMiddleware,
     secret_key=config.SESSION_SECRET,
@@ -124,6 +129,7 @@ app.add_middleware(
 )
 app.mount("/static", CompressedStaticFiles(directory=str(WEB_DIR / "static")), name="static")
 app.include_router(blitz.router)   # World of Tanks Blitz: /blitz/...
+app.include_router(games.router)   # the game switch: /game/{name}
 
 
 def current_user(request):
@@ -148,7 +154,7 @@ def landing(request: Request):
 @app.get("/login")
 def login(request: Request):
     if request.session.get("steamid"):
-        return RedirectResponse("/profile", status_code=302)
+        return RedirectResponse(games.home(request.session), status_code=302)
     return RedirectResponse(steam_openid.build_login_url(config.BASE_URL), status_code=302)
 
 
@@ -162,12 +168,15 @@ def steam_callback(request: Request):
     persona, avatar = steam_openid.fetch_persona(steamid, config.STEAM_API_KEY)
     db.upsert_user(steamid, persona, avatar)
     request.session["steamid"] = steamid
-    return RedirectResponse("/profile", status_code=302)
+    return RedirectResponse(games.home(request.session), status_code=302)
 
 
 @app.get("/logout")
 def logout(request: Request):
+    game = request.session.get("game")
     request.session.clear()
+    if game in games.GAMES:  # signing out is not forgetting which game you play
+        request.session["game"] = game
     return RedirectResponse("/", status_code=302)
 
 

@@ -3,18 +3,30 @@
 <section class="hero">
   <h1>demoReview</h1>
   <div class="rule"></div>
-  <p class="lede">Upload your CS2 demos and get an interactive match breakdown &mdash;
-     scoreboard, per-round kill feed, 2D replay, and heatmaps, all spotlighting you.</p>
-  {% if user %}
-    <p class="actions">
-      <a class="btn" href="/upload">Upload a demo</a>
-      <a class="btn ghost" href="/profile">My matches</a>
-    </p>
-  {% else %}
+  <p class="lede">Your games, taken apart: an interactive breakdown of every match or
+     battle, a replay on the map, and a free coach that says what to fix.</p>
+  {% if not user %}
     <p class="actions"><a class="btn" href="/login">Sign in through Steam</a></p>
     {% if request.query_params.get('error') %}
       <p class="error">Steam login failed or was cancelled. Please try again.</p>
     {% endif %}
   {% endif %}
 </section>
+
+<div class="games">
+  <section class="game-card{{ ' on' if request.session.get('game', 'cs2') != 'blitz' }}">
+    <h2>Counter-Strike 2</h2>
+    <p>Upload a demo &mdash; scoreboard, per-round kill feed, 2D and 3D replay,
+       heatmaps and the coach, all spotlighting you.</p>
+    {% if user %}<p class="actions"><a class="btn" href="/game/cs2">My matches</a>
+      <a class="btn ghost" href="/upload">Upload a demo</a></p>{% endif %}
+  </section>
+  <section class="game-card{{ ' on' if request.session.get('game') == 'blitz' }}" lang="ru">
+    <h2>World of Tanks Blitz</h2>
+    <p>Перетащите реплеи &mdash; итоги боя, ход боя по времени, 2D- и 3D-повтор на карте,
+       бесплатный разбор ошибок и карьера по многим боям.</p>
+    {% if user %}<p class="actions"><a class="btn" href="/game/blitz">Мои бои Blitz</a>
+      <a class="btn ghost" href="/blitz/career">Карьера</a></p>{% endif %}
+  </section>
+</div>
 {% endblock %}

@@ -259,3 +259,22 @@ td.pos { color: var(--pos); } td.neg { color: var(--neg); }
 .h-battles { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 6px; font-size: .84rem; }
 .good-list { margin: 0; padding-left: 20px; line-height: 1.7; }
 .matches td.h-main { white-space: normal; min-width: 150px; }
+
+/* ---- game switch (top bar) and the two games on the landing page ---- */
+.game-switch { display: inline-flex; margin-left: 18px; border: 1px solid var(--line);
+               border-radius: 8px; overflow: hidden; }
+.game-switch a { padding: 5px 12px; font-family: var(--display); font-size: .85rem;
+                 letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.game-switch a + a { border-left: 1px solid var(--line); }
+.game-switch a:hover { color: var(--text); text-decoration: none; }
+.game-switch a.on { background: var(--panel-2); color: var(--text); }
+.games { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+         gap: 18px; margin: 8px 0 24px; }
+.game-card { border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px;
+             background: var(--panel); }
+.game-card.on { border-color: rgba(74,144,217,.5); }
+.game-card h2 { font-family: var(--display); text-transform: uppercase; letter-spacing: .05em;
+                font-size: 1.2rem; margin: 0 0 8px; }
+.game-card p { color: var(--muted); margin: 0 0 12px; }
+.game-card .actions { margin: 0; }
+@media (max-width: 560px) { .game-switch { margin-left: 0; } }

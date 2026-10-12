@@ -9,9 +9,10 @@ page still renders. `site_nav` is trusted HTML built by the web layer.
 """
 
 import base64
-import html
-import json
 from datetime import datetime, timezone
+
+from reviewkit import theme
+from reviewkit.html import embed_json, esc  # noqa: F401 -- re-exported for older callers
 
 from . import analysis, coachrules, gamedata
 
@@ -21,10 +22,6 @@ OUTCOME = {
     "draw": ("Ничья", "draw"),
     "unknown": ("Итог неизвестен", "unknown"),
 }
-
-
-def esc(value):
-    return html.escape("" if value is None else str(value), quote=True)
 
 
 def num(value):
@@ -42,14 +39,6 @@ def clock(seconds):
         return "—"
     seconds = max(0, int(round(seconds)))
     return f"{seconds // 60}:{seconds % 60:02d}"
-
-
-def embed_json(obj):
-    """JSON for a <script type="application/json"> block. '<', '>' and '&'
-    become \\u003c-style escapes -- still valid JSON that parses back
-    identically -- so a nickname like '</script>' cannot end the block early."""
-    return (json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
-            .replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026"))
 
 
 def _when(ts):
@@ -803,12 +792,7 @@ def _footer(battle):
 # page
 # --------------------------------------------------------------------------- #
 
-_CSS = """
-:root{--bg:#0B0E11;--panel:#12161B;--panel2:#161B21;--line:#232A31;--text:#E4E7EA;
---muted:#8A929B;--ally:#7BBE7B;--enemy:#D86A5A;--me:#E8C25A;
---display:"Rajdhani","Oswald","Segoe UI",system-ui,sans-serif;
---body:"Inter",-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
---mono:"JetBrains Mono",ui-monospace,Menlo,monospace}
+_CSS = (":root{" + theme.css_vars() + ";--ally:#7BBE7B;--enemy:#D86A5A;--me:#E8C25A}") + """
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 var(--body)}
@@ -2122,8 +2106,7 @@ def render_battle_html(battle, site_nav=""):
         f'<title>{esc(title)}</title>'
         '<link rel="preconnect" href="https://fonts.googleapis.com">'
         '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
-        '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;'
-        '600;700&family=JetBrains+Mono:wght@400;600&family=Rajdhani:wght@600;700&display=swap">'
+        f'<link rel="stylesheet" href="{theme.GOOGLE_FONTS}">'
         f'<style>{_CSS}</style></head><body>{site_nav}'
         f'<main class="wrap">{body}</main><script>{script}</script></body></html>'
     )
