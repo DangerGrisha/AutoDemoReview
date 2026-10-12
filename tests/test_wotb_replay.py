@@ -34,14 +34,31 @@ def _same_yaw(a, b, tolerance=0.51):
 # --------------------------------------------------------------------------- #
 
 def test_the_delta_coding_round_trips_across_the_yaw_seam():
-    samples = [(-3.0, -250.04, 260.0, 179.4), (-2.7, -249.0, 259.5, -179.6),
-               (-2.4, -248.2, 259.0, -170.0), (12.3, 100.06, -5.0, 0.0),
-               (12.6, 100.5, -4.0, 359.0)]
+    samples = [(-3.0, -250.04, 260.0, 179.4, -179.7), (-2.7, -249.0, 259.5, -179.6, 179.2),
+               (-2.4, -248.2, 259.0, -170.0, 90.0), (12.3, 100.06, -5.0, 0.0, 0.0),
+               (12.6, 100.5, -4.0, 359.0, -45.4)]
     decoded = replay.decode(replay.encode(samples))
     assert len(decoded) == len(samples)
-    for (t, x, z, yaw), (dt, dx, dz, dyaw) in zip(samples, decoded):
+    for (t, x, z, yaw, turret), (dt, dx, dz, dyaw, dturret) in zip(samples, decoded):
         assert abs(t - dt) < 0.051 and abs(x - dx) < 0.051 and abs(z - dz) < 0.051
         assert _same_yaw(yaw, dyaw) and -180 <= dyaw < 180
+        assert _same_yaw(turret, dturret) and -180 <= dturret < 180
+
+
+def test_tracks_stored_before_the_turret_still_decode():
+    # Battles stored in format 3 carry four numbers per sample: no turret.
+    old = [-30, 1000, -2000, 90, 3, 5, 4, -10]
+    assert replay.decode(old, track_format=1) == [(-3.0, 100.0, -200.0, 90, 0),
+                                                  (-2.7, 100.5, -199.6, 80, 0)]
+
+
+def test_decimation_takes_the_turret_yaw_last_sent_before_each_sample():
+    raw = [(i * 0.1, float(i), 0.0, 0.0, 0.0) for i in range(60)]        # 0 .. 5.9 s
+    turret = [(0.0, 0.0), (1.05, math.pi / 2), (3.0, -math.pi / 4)]
+    kept = replay.decimate(raw, 0.0, end=10.0, turret=turret)
+    for t, _x, _z, _yaw, yaw_turret in kept:
+        want = 0 if t < 1.05 else 90 if t < 3.0 else -45
+        assert _same_yaw(yaw_turret, want), (t, yaw_turret)
 
 
 def test_decimation_spaces_samples_but_keeps_the_last_one_before_a_gap():
@@ -57,7 +74,7 @@ def test_decimation_spaces_samples_but_keeps_the_last_one_before_a_gap():
     assert any(abs(t - 9.0) < 1e-6 for t in times)     # the reappearance
     for a, b in zip(times, times[1:]):  # closer only when b is the last before a gap
         assert b - a >= replay.STEP - 1e-6 or abs(b - 4.0) < 1e-6 or b == times[-1], (a, b)
-    assert all(_same_yaw(yaw, 90) for t, _x, _z, yaw in kept if t > 5)
+    assert all(_same_yaw(yaw, 90) for t, _x, _z, yaw, _turret in kept if t > 5)
 
 
 def test_decimation_stops_at_the_end_given():
@@ -107,7 +124,7 @@ def test_every_position_lies_inside_the_maps_playable_border():
         assert geo is not None and geo["border"], name
         x0, z0, x1, z1 = geo["border"]
         for t in b["replay"]["tracks"]:
-            for _t, x, z, _yaw in replay.decode(t["p"]):
+            for _t, x, z, *_angles in replay.decode(t["p"]):
                 assert x0 - 3 <= x <= x1 + 3 and z0 - 3 <= z <= z1 + 3, (name, t["id"], x, z)
 
 
@@ -121,7 +138,7 @@ def test_the_recorders_team_starts_on_the_maps_spawn_points():
         for t in b["replay"]["tracks"]:
             before = [s for s in replay.decode(t["p"]) if s[0] <= 0]
             if t["id"] in allies and before:
-                _t, x, z, _yaw = before[-1]
+                _t, x, z, *_angles = before[-1]
                 misses.append(min(math.hypot(x - px, z - pz) for px, pz in points))
         misses.sort()
         assert len(misses) >= 5 and misses[len(misses) // 2] < 25, (name, misses)

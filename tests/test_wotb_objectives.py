@@ -32,7 +32,7 @@ def _nearest(tracks, eids, t, x, z):
     """Distance from (x, z) to the closest of `eids` seen within a second of t."""
     best = math.inf
     for eid in eids:
-        for st, sx, sz, _yaw in tracks.get(eid, ()):
+        for st, sx, sz, *_angles in tracks.get(eid, ()):
             if abs(st - t) <= 1.0:
                 best = min(best, math.hypot(sx - x, sz - z))
     return best

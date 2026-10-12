@@ -9,9 +9,10 @@ Joins three sources that overlap on purpose:
     final numbers of all 14 players (damage, shots, hp left, xp ...).
 
 The stream also gives every visible vehicle's position, which becomes the
-`replay` block -- the tracks of the 2D minimap replay (see replay.py) -- and
-the capture updates, which become `objectives`: who captured what and when,
-and the Supremacy score (see arena.py).
+`replay` block -- the tracks of the 2D minimap replay (see replay.py) -- the
+capture updates, which become `objectives`: who captured what and when, and
+the Supremacy score (see arena.py) -- and the fight itself, which becomes
+`events`: health, shots, hits and damage (see events.py).
 
 Vehicles are keyed by entity id: a battle result's id IS the vehicle's entity
 id in the stream, so the sources join exactly, with no name matching. A broken
@@ -19,16 +20,18 @@ or missing results file degrades the report (no final numbers) instead of
 rejecting the replay; the reason goes into `warnings`.
 """
 
-from . import arena, battle_results, gamedata, replay
+from . import arena, battle_results, events, gamedata, replay
 from .container import open_replay
 from .packets import positions, read_stream
 
 # 2: adds the `replay` block (vehicle tracks).
 # 3: adds `objectives` (base and point captures, the Supremacy score) and takes
 #    the mode of a battle without results from the stream.
+# 4: adds `events` (health, shots, hits, damage) and the turret's yaw to the
+#    tracks (replay.FORMAT 2).
 # Battles stored in an older format are re-parsed when their replay is
 # uploaded again (web/blitz.py).
-FORMAT = 3
+FORMAT = 4
 
 _STAT_FIELDS = ("damage", "kills", "shots", "hits", "penetrations", "assist",
                 "damage_received", "hits_received", "nonpen_received",
@@ -77,6 +80,7 @@ def load(src, lang="ru"):
     elif stream.truncated:
         warnings.append("packet stream is cut off")
     arena_info = arena.parse(stream) if stream else arena.parse_empty()
+    fight = events.parse(stream, arena_info["roster"]) if stream else events.parse_empty()
 
     results = None
     if files.battle_results is None:
@@ -87,7 +91,7 @@ def load(src, lang="ru"):
         except battle_results.BattleResultsError as exc:
             warnings.append(f"battle results unreadable: {exc}")
     return build(normalize_meta(files.meta), stream, arena_info, results,
-                 warnings=warnings, lang=lang)
+                 warnings=warnings, lang=lang, fight=fight)
 
 
 def _vehicles(meta, arena_info, results):
@@ -137,7 +141,63 @@ def _objectives(info, start):
     }
 
 
-def build(meta, stream, arena_info, results, warnings=(), lang="ru"):
+def _events(fight, start, vehicles):
+    """The fight in battle time, compact for storage, or None without a
+    battle start:
+
+        hp      [{"id", "max", "p": [t, health, t, health, ...]}] -- `max` from
+                the results (11.20) or the most health ever seen
+        shots   [t, shooter, x0, z0, x1, z1, victim, kind, damage, bounce] --
+                one per tracer; x1/z1 are None when the shell never landed in
+                view; victim 0 and kind -1 for a miss; bounce 1 for the flight
+                on from a ricochet
+        hits    [t, attacker, victim, kind, damage]   (kinds: events.HIT_*)
+        damage  [t, attacker, victim, amount, reason]  (events.REASON_*)
+        unseen  [t, victim, amount] -- health lost out of view
+
+    A vehicle first seen already hurt (by the results' max hp) gets an
+    `unseen` entry for that, too.
+    """
+    if start is None:
+        return None
+
+    def t(clock):
+        return round(clock - start, 2)
+
+    def xz(point):
+        return (round(point[0], 1), round(point[1], 1)) if point else (None, None)
+
+    unseen = [[t(u["clock"]), u["victim"], u["amount"]] for u in fight["unseen"]]
+    hp = []
+    for v in vehicles:
+        points = fight["health"].get(v["entity_id"])
+        if not points:
+            continue
+        known_max = (v["stats"] or {}).get("max_hp")
+        first_clock, first = points[0]
+        if known_max and first < known_max:
+            unseen.append([t(first_clock), v["entity_id"], known_max - first])
+        hp.append({"id": v["entity_id"],
+                   "max": known_max or max(value for _, value in points),
+                   "p": [x for clock, value in points for x in (t(clock), value)]})
+    unseen.sort()
+    shots = []
+    for s in fight["tracers"]:
+        (x0, z0), (x1, z1) = xz(s["start"]), xz(s["end"])
+        shots.append([t(s["clock"]), s["shooter"], x0, z0, x1, z1, s["victim"] or 0,
+                      -1 if s["kind"] is None else s["kind"], s["damage"], int(s["bounce"])])
+    return {
+        "hp": hp,
+        "shots": shots,
+        "hits": [[t(h["clock"]), h["attacker"], h["victim"], h["kind"], h["damage"]]
+                 for h in fight["hits"]],
+        "damage": [[t(d["clock"]), d["attacker"], d["victim"], d["amount"], d["reason"]]
+                   for d in fight["damage"]],
+        "unseen": unseen,
+    }
+
+
+def build(meta, stream, arena_info, results, warnings=(), lang="ru", fight=None):
     rows = _vehicles(meta, arena_info, results)
     start = arena_info["battle_start"]
 
@@ -204,7 +264,7 @@ def build(meta, stream, arena_info, results, warnings=(), lang="ru"):
     if stream is not None and start is not None:
         tracks = replay.build(positions(stream), start,
                               [(v["entity_id"], v["death_time"]) for v in vehicles],
-                              end_clock - start)
+                              end_clock - start, turrets=(fight or {}).get("turret"))
     return {
         "format": FORMAT,
         "client_version": meta["version"],
@@ -234,5 +294,6 @@ def build(meta, stream, arena_info, results, warnings=(), lang="ru"):
                   for k in arena_info["kills"]],
         "replay": tracks,
         "objectives": _objectives(arena_info["objectives"], start),
+        "events": _events(fight, start, vehicles) if fight and stream else None,
         "warnings": list(warnings),
     }

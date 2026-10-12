@@ -189,3 +189,58 @@ def test_a_battle_stored_before_format_3_keeps_its_zones_without_history():
     obj = _replay_json(page)["obj"]
     assert len(obj["zones"]) == 4 and obj["states"] == [] and obj["score"] == []
     assert 'id="rp-score"' not in page
+
+
+def _fight(page):
+    m = re.search(r'<section class="card fight">(.*?)</section>', page, re.S)
+    assert m, "no fight card"
+    return m.group(1)
+
+
+def test_the_fight_card_lists_every_shot_and_what_hit_you():
+    # Rift: six shots, all on target -- five pierced, the sixth bounced and
+    # then hit -- plus 165 of fire after the third; three shells hit back.
+    b = _battle("v11_20_rift_base_capture.wotbreplay")
+    fight = _fight(render_battle_html(b))
+    assert "Ваши выстрелы: 6, в цель 6" in fight and "Попадания по вам: 3" in fight
+    assert "пожар −165" in fight
+    mine, theirs = re.findall(r'<table class="flist"><tbody>(.*?)</tbody>', fight, re.S)
+    damage = [int(d.replace(" ", "")) for d in re.findall(r'<td class="n">−([\d ]+)</td>', mine)]
+    me = analysis.author(b)
+    assert sum(damage) + 165 == me["stats"]["damage"] == 2495
+    assert mine.count('href="#t=') == 6 and theirs.count('href="#t=') == 3
+    hurt = [int(d.replace(" ", "")) for d in re.findall(r'<td class="n">−([\d ]+)</td>', theirs)]
+    assert sum(hurt) == me["stats"]["damage_received"]
+
+
+def test_the_fight_chart_marks_every_shot_and_links_it():
+    b = _battle("v11_7_himmelsdorf_results.wotbreplay")
+    fight = _fight(render_battle_html(b))
+    chart = re.search(r'<svg.*?</svg>', fight, re.S).group(0)
+    ticks = re.findall(r'<path class="(s[dnm])"', chart)
+    assert len(ticks) == analysis.author(b)["stats"]["shots"] == 7
+    assert ticks.count("sm") == 1 and ticks.count("sd") == 2  # one miss, two shots that did damage
+    assert chart.count('class="kd"') == 1  # the recorder's death
+    assert chart.count('<a href="#t=') == len(ticks) + 1
+
+
+def test_the_replay_ships_the_fight_and_the_turret():
+    b = _battle()
+    data = _replay_json(render_battle_html(b))
+    assert data["fmt"] == 2 and data["ev"] is not None
+    assert data["ev"]["shots"] == b["events"]["shots"]
+    assert {h["id"] for h in data["ev"]["hp"]} <= {v["entity_id"] for v in b["vehicles"]}
+
+
+def test_a_battle_stored_before_format_4_keeps_its_replay_without_the_fight():
+    b = copy.deepcopy(_battle("v11_7_himmelsdorf_results.wotbreplay"))
+    b["format"] = 3
+    del b["events"]
+    b["replay"]["format"] = 1
+    for track in b["replay"]["tracks"]:  # format 1: no turret column
+        track["p"] = [n for i, n in enumerate(track["p"]) if i % 5 != 4]
+    page = render_battle_html(b)
+    assert "загрузите реплей заново, чтобы их увидеть" in page
+    assert '<section class="card fight">' not in page
+    data = _replay_json(page)
+    assert data["fmt"] == 1 and data["ev"] is None and data["tracks"] == b["replay"]["tracks"]

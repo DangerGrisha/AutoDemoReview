@@ -156,8 +156,8 @@ of the battle. All our fixtures split into packets byte for byte.
 | type | meaning | layout |
 |---|---|---|
 | 0 | base player create | Avatar entity id u32, u16, u32, pascal nickname, arena id u64, map id u32, then a pickle (`vehNames`, `accountDatabaseIds`, `battleLevel`, …; no globals). The analyzer reads only the first u32 |
-| 5 | entity create | starts with the entity id u32; rest not decoded |
-| 7 | entity property | `entity u32, property u32, size u32, value`. Property ids 0–10 seen; not decoded yet |
+| 5 | entity create | `entity u32, type u16, space u32, vehicle u32, position 3f, direction 3f, size u32`, then the properties: `count u8` and `count` × (index u8, value). Read only for vehicles (type 2), see [fight events](#fight-events-vehicles-and-the-avatar) |
+| 7 | entity property | `entity u32, property u32, size u32, value` |
 | 8 | entity method | `entity u32, method u32, size u32, args` |
 | 10 | position, 49 bytes | `entity u32, space u32, vehicle u32, x y z f32, error xyz f32, yaw pitch roll f32, flag u8`. x/z = ground plane in metres, x east and z north (the playable area is about ±230…285 m), y = height. yaw = hull heading in radians: 0 faces +z, positive turns toward +x, i.e. clockwise on the minimap (`yaw = atan2(dx, dz)` of the travel direction, median error 0.1° over 5.8k moving samples). Sent about 10 times a second per visible vehicle |
 | 39 | 28 bytes, ~8k per battle | f32s that look like the recorder's camera or aim point; not decoded |
@@ -204,6 +204,52 @@ results on every replay that has them.
 Compact descriptor: the first two bytes (u16le) are the **tank id**. This
 matched battle results on every vehicle. The rest of the descriptor (modules)
 is not decoded.
+
+### Fight events: vehicles and the Avatar
+
+`events.py` reads these. The indexes are the same in 11.7.1 and 11.20.0.
+Vehicle methods and properties arrive only while the vehicle is in view, so
+the recorder's own team is complete and enemies are not.
+
+Vehicle entity (entity type 2 in the create packet):
+
+| what | layout | confidence |
+|---|---|---|
+| create, properties | `0 u8, 1 u8, 2 gun angles u16, 3 health i16`, then 4 u16, 5 public info (nickname, compact descriptor, ...), more not read | sure: health equals the results' max HP for every ally at the start (11.20) |
+| property 2 | gun angles u16: turret yaw relative to the hull in the top 10 bits, `(v >> 6) / 1023 · 2π − π`, same sense as the hull yaw; gun pitch in the low 6 bits (not used). Sent about 10 times a second | sure: hull yaw + turret yaw points along the tracer of the shot: median error 0.25°, 0.7° at the 90th percentile, over 919 shots in 13 battles |
+| property 3 | health i16 | sure. Always followed by method 1 with the same value, so only creates and method 1 are read |
+| method 0 | shooting: burst size u8 (1, or 3 for burst guns) | sure: for every tank of the recorder's team the sizes add up to its shots |
+| method 1 | health changed: `new health i16 (negative = overkill), attacker u32, reason u8`. Reasons: 0 shell, 1 fire (ticks every 0.5 s, falling: 60, 55, 50), 2 ramming (both tanks hurt in the same instant), 3 a fall -- the attacker is the vehicle itself; all five in our battles came after the tank dropped 5–8 m within a second | sure: the drops on a tank of the recorder's team add up to its damage received; reasons 1 and 2 likely, 3 sure |
+| method 8 | hit: `attacker u32, victim u32, 1 u8, hit point u64, effects u8, damage factor? u8, u8, u8`. The point's low byte is the kind: 0 ricochet the shell flew on from, 1 ricochet, 2 not pierced, 3 pierced, 4 pierced with a critical hit | sure: the hits on a tank of the recorder's team add up to its hits received; kind 3 always came with damage (581/581), kinds 1 and 2 never (127), kind 4 did 79 of 99 times, kind 0 18 of 72 times |
+| method 6 | 29 bytes, `energy f, point 3f, normal 3f, u8` | likely: a crash into the scenery |
+| method 2 | 8 bytes, 2 floats; seen when a tank died | — |
+
+The results' penetrations are not a plain count of kinds 3 and 4: some kind 0
+and kind 2 hits count too. The report therefore shows what a hit did -- its
+damage, or "ricochet", "not pierced", "crit" -- instead of a pen count of
+its own.
+
+Avatar (the recorder's entity):
+
+| method | layout | confidence |
+|---|---|---|
+| 29 | tracer: `shooter u32, shot id u32, effects u8, start 3f, velocity 3f, gravity f`. One per shell the recorder saw fired; a ricochet starts a second tracer with the same shot id where it bounced | sure: hull + turret yaw points along it; for the recorder's team one tracer per shell |
+| 20 | tracer stop: `shot id u32, end point 3f`. Mostly in the same packet bundle as the tracer -- the server sends the whole flight at once. A stop without a tracer is a hidden shooter's shell landing in view | sure: a shell that hit ends 1.5 m from its victim's position (median; 4.2 m at the 99th percentile) |
+| 27 | `shot id u32, u32, u8, end point 3f, direction 3f, u8`: the shell exploding on the ground or an object | likely |
+| 19 | `the recorder's vehicle u32, 1 u8, enemy u32, u32, u8` | guess: the recorder spotted that enemy |
+| 5, 8 | the recorder's health u16 + flag, and a hit direction f + flag, at each hit on them | likely |
+| 13, 35 | `vehicle u32, u8, f` / `vehicle u32, f, f, u8` | guess: reload timers |
+| 38 | `victim u32, ...` after each of the recorder's hits | guess: the damage log |
+| 46 | `vehicle u32, account u32, u32, protobuf {1 {1 x f, 2 y f, 3 z f}}` | guess: a minimap ping |
+| 39 | `0000` every 10 s | — |
+
+**Out of view.** An enemy hit -- or burning -- while unseen comes back with
+less health at its next create packet; `events.py` records that as `unseen`.
+On Rift an enemy hit by a Panzer 58 lost 249 out of view -- most likely
+burning, since every hit the results give the Panzer 58 is in view -- and the
+Panzer 58's damage in the results is exactly its seen damage plus those 249. Over
+all recordings that run to the end of the battle, the results' damage minus
+the damage seen equals the unseen health drops, to the point.
 
 ## Tank ids
 
@@ -297,6 +343,7 @@ Not done yet:
 
 ## Open questions
 
-- Event methods: shots, damage, health changes. Entity method ids 0–48 have been seen. Decoded events will be checked against the result totals.
+- Which hits the results count as penetrations (kinds 0 and 2 sometimes do), and what the hit's effects byte, "damage factor" and the last two bytes mean.
+- Avatar methods 19, 13, 35, 38, 46 (guesses above) and vehicle properties 0, 1, 4, 7, 8, 9.
 - Assist kinds A and B: which one is spotting and which is tracking.
 - Point state fields 5 and 6 (seen while a capture stalls and while it runs faster, maybe the crew skill "Стремительный захват"), and kill field 4.

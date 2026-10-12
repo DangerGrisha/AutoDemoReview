@@ -286,6 +286,191 @@ def _feed(battle):
     return f'<section class="card"><h2>Уничтожения</h2>{_feed_list(battle)}</section>'
 
 
+# What one hit did, in words: hits.kind (events.HIT_*) when there was no
+# damage. Kind 0 is a ricochet the shell flew on from; kind 4 without damage
+# hit a module.
+_HIT_WORDS = {0: "рикошет", 1: "рикошет", 2: "не пробил", 3: "пробил", 4: "крит"}
+_REASON_WORDS = {1: "пожар", 2: "таран", 3: "падение"}  # events.REASON_* other than a shell
+
+
+def _my_shots(battle, me_id):
+    """The recorder's shots in order: [{t, target, word, damage}]. A ricochet
+    the shell flew on from counts with where that flight ended."""
+    shots = (battle.get("events") or {}).get("shots") or []
+    out, current = [], None
+    for t, shooter, _x0, _z0, _x1, _z1, victim, kind, damage, bounce in shots:
+        if shooter != me_id:
+            continue
+        if not bounce or current is None:
+            current = {"t": t, "hits": []}
+            out.append(current)
+        if victim:
+            current["hits"].append((victim, kind, damage))
+    rows = []
+    for shot in out:
+        hits = shot["hits"]
+        damage = sum(h[2] for h in hits)
+        if damage:
+            victim = next(h[0] for h in hits if h[2])
+            word = _HIT_WORDS[3] if any(h[1] == 3 for h in hits if h[2]) else "попал"
+        elif hits:
+            victim, kind = hits[-1][0], hits[-1][1]
+            word = _HIT_WORDS.get(kind, "без урона")
+        else:
+            victim, word = None, "промах"
+        rows.append({"t": shot["t"], "target": victim, "word": word, "damage": damage})
+    return rows
+
+
+def _other_damage(battle, keep):
+    """Damage that came without a shell (fire, ramming, falls) for the
+    drops `keep(attacker, victim)` accepts: [{t, attacker, victim, word,
+    damage}], one row per fire or shoving match -- ticks from the same source
+    under two seconds apart are added up."""
+    rows = []
+    for t, attacker, victim, amount, reason in (battle.get("events") or {}).get("damage") or ():
+        if not reason or not keep(attacker, victim):
+            continue
+        last = rows[-1] if rows else None
+        if (last and last["attacker"] == attacker and last["victim"] == victim
+                and last["reason"] == reason and t - last["end"] < 2):
+            last["damage"] += amount
+            last["end"] = t
+        else:
+            rows.append({"t": t, "end": t, "attacker": attacker, "victim": victim,
+                         "reason": reason, "word": _REASON_WORDS.get(reason, "урон"),
+                         "damage": amount})
+    return rows
+
+
+def _hits_on_me(battle, me_id):
+    """What hit or hurt the recorder: [{t, source, word, damage, shell}] --
+    shells (with or without damage), fire, ramming and falls."""
+    ev = battle.get("events") or {}
+    rows = [{"t": t, "source": attacker, "word": _HIT_WORDS.get(kind, "попал") if not damage
+             else "пробил" if kind == 3 else "попал", "damage": damage, "shell": True}
+            for t, attacker, victim, kind, damage in ev.get("hits") or () if victim == me_id]
+    rows += [dict(r, source=r["attacker"] if r["attacker"] != me_id else None, shell=False)
+             for r in _other_damage(battle, lambda attacker, victim: victim == me_id)]
+    rows.sort(key=lambda r: r["t"])
+    return rows
+
+
+def _who(vehicle):
+    if vehicle is None:
+        return '<span class="muted">—</span>'
+    return (f'<span class="{_side_class(vehicle)}">{esc(vehicle["nickname"])}</span> '
+            f'<span class="tank">{esc(vehicle["tank"]["short"])}</span>')
+
+
+def _fight_chart(battle, me, shots, end):
+    """The recorder's battle over time: damage dealt so far (gold) and hit
+    points left (green), a tick under it for every shot -- gold hit for
+    damage, grey hit for none, dark missed -- and marks for kills and death."""
+    ev = battle["events"]
+    me_id = me["entity_id"]
+    dealt, total = [(0.0, 0)], 0
+    for t, attacker, victim, amount, _reason in ev.get("damage") or ():
+        if attacker == me_id and victim != me_id:
+            total += amount
+            dealt.append((t, total))
+    hp_entry = next((h for h in ev.get("hp") or () if h["id"] == me_id), None)
+    health = list(zip(hp_entry["p"][0::2], hp_entry["p"][1::2])) if hp_entry else []
+    top = max([1, total] + ([hp_entry["max"]] if hp_entry else [])) * 1.08
+
+    def y(value):
+        return 86 - 78 * value / top
+
+    def steps(points, stop):
+        if not points:
+            return ""
+        d = [f"M{max(points[0][0], 0):.1f} {y(points[0][1]):.2f}"]
+        for t, value in points[1:]:
+            d.append(f"H{max(t, 0):.1f}V{y(value):.2f}")
+        d.append(f"H{stop:.1f}")
+        return "".join(d)
+
+    death = me.get("death_time")
+    parts = [f'<path class="g" d="M0 {y(0):.2f}H{end:.1f}"/>',
+             f'<path class="hpl" d="{steps(health, death if death is not None else end)}"/>',
+             f'<path class="dl" d="{steps(dealt, end)}"/>']
+    for shot in shots:
+        cls = "sd" if shot["damage"] else "sn" if shot["target"] else "sm"
+        parts.append(f'<a href="{_seek(shot["t"] - 2)}"><g><title>{clock(shot["t"])}: '
+                     f'{esc(shot["word"])}{" −" + num(shot["damage"]) if shot["damage"] else ""}'
+                     f'</title><rect class="hit" x="{shot["t"] - 2:.1f}" y="88" width="4" height="12"/>'
+                     f'<path class="{cls}" d="M{shot["t"]:.1f} 90V100"/></g></a>')
+    for kill in battle["kills"]:
+        if kill["t"] is None:
+            continue
+        mine = kill["killer"] == me_id and kill["victim"] != me_id
+        if mine or kill["victim"] == me_id:
+            cls, what = ("kf", "уничтожен противник") if mine else ("kd", "вы уничтожены")
+            parts.append(f'<a href="{_seek(kill["t"] - 3)}"><g><title>{clock(kill["t"])}: {what}'
+                         f'</title><rect class="hit" x="{kill["t"] - 2:.1f}" y="0" width="4" height="88"/>'
+                         f'<path class="{cls}" d="M{kill["t"]:.1f} 2V86"/></g></a>')
+    marks = []
+    for minute in range(0, int(end) + 1, 60):
+        marks.append(f'<span style="left:{100 * minute / end:.2f}%">{clock(minute)}</span>')
+    return (f'<div class="fchart"><svg viewBox="0 0 {end:.1f} 100" preserveAspectRatio="none" '
+            'role="img" aria-label="Урон и прочность по ходу боя">'
+            f'{"".join(parts)}</svg><div class="faxis">{"".join(marks)}</div></div>')
+
+
+def _fight(battle):
+    """"Ход боя": the recorder's damage and hit points over time, every shot
+    they fired and everything that hit them, each linked to the 2D replay.
+    Battles stored before the events were decoded ask for a fresh upload."""
+    me = analysis.author(battle)
+    if me is None or not _replay_geo(battle):
+        return ""
+    if not battle.get("events"):
+        if (battle.get("format") or 1) < 4:
+            return ('<section class="card"><h2>Ход боя</h2><p class="note">Выстрелы, попадания и '
+                    'урон по времени появились позже, чем этот бой сохранён: загрузите реплей '
+                    'заново, чтобы их увидеть.</p></section>')
+        return ""
+    names = {v["entity_id"]: v for v in battle["vehicles"]}
+    me_id = me["entity_id"]
+    shots = _my_shots(battle, me_id)
+    against = _hits_on_me(battle, me_id)
+    extra = {}  # my damage that was not a shell: fire my shells started, ramming
+    for row in _other_damage(battle, lambda attacker, victim: attacker == me_id != victim):
+        extra[row["word"]] = extra.get(row["word"], 0) + row["damage"]
+    end = battle["replay"]["end"]
+
+    def table(title, rows, who_key, empty, foot=""):
+        if not rows:
+            return f'<div><h3>{title}</h3><p class="note">{empty}</p>{foot}</div>'
+        body = "".join(
+            f'<tr><td><a class="t" href="{_seek(r["t"] - 2)}">{clock(r["t"])}</a></td>'
+            f'<td>{_who(names.get(r[who_key])) if r[who_key] else ""}</td>'
+            f'<td class="w{" hurt" if r["damage"] else ""}">{esc(r["word"])}</td>'
+            f'<td class="n">{"−" + num(r["damage"]) if r["damage"] else ""}</td></tr>'
+            for r in rows)
+        return (f'<div><h3>{title}</h3><table class="flist"><tbody>{body}</tbody></table>'
+                f'{foot}</div>')
+
+    landed = sum(1 for s in shots if s["target"])
+    hits_on_me = sum(1 for r in against if r["shell"])
+    foot = ""
+    if extra:
+        foot = ('<p class="note">И не снарядом: '
+                + ", ".join(f"{esc(word)} −{num(amount)}" for word, amount in extra.items()) + ".</p>")
+    legend = ('<div class="flegend"><span><i class="dl"></i>ваш урон</span>'
+              '<span><i class="hpl"></i>ваша прочность</span>'
+              '<span><i class="sd"></i>выстрел с уроном</span><span><i class="sn"></i>попал без урона</span>'
+              '<span><i class="sm"></i>промах</span><span><i class="kf"></i>ваш фраг</span>'
+              '<span><i class="kd"></i>гибель</span></div>')
+    return (f'<section class="card fight"><h2>Ход боя</h2>{_fight_chart(battle, me, shots, end)}'
+            f'{legend}<div class="fgrid">'
+            + table(f"Ваши выстрелы: {len(shots)}, в цель {landed}", shots, "target",
+                    "В записи нет ваших выстрелов.", foot)
+            + table(f"Попадания по вам: {hits_on_me}", against, "source", "По вам не попали.")
+            + '</div><p class="note">Всё, что видно в записи; клик по времени — момент в 2D-повторе.'
+            '</p></section>')
+
+
 def _replay_ticks(battle, end):
     """Kill marks above the scrubber: green -- an enemy fell, red -- an ally,
     gold -- the recorder killed or died."""
@@ -401,10 +586,19 @@ def _best_ally(battle):
     return best["entity_id"] if best and best["stats"]["damage"] > 0 else None
 
 
+def _replay_events(battle):
+    """Health, shots, hits and damage for the replay script (see battle._events);
+    None for a battle stored before format 4."""
+    ev = battle.get("events")
+    if not ev:
+        return None
+    return {"hp": ev["hp"], "shots": ev["shots"], "hits": ev["hits"], "damage": ev["damage"]}
+
+
 def _replay_data(battle, geo):
     rp = battle["replay"]
     return {
-        "end": rp["end"], "gap": rp["gap"],
+        "end": rp["end"], "gap": rp["gap"], "fmt": rp.get("format", 1),
         "world": geo["world"], "crop": geo["crop"], "border": geo["border"],
         "view": geo["view"],
         "vehicles": [_replay_vehicle(v) for v in battle["vehicles"]],
@@ -412,6 +606,7 @@ def _replay_data(battle, geo):
         "kills": [{"t": k["t"], "v": k["victim"], "k": k["killer"]}
                   for k in battle["kills"] if k["t"] is not None],
         "obj": _replay_objectives(battle),
+        "ev": _replay_events(battle),
     }
 
 
@@ -457,9 +652,12 @@ def _mark(svg_body):
     return f'<svg viewBox="-7 -7 14 14" aria-hidden="true">{svg_body}</svg>'
 
 
-def _legend(obj):
+def _legend(obj, fight=False):
     classes = "".join(f'<span>{_mark(_MARKS[code])}{gamedata.class_name(code)}</span>'
                       for code in ("LT", "MT", "HT", "TD"))
+    shots = ('<span><i class="lb"></i>куда смотрит орудие</span><span><i class="lt"></i>выстрел</span>'
+             '<span><b class="ld">−350</b>урон</span><span><i class="lh"></i>прочность</span>'
+             if fight else "")
     zones = ""
     if obj and obj["kind"] == "points":
         zones = '<span><b class="lp">A</b>точки захвата</span>'
@@ -467,8 +665,9 @@ def _legend(obj):
         zones = f'<span>{_mark(_FLAG)}база</span>'
     return ('<div class="rp-legend"><span><i class="lm"></i>вы</span>'
             '<span><i class="la"></i>союзники</span><span><i class="le"></i>противники</span>'
-            f'{classes}<span><i class="lg"></i>последний раз видели</span><span>✕ уничтожен</span>'
-            f'<span>→ кто кого уничтожил</span>{zones}</div>')
+            f'{classes}{shots}<span><i class="ls"></i>засвечен</span>'
+            '<span><i class="lg"></i>последний раз видели</span>'
+            f'<span>✕ уничтожен</span><span>→ кто кого уничтожил</span>{zones}</div>')
 
 
 SPEEDS = (1, 2, 4, 8, 16)
@@ -521,7 +720,7 @@ def _replay(battle):
         'aria-label="Время боя"></div>'
         f'<div class="rp-controls">{controls}</div></div>'
         f'<aside class="rp-side">{_focus_panel(battle)}<h3>Уничтожения</h3>'
-        f'{_feed_list(battle, linked=True)}{_legend(data["obj"])}'
+        f'{_feed_list(battle, linked=True)}{_legend(data["obj"], data["ev"] is not None)}'
         '<p class="note">Пробел — пауза, ← → — на 5 секунд, Esc — снять выделение.</p>'
         '</aside></div>'
         f'<script type="application/json" id="replay-data">{embed_json(data)}'
@@ -681,6 +880,7 @@ font-size:12px}
 .rp-legend .la{background:var(--ally)}.rp-legend .le{background:var(--enemy)}
 .rp-legend .lm{background:var(--me)}
 .rp-legend .lg{border:1.5px dashed var(--enemy)}
+.rp-legend .ls{border:2px solid var(--enemy);width:12px;height:12px}
 .rp-legend svg{width:13px;height:13px;flex:none;fill:#C9CED3;stroke:#0B0E11;stroke-width:1}
 .rp-legend svg .cut,.rp-legend svg .pole{fill:none;stroke-width:1.5}
 .rp-legend svg .pole{stroke:#C9CED3}
@@ -698,6 +898,51 @@ border:0;cursor:pointer;padding:0 2px}
 .rc-stats{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:8px;color:var(--muted);font-size:12px}
 .rc-stats b{font:700 15px var(--mono);color:var(--text)}
 .rc-fate{margin-top:6px;font-size:13px}
+.rc-live{margin-top:8px}
+.rc-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);align-self:center}
+.rc-hp{display:block;height:5px;border-radius:3px;background:var(--line);margin:4px 0 0;overflow:hidden}
+.rc-hp i{display:block;height:100%}
+.rc-live .rc-stats{margin-top:4px}
+.rc-note{color:var(--muted);font-size:11px;margin-top:4px}
+.rp-legend .lb{width:3px;height:13px;border-radius:2px;background:#F6DE94;box-shadow:0 0 0 1px rgba(0,0,0,.7)}
+.rp-legend .lt{width:16px;height:2px;border-radius:1px;background:#BFE6BF;box-shadow:0 0 0 1px rgba(0,0,0,.6)}
+.rp-legend .lh{width:16px;height:4px;border-radius:0;background:linear-gradient(90deg,var(--ally) 65%,#000 65%)}
+.rp-legend .ld{font:700 11px var(--body);color:#FFD27A}
+.fchart svg{display:block;width:100%;height:150px;background:var(--panel2);border:1px solid var(--line);
+border-radius:8px}
+.fchart path{fill:none;vector-effect:non-scaling-stroke}
+.fchart .g{stroke:rgba(255,255,255,.18);stroke-width:1}
+.fchart .dl{stroke:var(--me);stroke-width:2.2}
+.fchart .hpl{stroke:var(--ally);stroke-width:2.2}
+.fchart .sd{stroke:var(--me);stroke-width:2}
+.fchart .sn{stroke:#A2AAB3;stroke-width:2}
+.fchart .sm{stroke:#4F5861;stroke-width:2}
+.fchart .kf{stroke:var(--me);stroke-width:1.5;stroke-dasharray:4 3}
+.fchart .kd{stroke:var(--enemy);stroke-width:2}
+.fchart rect.hit{fill:transparent}
+.fchart a:hover path{stroke-width:4}
+.faxis{position:relative;height:16px;margin:3px 1px 0;font:11px var(--mono);color:var(--muted)}
+.faxis span{position:absolute;transform:translateX(-50%)}
+.faxis span:first-child{transform:none}
+.flegend{display:flex;flex-wrap:wrap;gap:4px 14px;margin:4px 0 0;color:var(--muted);font-size:12px}
+.flegend span{display:inline-flex;align-items:center;gap:6px}
+.flegend i{display:inline-block;width:14px;height:3px;border-radius:2px}
+.flegend i.dl,.flegend i.sd{background:var(--me)}
+.flegend i.hpl{background:var(--ally)}
+.flegend i.sn{background:#A2AAB3}
+.flegend i.sm{background:#4F5861}
+.flegend i.sd,.flegend i.sn,.flegend i.sm,.flegend i.kd{width:3px;height:12px}
+.flegend i.kd{background:var(--enemy)}
+.flegend i.kf{width:0;height:12px;border-left:2px dashed var(--me);border-radius:0}
+.fgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px 24px;margin-top:14px}
+.fgrid h3{font:700 16px var(--display);letter-spacing:.5px;text-transform:uppercase;margin:0 0 4px}
+.flist td{padding:4px 6px}
+.flist td:first-child{width:44px;padding-left:0}
+.flist td:nth-child(2){white-space:normal}
+.flist .tank{color:var(--muted);font-size:12px}
+.flist .w{color:var(--muted)}
+.flist .w.hurt{color:var(--text)}
+@media(max-width:760px){.fgrid{grid-template-columns:minmax(0,1fr)}}
 .rc-fate a.t{color:inherit}
 @media(max-width:900px){.rp-grid{grid-template-columns:minmax(0,1fr)}
 .rp-side .feed{max-height:none}}
@@ -755,21 +1000,33 @@ _REPLAY_SCRIPT = r"""
   var cur = 0, playing = false, lastTs = 0, W = 1, H = 1, dpr = 1, recentSig = '', focus = null;
 
   var byId = {}, V = [];
+  var STRIDE = R.fmt >= 2 ? 5 : 4;  // format 1 tracks (older battles) have no turret
   R.vehicles.forEach(function (v) { byId[v.id] = v; });
   R.tracks.forEach(function (tr) {
     var v = byId[tr.id];
     if (!v) return;
-    var p = tr.p, n = Math.floor(p.length / 4);
+    var p = tr.p, n = Math.floor(p.length / STRIDE);
     var T = new Float64Array(n), X = new Float64Array(n), Z = new Float64Array(n),
-        Y = new Float64Array(n), t = 0, x = 0, z = 0, y = 0;
+        Y = new Float64Array(n), G = new Float64Array(n), t = 0, x = 0, z = 0, y = 0, g = 0;
     for (var i = 0; i < n; i++) {
-      var k = 4 * i;
-      if (i === 0) { t = p[0]; x = p[1]; z = p[2]; y = p[3]; }
-      else { t += p[k]; x += p[k + 1]; z += p[k + 2]; y += p[k + 3]; }
-      T[i] = t / 10; X[i] = x / 10; Z[i] = z / 10; Y[i] = y;  // yaw unwrapped: lerp-safe
+      var k = STRIDE * i;
+      if (i === 0) { t = p[0]; x = p[1]; z = p[2]; y = p[3]; g = STRIDE > 4 ? p[4] : 0; }
+      else { t += p[k]; x += p[k + 1]; z += p[k + 2]; y += p[k + 3]; if (STRIDE > 4) g += p[k + 4]; }
+      T[i] = t / 10; X[i] = x / 10; Z[i] = z / 10; Y[i] = y; G[i] = g;  // yaws unwrapped: lerp-safe
     }
-    v.T = T; v.X = X; v.Z = Z; v.Y = Y;
+    v.T = T; v.X = X; v.Z = Z; v.Y = Y; v.G = STRIDE > 4 ? G : null;
+    v.spotted = [];  // when an enemy came into view: its first sample and each one after a silence
+    if (v.s === 'e') for (var j = 0; j < n; j++) if (!j || T[j] - T[j - 1] > GAP) v.spotted.push(T[j]);
     V.push(v);
+  });
+
+  var EV = R.ev, SHOTS = EV ? EV.shots : [], HITS = EV ? EV.hits : [], DMG = EV ? EV.damage : [];
+  if (EV) EV.hp.forEach(function (h) {  // [t, hp, t, hp, ...] -> two arrays for at()
+    var v = byId[h.id];
+    if (!v) return;
+    var n = h.p.length / 2, T = new Float64Array(n), P = new Float64Array(n);
+    for (var i = 0; i < n; i++) { T[i] = h.p[2 * i]; P[i] = h.p[2 * i + 1]; }
+    v.hpT = T; v.hpV = P; v.hpMax = h.max;
   });
   var ORDER = {e: 0, a: 1, m: 2};  // the recorder is drawn last, on top
   V.sort(function (a, b) { return ORDER[a.s] - ORDER[b.s]; });
@@ -802,22 +1059,36 @@ _REPLAY_SCRIPT = r"""
     }
     return found;
   }
-  function state(v, t) {
-    var T = v.T, n = T.length;
+  function since(list, t) {  // index of the first [t, ...] row at or after t
+    var lo = 0, hi = list.length;
+    while (lo < hi) {
+      var mid = (lo + hi) >> 1;
+      if (list[mid][0] < t) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+  }
+  function hpAt(v, t) {  // health as last seen at t, null before the first sighting
+    if (!v.hpT) return null;
+    var i = at(v.hpT, t);
+    return i < 0 ? null : v.hpV[i];
+  }
+  function state(v, t) {  // g: where the turret points relative to the hull (null: unknown)
+    var T = v.T, n = T.length, G = v.G;
     if (v.d !== null && t >= v.d) {
       var j = at(T, v.d + 0.25);
-      return j < 0 ? null : {k: 'dead', x: v.X[j], z: v.Z[j], y: v.Y[j]};
+      return j < 0 ? null : {k: 'dead', x: v.X[j], z: v.Z[j], y: v.Y[j], g: null};
     }
     var i = at(T, t);
     if (i < 0) return null;
     if (i + 1 < n && T[i + 1] - T[i] <= GAP) {
       var f = (t - T[i]) / (T[i + 1] - T[i]);
       return {k: 'live', x: v.X[i] + (v.X[i + 1] - v.X[i]) * f,
-              z: v.Z[i] + (v.Z[i + 1] - v.Z[i]) * f, y: v.Y[i] + (v.Y[i + 1] - v.Y[i]) * f};
+              z: v.Z[i] + (v.Z[i + 1] - v.Z[i]) * f, y: v.Y[i] + (v.Y[i + 1] - v.Y[i]) * f,
+              g: G ? G[i] + (G[i + 1] - G[i]) * f : null};
     }
     var age = t - T[i];
-    if (age <= GAP) return {k: 'live', x: v.X[i], z: v.Z[i], y: v.Y[i]};
-    return {k: 'ghost', x: v.X[i], z: v.Z[i], y: v.Y[i], age: age};
+    if (age <= GAP) return {k: 'live', x: v.X[i], z: v.Z[i], y: v.Y[i], g: G ? G[i] : null};
+    return {k: 'ghost', x: v.X[i], z: v.Z[i], y: v.Y[i], g: null, age: age};
   }
 
   function drawMap() {
@@ -959,6 +1230,15 @@ _REPLAY_SCRIPT = r"""
     ctx.fillStyle = c; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = dpr; ctx.stroke();
     ctx.restore();
   }
+  function barrel(deg, r, color) {  // where the gun points: hull yaw + turret yaw
+    ctx.save();
+    ctx.rotate(deg * Math.PI / 180);
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(0, -.3 * r); ctx.lineTo(0, -1.25 * r - 9 * dpr);
+    ctx.strokeStyle = INK; ctx.lineWidth = 3.6 * dpr; ctx.stroke();
+    ctx.strokeStyle = color; ctx.lineWidth = 1.6 * dpr; ctx.stroke();
+    ctx.restore();
+  }
   function ring(radius, color, width) {
     ctx.beginPath(); ctx.arc(0, 0, radius, 0, TAU);
     ctx.strokeStyle = color; ctx.lineWidth = width * dpr; ctx.stroke();
@@ -983,6 +1263,7 @@ _REPLAY_SCRIPT = r"""
       shape(v.c, r); ctx.strokeStyle = c; ctx.lineWidth = 1.6 * dpr; ctx.stroke();
       ctx.setLineDash([]);
     } else {
+      if (s.g !== null) barrel(s.y + s.g, r, TEXT[v.s]);
       wedge(s.y, r, c);
       shape(v.c, r); ctx.fillStyle = c; ctx.fill();
       cuts(v.c, r);
@@ -996,12 +1277,23 @@ _REPLAY_SCRIPT = r"""
     }
     ctx.restore();
   }
+  function drawHp(v, s, t) {  // a health bar under a live tank, as much of it as was left
+    var hp = hpAt(v, t);
+    if (hp === null || !v.hpMax) return;
+    var w = 18 * dpr, h = 3 * dpr, x = px(s.x) - w / 2, y = py(s.z) + 9 * dpr;
+    ctx.save();
+    ctx.globalAlpha = focus && v !== focus ? .3 : 1;
+    ctx.fillStyle = 'rgba(0,0,0,.75)'; ctx.fillRect(x - dpr, y - dpr, w + 2 * dpr, h + 2 * dpr);
+    ctx.fillStyle = COL[v.s]; ctx.fillRect(x, y, w * Math.max(0, Math.min(1, hp / v.hpMax)), h);
+    ctx.restore();
+  }
   function drawLabel(v, s) {
     var picked = v === focus;
     if (labels === 'none' && !picked) return;
     var text = picked || labels === 'nick' ? v.n : v.k;
     if (s.k === 'ghost') text += ' · ' + Math.round(s.age) + ' с';
-    var x = px(s.x), y = py(s.z) + (picked ? 16 : s.k === 'dead' ? 7 : 10) * dpr;
+    var bar = s.k === 'live' && hpAt(v, cur) !== null ? 5 : 0;
+    var x = px(s.x), y = py(s.z) + ((picked ? 16 : s.k === 'dead' ? 7 : 10) + bar) * dpr;
     ctx.save();
     ctx.font = '600 ' + Math.round(11 * dpr) + 'px ' + FONT;
     ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.lineJoin = 'round';
@@ -1019,15 +1311,17 @@ _REPLAY_SCRIPT = r"""
     if (s && (s.k === 'live' || (s.k === 'dead' && t - v.d < 1.5))) return s;
     return null;
   }
-  function arrow(x0, y0, x1, y1, color) {  // from the killer to the victim, clear of both marks
+  function arrow(x0, y0, x1, y1, color, dashed) {  // from the killer to the victim, clear of both marks
     var dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy);
     if (len < 24 * dpr) return;
     var ux = dx / len, uy = dy / len, hs = 7 * dpr;
     var sx = x0 + ux * 9 * dpr, sy = y0 + uy * 9 * dpr, ex = x1 - ux * 11 * dpr, ey = y1 - uy * 11 * dpr;
     ctx.lineCap = 'round';
+    if (dashed) ctx.setLineDash([5 * dpr, 4 * dpr]);
     ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex - ux * hs * .8, ey - uy * hs * .8);
     ctx.strokeStyle = INK; ctx.lineWidth = 4 * dpr; ctx.stroke();
     ctx.strokeStyle = color; ctx.lineWidth = 2 * dpr; ctx.stroke();
+    ctx.setLineDash([]);
     ctx.beginPath();
     ctx.moveTo(ex, ey);
     ctx.lineTo(ex - ux * hs - uy * hs * .6, ey - uy * hs + ux * hs * .6);
@@ -1041,6 +1335,13 @@ _REPLAY_SCRIPT = r"""
     ctx.lineWidth = 3 * dpr; ctx.strokeStyle = 'rgba(0,0,0,.85)'; ctx.strokeText(text, x, y);
     ctx.fillStyle = '#E4E7EA'; ctx.fillText(text, x, y);
   }
+  function killingShot(killer, victim, t) {  // its tracer starts where a hidden killer stood
+    for (var i = since(SHOTS, t - 1.5); i < SHOTS.length && SHOTS[i][0] <= t + 0.05; i++) {
+      var s = SHOTS[i];
+      if (s[1] === killer && s[6] === victim && !s[9]) return s;
+    }
+    return null;
+  }
   function drawKills(t) {  // the first two seconds after each kill
     R.kills.forEach(function (k) {
       var age = t - k.t, victim = byId[k.v];
@@ -1050,13 +1351,71 @@ _REPLAY_SCRIPT = r"""
       var x = px(vs.x), y = py(vs.z), killer = k.k !== k.v ? byId[k.k] : null, ks = seen(killer, k.t);
       ctx.save();
       ctx.globalAlpha = 1 - age / 2;
+      var shot = !ks && killer ? killingShot(killer.id, k.v, k.t) : null;
       if (ks) arrow(px(ks.x), py(ks.z), x, y, COL[killer.s]);
+      else if (shot) arrow(px(shot[2]), py(shot[3]), x, y, COL[killer.s], true);  // from the shell's start
       else if (killer && killer.s === 'e') caption('стрелок не в засвете', x, y - 12 * dpr);
       ctx.globalAlpha = Math.max(0, 1 - age / 1.5);
       ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 2 * dpr;
       ctx.beginPath(); ctx.arc(x, y, (8 + age * 22) * dpr, 0, TAU); ctx.stroke();
       ctx.restore();
     });
+  }
+
+  function lasting(base) { return Math.max(base, .3 * speed); }  // battle seconds an effect stays on screen
+  function drawSpotted(v, s, t) {  // a ring that shrinks onto an enemy as it is spotted
+    var span = lasting(1.2), i = at(v.spotted, t);
+    if (i < 0 || t - v.spotted[i] > span || t < 0) return;
+    var age = (t - v.spotted[i]) / span;
+    ctx.save();
+    ctx.globalAlpha = (1 - age) * (focus && v !== focus ? .35 : 1);
+    ctx.beginPath(); ctx.arc(px(s.x), py(s.z), (24 - 12 * age) * dpr, 0, TAU);
+    ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 4 * dpr; ctx.stroke();
+    ctx.strokeStyle = COL.e; ctx.lineWidth = 2 * dpr; ctx.stroke();
+    ctx.restore();
+  }
+  function drawShots(t) {  // tracers, fading out; a ricochet's flight on is dashed
+    var span = lasting(.8);
+    for (var i = since(SHOTS, t - span); i < SHOTS.length && SHOTS[i][0] <= t; i++) {
+      var s = SHOTS[i], shooter = byId[s[1]], target = byId[s[6]];
+      if (s[4] === null) continue;
+      ctx.save();
+      ctx.globalAlpha = (1 - (t - s[0]) / span) * (focus && shooter !== focus && target !== focus ? .2 : 1);
+      ctx.lineCap = 'round';
+      if (s[9]) ctx.setLineDash([3 * dpr, 3 * dpr]);
+      ctx.beginPath(); ctx.moveTo(px(s[2]), py(s[3])); ctx.lineTo(px(s[4]), py(s[5]));
+      ctx.strokeStyle = INK; ctx.lineWidth = 3 * dpr; ctx.stroke();
+      ctx.strokeStyle = shooter ? TEXT[shooter.s] : '#FFFFFF'; ctx.lineWidth = 1.4 * dpr; ctx.stroke();
+      ctx.restore();
+    }
+  }
+  var WORD = {0: 'рикошет', 1: 'рикошет', 2: 'не пробил', 4: 'крит'};  // a hit without damage
+  var REASON = {1: 'пожар', 2: 'таран', 3: 'падение'};
+  function floater(v, t0, t, span, text, color, stack) {  // rises over the tank and fades
+    var s = seen(v, t) || seen(v, t0);
+    if (!s) return;
+    var age = (t - t0) / span, x = px(s.x), y = py(s.z) - (15 + 14 * age + 13 * stack) * dpr;
+    ctx.save();
+    ctx.globalAlpha = (1 - age) * (focus && v !== focus ? .35 : 1);
+    ctx.font = '700 ' + Math.round(12 * dpr) + 'px ' + FONT;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+    ctx.lineWidth = 3 * dpr; ctx.strokeStyle = 'rgba(0,0,0,.85)'; ctx.strokeText(text, x, y);
+    ctx.fillStyle = color; ctx.fillText(text, x, y);
+    ctx.restore();
+  }
+  function drawHits(t) {  // damage numbers -- warm on enemies, red on allies -- and hits without damage
+    var span = lasting(1.4), stack = {};
+    function slot(id) { stack[id] = (stack[id] || 0) + 1; return stack[id] - 1; }
+    for (var i = since(HITS, t - span); i < HITS.length && HITS[i][0] <= t; i++) {
+      var h = HITS[i], v = byId[h[2]], text = h[4] > 0 ? '−' + h[4] : WORD[h[3]];
+      if (!v || !v.T || !text) continue;
+      floater(v, h[0], t, span, text, h[4] > 0 ? (v.s === 'e' ? '#FFD27A' : '#FF8A7A') : '#C9CED3', slot(v.id));
+    }
+    for (var j = since(DMG, t - span); j < DMG.length && DMG[j][0] <= t; j++) {
+      var d = DMG[j], w = byId[d[2]];
+      if (!d[4] || !w || !w.T) continue;  // shells came with their hits above
+      floater(w, d[0], t, span, '−' + d[3] + ' ' + (REASON[d[4]] || ''), '#FFB08A', slot(w.id));
+    }
   }
 
   function render() {
@@ -1072,8 +1431,13 @@ _REPLAY_SCRIPT = r"""
     });
     var f = focus ? V.indexOf(focus) : -1;
     if (f >= 0 && states[f]) drawTank(focus, states[f]);  // the picked tank on top
+    V.forEach(function (v, i) {
+      if (states[i] && states[i].k === 'live') { drawHp(v, states[i], cur); if (v.spotted.length) drawSpotted(v, states[i], cur); }
+    });
+    drawShots(cur);
     V.forEach(function (v, i) { if (states[i]) drawLabel(v, states[i]); });
     drawKills(cur);  // over the labels: it only lasts two seconds
+    drawHits(cur);
   }
 
   function fmt(t) {
@@ -1128,6 +1492,43 @@ _REPLAY_SCRIPT = r"""
     }
   }
   function num(n) { return n === null || n === undefined ? '—' : Math.round(n).toLocaleString('ru-RU'); }
+  var liveEl = null, liveSig = '';
+  function showLive(t) {  // the picked tank up to the replay's time: health, damage, shots
+    if (!liveEl || !focus) return;
+    var v = focus, hp = hpAt(v, t), dealt = 0, taken = 0, fired = 0, landed = 0;
+    DMG.forEach(function (d) {
+      if (d[0] > t) return;
+      if (d[1] === v.id && d[2] !== v.id) dealt += d[3];
+      if (d[2] === v.id) taken += d[3];
+    });
+    SHOTS.forEach(function (s) {
+      if (s[0] <= t && s[1] === v.id && !s[9]) { fired++; if (s[6]) landed++; }
+    });
+    var sig = [fmt(t), hp, dealt, taken, fired, landed].join('|');
+    if (sig === liveSig) return;
+    liveSig = sig;
+    liveEl.textContent = '';
+    liveEl.appendChild(el('span', 'rc-lbl', 'к ' + fmt(t)));
+    if (hp !== null && v.hpMax) {
+      var bar = el('span', 'rc-hp'), fill = el('i');
+      fill.style.width = Math.max(0, Math.min(100, 100 * hp / v.hpMax)) + '%';
+      fill.style.background = COL[v.s];
+      bar.appendChild(fill);
+      liveEl.appendChild(bar);
+    }
+    var row = el('div', 'rc-stats');
+    [[hp === null ? '—' : num(hp) + (v.hpMax ? ' / ' + num(v.hpMax) : ''), 'HP'], [num(dealt), 'урон'],
+     [num(taken), 'получено'], [fired + (fired ? ' (' + landed + ')' : ''), 'выстр. (в цель)']].forEach(function (p) {
+      var item = el('span');
+      item.appendChild(el('b', null, p[0]));
+      item.appendChild(document.createTextNode(' ' + p[1]));
+      row.appendChild(item);
+    });
+    liveEl.appendChild(row);
+    if (v.s === 'e' && hp !== null && !seen(v, t) && (v.d === null || t < v.d)) {
+      liveEl.appendChild(el('div', 'rc-note', 'Сейчас не в засвете: HP — как видели в последний раз.'));
+    }
+  }
   function showCard() {
     hintEl.hidden = !!focus;
     cardEl.hidden = !focus;
@@ -1142,8 +1543,12 @@ _REPLAY_SCRIPT = r"""
     head.appendChild(close);
     cardEl.appendChild(head);
     cardEl.appendChild(el('div', 'rc-tank', v.tn + (v.tk ? ' · ' + v.tk : '')));
+    liveEl = EV ? el('div', 'rc-live') : null;
+    liveSig = '';
+    if (liveEl) { cardEl.appendChild(liveEl); showLive(cur); }
     if (v.r) {
       var stats = el('div', 'rc-stats');
+      stats.appendChild(el('span', 'rc-lbl', 'итог боя'));
       [[v.r.dmg, 'урон'], [v.r.fr, 'фраги'], [v.r.as, 'помощь'], [v.r.bl, 'блок']].forEach(function (p) {
         var item = el('span');
         item.appendChild(el('b', null, num(p[0])));
@@ -1185,6 +1590,7 @@ _REPLAY_SCRIPT = r"""
     });
     showRecent(cur);
     showBoard(cur);
+    showLive(cur);
   }
 
   function pick(v) {
@@ -1297,7 +1703,7 @@ def render_battle_html(battle, site_nav=""):
     title = f'{battle["map"]["name"]} — {label} · Blitz · demoReview'
     leaders = analysis.leaders(battle)
     has_replay = _replay_geo(battle) is not None  # the replay card carries the kill feed
-    body = (_hero(battle) + _me(battle) + _replay(battle)
+    body = (_hero(battle) + _me(battle) + _fight(battle) + _replay(battle)
             + f'<div class="teams">{_team(battle, True, leaders)}{_team(battle, False, leaders)}</div>'
             + ("" if has_replay else _feed(battle)) + _footer(battle))
     script = _SCRIPT + (_REPLAY_SCRIPT if has_replay else "")

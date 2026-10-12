@@ -12,6 +12,7 @@ Pipeline (each step is a plain function over bytes/dicts, testable alone):
     packets.read_stream     data.wotreplay -> typed packet list
     arena.parse             the roster, battle periods, kill feed and the
                             base / point captures and Supremacy score
+    events.parse            health, shots, hits, damage and turret angles
     replay.build            every vehicle's track for the 2D minimap replay
     battle.load             all of the above joined into one JSON-able dict --
                             what the web app stores and the report renders
