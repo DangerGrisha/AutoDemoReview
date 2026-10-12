@@ -117,8 +117,47 @@ CREATE INDEX IF NOT EXISTS idx_steam_links_due
     ON steam_links(enabled, last_checked_at);
 """
 
+# --- v4: World of Tanks Blitz battles (a separate game; never mixed into the CS2
+# tables or career). One row per (uploader, replay). The flat columns feed the
+# battle list; the report renders from data_json (blitzreview.battle.load).
+#
+# Dedup is per uploader, not global like CS2: there is no Wargaming login yet, so
+# a battle cannot be shared with the other players in it, and a global hit would
+# hide a replay from its second uploader. (arena_id, recorder_account) catches
+# the same battle uploaded again as a different file -- e.g. a copy taken before
+# the battle results were written into it.
+WOTB_BATTLES_DDL = """
+CREATE TABLE IF NOT EXISTS wotb_battles (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    uploader_steamid  TEXT NOT NULL REFERENCES users(steamid64) ON DELETE CASCADE,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    original_filename TEXT,
+    replay_sha256     TEXT NOT NULL,
+    arena_id          INTEGER,
+    recorder_account  INTEGER,
+    recorder_name     TEXT,
+    started_at        INTEGER,
+    map_key           TEXT,
+    map_name          TEXT,
+    mode_name         TEXT,
+    tank_name         TEXT,
+    tank_tier         INTEGER,
+    tank_type         TEXT,
+    outcome           TEXT NOT NULL,
+    damage            INTEGER,
+    kills             INTEGER,
+    survived          INTEGER,
+    has_results       INTEGER NOT NULL,
+    data_json         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_wotb_uploader ON wotb_battles(uploader_steamid, started_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wotb_hash ON wotb_battles(uploader_steamid, replay_sha256);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wotb_arena ON wotb_battles(uploader_steamid, arena_id, recorder_account)
+    WHERE arena_id IS NOT NULL AND recorder_account IS NOT NULL
+"""
+
 SCHEMA = (_USERS_DDL + _MATCHES_DDL + PARTICIPANTS_DDL + INDEXES_DDL
-          + STEAM_LINKS_DDL)
+          + STEAM_LINKS_DDL + WOTB_BATTLES_DDL)
 
 # Columns of match_participants that extract_participants() supplies (match_id added at insert).
 _PART_COLS = (
@@ -501,5 +540,90 @@ def steam_links_awaiting_friend():
         return [r["steamid64"] for r in conn.execute(
             """SELECT steamid64 FROM steam_links
                 WHERE chat_optin = 1 AND friend_state != 'friends'""").fetchall()]
+    finally:
+        conn.close()
+
+
+# ---- World of Tanks Blitz battles ----
+
+_WOTB_COLS = (
+    "uploader_steamid", "original_filename", "replay_sha256", "arena_id",
+    "recorder_account", "recorder_name", "started_at", "map_key", "map_name",
+    "mode_name", "tank_name", "tank_tier", "tank_type", "outcome", "damage",
+    "kills", "survived", "has_results", "data_json",
+)
+
+
+def find_wotb_battle(uploader_steamid, *, sha256=None, arena_id=None, recorder_account=None):
+    """The uploader's existing row for this file (by hash) or this battle, or None."""
+    conn = connect()
+    try:
+        if sha256:
+            row = conn.execute(
+                "SELECT id, has_results FROM wotb_battles "
+                "WHERE uploader_steamid = ? AND replay_sha256 = ?",
+                (uploader_steamid, sha256)).fetchone()
+            if row:
+                return row
+        if arena_id is not None and recorder_account is not None:
+            return conn.execute(
+                "SELECT id, has_results FROM wotb_battles WHERE uploader_steamid = ? "
+                "AND arena_id = ? AND recorder_account = ?",
+                (uploader_steamid, arena_id, recorder_account)).fetchone()
+        return None
+    finally:
+        conn.close()
+
+
+def insert_wotb_battle(row):
+    """Insert one battle (a dict with every _WOTB_COLS key). Returns its id.
+
+    Raises sqlite3.IntegrityError on a duplicate (same file or same battle).
+    """
+    conn = connect()
+    try:
+        cur = conn.execute(
+            f"INSERT INTO wotb_battles ({', '.join(_WOTB_COLS)}) "
+            f"VALUES ({', '.join(':' + c for c in _WOTB_COLS)})", row)
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def replace_wotb_battle(battle_id, row):
+    """Overwrite a battle in place (a later copy of the replay with more data)."""
+    cols = [c for c in _WOTB_COLS if c != "uploader_steamid"]
+    conn = connect()
+    try:
+        conn.execute(
+            f"UPDATE wotb_battles SET {', '.join(f'{c} = :{c}' for c in cols)} "
+            "WHERE id = :id AND uploader_steamid = :uploader_steamid",
+            {**row, "id": battle_id})
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_wotb_battles(uploader_steamid):
+    """The uploader's battles for the list page (no data_json), newest first."""
+    conn = connect()
+    try:
+        return conn.execute(
+            f"SELECT id, created_at, {', '.join(c for c in _WOTB_COLS if c != 'data_json')} "
+            "FROM wotb_battles WHERE uploader_steamid = ? "
+            "ORDER BY started_at DESC, id DESC",
+            (uploader_steamid,)).fetchall()
+    finally:
+        conn.close()
+
+
+def get_wotb_battle(battle_id, uploader_steamid):
+    """Access-scoped fetch: only the uploader sees a battle (no WG login yet)."""
+    conn = connect()
+    try:
+        return conn.execute(
+            "SELECT * FROM wotb_battles WHERE id = ? AND uploader_steamid = ?",
+            (battle_id, uploader_steamid)).fetchone()
     finally:
         conn.close()

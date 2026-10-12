@@ -114,10 +114,16 @@ def build(meta, stream, arena_info, results, warnings=(), lang="ru"):
         death_time.setdefault(kill["victim"], kill)
 
     # Platoons get small per-battle numbers (1, 2, ...) instead of server ids.
+    # A platoon id carried by ONE vehicle happens (the mate dropped before the
+    # battle) and would draw a badge with nobody to match -- so it gets none.
+    members = {}
+    for row in rows.values():
+        if row.get("platoon_id"):
+            members[row["platoon_id"]] = members.get(row["platoon_id"], 0) + 1
     platoon_no = {}
     for row in sorted(rows.values(), key=lambda r: r["entity_id"]):
         pid = row.get("platoon_id")
-        if pid and pid not in platoon_no:
+        if pid and members[pid] > 1 and pid not in platoon_no:
             platoon_no[pid] = len(platoon_no) + 1
 
     vehicles = []

@@ -1,0 +1,157 @@
+{% extends "base.html" %}
+{% block title %}World of Tanks Blitz &mdash; demoReview{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>World of Tanks Blitz</h1>
+</div>
+
+<section class="drop" id="drop">
+  <div class="drop-title">Перетащите сюда реплеи</div>
+  <div class="drop-sub">файлы <code>.wotbreplay</code>, можно сразу много &mdash; до {{ max_mb }}&nbsp;МБ каждый</div>
+  <button class="btn" type="button" id="choose">Выбрать файлы</button>
+  <input type="file" id="pick" accept=".wotbreplay" multiple hidden>
+  <p class="drop-hint muted">
+    На ПК (Steam) реплеи лежат в <code id="rpath">%LOCALAPPDATA%\wotblitz\DAVAProject\replays</code>
+    <button class="btn small ghost" type="button" id="copy">копировать путь</button><br>
+    Вставьте путь в адресную строку окна выбора файлов и выделите всё (Ctrl+A).
+    С телефона: в игре откройте реплей &rarr; «Поделиться» &rarr; сохраните файл и загрузите его здесь.
+  </p>
+  <noscript>
+    <form class="upload" method="post" action="/blitz/upload" enctype="multipart/form-data">
+      <input type="file" name="replays" accept=".wotbreplay" multiple required>
+      <button class="btn" type="submit">Загрузить</button>
+    </form>
+  </noscript>
+  <ul class="queue" id="queue">
+    {% for r in results or [] %}
+      <li class="{{ 'err' if not r.ok else ('dup' if r.status == 'duplicate' else 'ok') }}">
+        <span class="qname">{{ r.name }}</span>
+        <span class="qstate">
+          {% if r.ok %}&#10003; {{ {'new': 'новый бой', 'updated': 'обновлён: добавлены итоги', 'duplicate': 'уже был загружен'}[r.status] }}
+            &mdash; <a href="/blitz/battles/{{ r.id }}">открыть</a>
+          {% else %}{{ r.error }}{% endif %}
+        </span>
+      </li>
+    {% endfor %}
+  </ul>
+</section>
+
+<div id="battles">
+{% if battles %}
+<div class="table-wrap">
+<table class="matches">
+  <thead>
+    <tr><th>Дата</th><th>Карта</th><th>Режим</th><th>Танк</th><th>Итог</th>
+        <th class="num">Урон</th><th class="num">Фраги</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for b in battles %}
+    <tr class="{{ b.outcome }}">
+      <td class="mono muted">{% if b.started_at %}<time data-ts="{{ b.started_at }}">{{ b.created_at }}</time>{% else %}{{ b.created_at }}{% endif %}</td>
+      <td class="map">{{ b.map_name or b.map_key or '—' }}</td>
+      <td class="muted">{{ b.mode_name or '—' }}</td>
+      <td>{{ b.tank_name or '—' }} <span class="muted small">{{ b.tank_kind }}</span></td>
+      <td><span class="tag {{ b.outcome }}">{{ b.outcome_label }}</span></td>
+      <td class="num">{{ b.damage if b.damage is not none else '—' }}</td>
+      <td class="num">{{ b.kills if b.kills is not none else '—' }}</td>
+      <td class="acts"><a class="btn small" href="/blitz/battles/{{ b.id }}">Открыть</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted empty">Пока ни одного боя &mdash; перетащите реплеи в рамку выше.</p>
+{% endif %}
+</div>
+
+<script>
+(function () {
+  var drop = document.getElementById('drop'), pick = document.getElementById('pick'),
+      queue = document.getElementById('queue');
+  var LABELS = {'new': 'новый бой', 'updated': 'обновлён: добавлены итоги',
+                'duplicate': 'уже был загружен'};
+
+  function localize(root) {
+    (root || document).querySelectorAll('time[data-ts]').forEach(function (el) {
+      var d = new Date(+el.dataset.ts * 1000);
+      el.textContent = d.toLocaleString('ru-RU', {day: '2-digit', month: '2-digit',
+        year: 'numeric', hour: '2-digit', minute: '2-digit'});
+    });
+  }
+  localize();
+
+  document.getElementById('choose').onclick = function () { pick.click(); };
+  pick.onchange = function () { send(pick.files); pick.value = ''; };
+  document.getElementById('copy').onclick = function () {
+    var text = document.getElementById('rpath').textContent;
+    if (navigator.clipboard) navigator.clipboard.writeText(text);
+    this.textContent = 'скопировано';
+  };
+
+  ['dragenter', 'dragover'].forEach(function (ev) {
+    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('over'); });
+  });
+  ['dragleave', 'drop'].forEach(function (ev) {
+    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove('over'); });
+  });
+  drop.addEventListener('drop', function (e) { send(e.dataTransfer.files); });
+  // A file dropped next to the zone must not navigate away from the page.
+  window.addEventListener('dragover', function (e) { e.preventDefault(); });
+  window.addEventListener('drop', function (e) { e.preventDefault(); });
+
+  function row(name) {
+    var li = document.createElement('li'), n = document.createElement('span'),
+        s = document.createElement('span');
+    li.className = 'wait'; n.className = 'qname'; s.className = 'qstate';
+    n.textContent = name; s.textContent = 'в очереди…';
+    li.appendChild(n); li.appendChild(s); queue.appendChild(li);
+    return li;
+  }
+
+  function show(li, res) {
+    var s = li.querySelector('.qstate');
+    s.textContent = '';
+    if (!res.ok) { li.className = 'err'; s.textContent = res.error || 'ошибка'; return false; }
+    li.className = res.status === 'duplicate' ? 'dup' : 'ok';
+    s.appendChild(document.createTextNode('✓ ' + (LABELS[res.status] || res.status) + ' — '));
+    var a = document.createElement('a');
+    a.href = '/blitz/battles/' + res.id; a.textContent = 'открыть';
+    s.appendChild(a);
+    return res.status !== 'duplicate';
+  }
+
+  async function refreshList() {
+    var page = await fetch('/blitz', {credentials: 'same-origin', cache: 'no-cache'});
+    var doc = new DOMParser().parseFromString(await page.text(), 'text/html');
+    var fresh = doc.getElementById('battles');
+    if (fresh) { document.getElementById('battles').replaceWith(fresh); localize(fresh); }
+  }
+
+  async function send(files) {
+    var jobs = Array.prototype.map.call(files, function (f) { return [f, row(f.name)]; });
+    var changed = false;
+    for (var i = 0; i < jobs.length; i++) {
+      var file = jobs[i][0], li = jobs[i][1];
+      if (!/\.wotbreplay$/i.test(file.name)) {
+        show(li, {ok: false, error: 'нужен файл .wotbreplay'});
+        continue;
+      }
+      li.querySelector('.qstate').textContent = 'загружаю…';
+      var form = new FormData();
+      form.append('replays', file, file.name);
+      try {
+        var r = await fetch('/blitz/upload', {method: 'POST', body: form, credentials: 'same-origin',
+                                              headers: {'Accept': 'application/json'}});
+        if (r.status === 401) { location.href = '/login'; return; }
+        var body = await r.json();
+        changed = show(li, body.results[0]) || changed;
+      } catch (err) {
+        show(li, {ok: false, error: 'сбой сети или сервера'});
+      }
+    }
+    if (changed) refreshList();
+  }
+})();
+</script>
+{% endblock %}

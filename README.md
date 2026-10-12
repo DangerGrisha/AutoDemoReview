@@ -94,13 +94,18 @@ A second, independent analyzer for Wargaming's **WoT Blitz** replays lives in
 `src/blitzreview/` (stdlib only, no CS2 code shared yet):
 
 ```bash
-python src/review_blitz.py path/to/battle.wotbreplay [--json out.json]
+python src/review_blitz.py path/to/battle.wotbreplay [--json out.json] [--html out.html]
 ```
 
 It prints the battle (map, mode, outcome, all 14 players with damage / kills /
-shots / hp left, the kill feed with battle times) and can dump the full battle
-dict as JSON. Replays without `battle_results.dat` (recorder left early) still
-show the roster and kill feed. Windows/Steam replays live in
+shots / hp left, the kill feed with battle times), can dump the full battle
+dict as JSON and write the HTML report. Replays without `battle_results.dat`
+(recorder left early) still show the roster and kill feed.
+
+On the site: sign in, open **Blitz** in the top bar and drag replays onto the
+page (one or many at once). Each battle gets a report: your numbers with your
+rank in the lobby, both teams, the kill feed. Battles live in their own table
+(`wotb_battles`, schema v4) and never mix into the CS2 matches or career. Windows/Steam replays live in
 `%LOCALAPPDATA%\wotblitz\DAVAProject\replays`; there is no API to download them.
 
 Tank and map names, tiers and minimaps come from `src/blitzreview/assets/`,

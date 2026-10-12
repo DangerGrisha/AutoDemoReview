@@ -40,7 +40,7 @@ def _exec_each(conn, ddl):
             conn.execute(stmt)
 
 
-CURRENT_VERSION = 3
+CURRENT_VERSION = 4
 
 
 def run(conn, full_schema):
@@ -56,7 +56,21 @@ def run(conn, full_schema):
         _migrate_v0_to_v1(conn)
     if _user_version(conn) < 2:
         _migrate_v1_to_v2(conn)
-    _migrate_v2_to_v3(conn)
+    if _user_version(conn) < 3:
+        _migrate_v2_to_v3(conn)
+    _migrate_v3_to_v4(conn)
+
+
+def _migrate_v3_to_v4(conn):
+    """Add the World of Tanks Blitz battles table. Pure addition -- no data to move."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _exec_each(conn, db.WOTB_BATTLES_DDL)
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("PRAGMA user_version = 4")
 
 
 def _migrate_v1_to_v2(conn):

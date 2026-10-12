@@ -1,7 +1,7 @@
-"""Command line: python -m blitzreview <replay.wotbreplay> [--json out.json]
+"""Command line: python -m blitzreview <replay> [--json out.json] [--html out.html]
 
 Prints a short Russian summary of the battle; --json also writes the full
-battle dict (the same one the web app stores).
+battle dict (the same one the web app stores), --html the report page.
 """
 
 import argparse
@@ -76,6 +76,7 @@ def main(argv=None):
                                  description="World of Tanks Blitz replay analyzer")
     ap.add_argument("replay", type=Path)
     ap.add_argument("--json", type=Path, help="also write the full battle dict here")
+    ap.add_argument("--html", type=Path, help="also write the HTML report here")
     args = ap.parse_args(argv)
 
     if not args.replay.is_file():
@@ -89,3 +90,8 @@ def main(argv=None):
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(json.dumps(battle, ensure_ascii=False, indent=1), encoding="utf-8")
         print(f"\nJSON: {args.json}")
+    if args.html:
+        from .render import render_battle_html
+        args.html.parent.mkdir(parents=True, exist_ok=True)
+        args.html.write_text(render_battle_html(battle), encoding="utf-8")
+        print(f"HTML: {args.html}")

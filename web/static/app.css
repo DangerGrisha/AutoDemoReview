@@ -224,3 +224,27 @@ td.pos { color: var(--pos); } td.neg { color: var(--neg); }
   .matches th, .matches td { padding: 9px 10px; }
   .page-head { flex-direction: column; align-items: flex-start; gap: 12px; }
 }
+
+/* ---- World of Tanks Blitz (/blitz) ---- */
+.tag.draw, .tag.unknown { background: rgba(138,146,155,.12); color: var(--muted); border-color: var(--line); }
+.drop {
+  border: 2px dashed var(--line); border-radius: 12px; background: var(--panel);
+  padding: 28px 20px; margin: 18px 0 26px; text-align: center;
+  transition: border-color .15s, background .15s;
+}
+.drop.over { border-color: var(--ct); background: rgba(74,144,217,.08); }
+.drop-title { font-family: var(--display); font-size: 1.6rem; font-weight: 700; letter-spacing: .02em; }
+.drop-sub { color: var(--muted); margin: 4px 0 14px; }
+.drop-hint { font-size: .85rem; max-width: 720px; margin: 14px auto 0; line-height: 1.6; }
+.drop .upload { justify-content: center; margin-top: 14px; }
+.queue { list-style: none; margin: 14px auto 0; padding: 0; max-width: 720px; text-align: left; }
+.queue:empty { display: none; }
+.queue li {
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: .85rem;
+}
+.queue .qname { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.queue .qstate { flex: none; }
+.queue li.ok .qstate { color: var(--pos); }
+.queue li.dup .qstate, .queue li.wait .qstate { color: var(--muted); }
+.queue li.err .qstate { color: var(--neg); }

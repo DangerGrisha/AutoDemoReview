@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import (autoimport, career, coaching, config, db, ingest, pipeline,
+from . import (autoimport, blitz, career, coaching, config, db, ingest, pipeline,
                replay3d, steam_openid)
 
 WEB_DIR = Path(__file__).resolve().parent
@@ -123,6 +123,7 @@ app.add_middleware(
     max_age=30 * 24 * 3600,
 )
 app.mount("/static", CompressedStaticFiles(directory=str(WEB_DIR / "static")), name="static")
+app.include_router(blitz.router)   # World of Tanks Blitz: /blitz/...
 
 
 def current_user(request):
