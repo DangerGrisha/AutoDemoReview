@@ -45,7 +45,8 @@ def run(dirs=DEFAULT_DIRS):
     failures = []
 
     for directory in dirs:
-        if not Path(directory).is_dir():
+        directory = Path(directory).resolve()  # `tests` from the CLI is relative
+        if not directory.is_dir():
             continue
         for path in sorted(Path(directory).glob("test_*.py")):
             try:

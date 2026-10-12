@@ -88,6 +88,25 @@ styled breakdown lives in the HTML file. The highlighted player defaults to
 
 Drop it into `demos/` (files there are gitignored so demos aren't committed).
 
+## World of Tanks Blitz (beta)
+
+A second, independent analyzer for Wargaming's **WoT Blitz** replays lives in
+`src/blitzreview/` (stdlib only, no CS2 code shared yet):
+
+```bash
+python src/review_blitz.py path/to/battle.wotbreplay [--json out.json]
+```
+
+It prints the battle (map, mode, outcome, all 14 players with damage / kills /
+shots / hp left, the kill feed with battle times) and can dump the full battle
+dict as JSON. Replays without `battle_results.dat` (recorder left early) still
+show the roster and kill feed. Windows/Steam replays live in
+`%LOCALAPPDATA%\wotblitz\DAVAProject\replays`; there is no API to download them.
+
+Tank and map names, tiers and minimaps come from `src/blitzreview/assets/`,
+generated once from an installed client with `tools/wotb_extract_assets.py`.
+The reverse-engineered format is documented in `docs/WOTB_FORMAT.md`.
+
 ## Project layout
 
 ```

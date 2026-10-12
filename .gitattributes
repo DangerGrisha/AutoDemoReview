@@ -10,6 +10,8 @@
 *.dem binary
 *.3dr binary
 *.bin binary
+*.webp binary
+*.wotbreplay binary
 
 # Converted CS2 map geometry is large binary -> Git LFS. `-text` keeps the real
 # bytes untouched (must win over `* text=auto` above -> this line comes later).
