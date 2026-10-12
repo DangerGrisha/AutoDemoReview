@@ -244,3 +244,34 @@ def test_a_battle_stored_before_format_4_keeps_its_replay_without_the_fight():
     assert '<section class="card fight">' not in page
     data = _replay_json(page)
     assert data["fmt"] == 1 and data["ev"] is None and data["tracks"] == b["replay"]["tracks"]
+
+
+def test_the_replay_ships_the_terrain_for_the_3d_view():
+    import base64
+    import struct
+    import zlib
+
+    from blitzreview import gamedata
+    b = _battle()
+    page = render_battle_html(b)
+    data = _replay_json(page)
+    terrain = data["terrain"]
+    assert terrain["n"] == 160 and '<div class="seg" data-group="view">' in page
+    assert 'id="rp-3dnote"' in page
+    steps = struct.unpack(f"<{160 * 160}h", zlib.decompress(base64.b64decode(terrain["dz"])))
+    first_row = [sum(steps[:i + 1]) / 10 for i in range(160)]  # row 0 decoded the browser's way
+    n, heights = gamedata.terrain_heights(b["map"]["key"])
+    assert first_row == heights[:160]
+    assert len(page) < 700_000, len(page)  # minimap + terrain + tracks + events stay embeddable
+
+
+def test_without_terrain_there_is_no_3d_switch():
+    from blitzreview import render
+    saved = render.gamedata.terrain
+    render.gamedata.terrain = lambda key: None
+    try:
+        page = render_battle_html(_battle())
+    finally:
+        render.gamedata.terrain = saved
+    assert _replay_json(page)["terrain"] is None
+    assert '<div class="seg" data-group="view">' not in page

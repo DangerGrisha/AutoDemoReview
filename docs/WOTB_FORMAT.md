@@ -337,8 +337,31 @@ Every map has its Encounter base, and the 30 maps played in Supremacy have 3 or 
 
 Most bases carry no radius, so the game uses a default. It is **25 m**, measured on Rift: the capture started at 25 m from the centre and stopped at 27 m. Variant bases that state a radius say 15 m.
 
+**Terrain heights** (the 3D view). The Landscape object's `hmap` names a
+`.heightmap` file next to the scene (`landscape/canyon_height.heightmap`):
+
+```
+size u32 (512) | tile u32 (16) | size × size u16le, stored TILE BY TILE
+```
+
+The values come in (size / tile)² tiles of `tile` × `tile`, tiles in
+row-major order, each tile row by row. Untiled, row j runs along y (the
+replay's z, south to north) and column i along x, from the bbox's minimum
+corner: `height = z0 + value / 65535 · (z1 − z0)` over the bbox's z range
+(0–100 m on Canyon, 0–150 on Erlenberg). **sure**: on all 11 maps we have
+replays of, a tank's height in the position packets is the terrain's under it
+to a few centimetres (median 1–6 cm, 90 % within 15 cm; the rest stand on
+bridges and rocks). Read row by row without untiling, nothing correlates.
+
+`tools/wotb_extract_assets.py` resamples each scene's heightmap to 160 × 160
+(3.8 m apart) and writes `assets/terrain/<scene>.bin`: decimetres as i16le,
+row by row from the south, each row's first value as is and the rest as steps,
+zlib-compressed -- about 17 KB a map. `*_colormap.dx11.dds` (2048² DXT3) is
+the bare ground's colour; the 3D view drapes the minimap over the relief
+instead, because it shows the buildings and roads.
+
 Not done yet:
-- **Map geometry** for a future 3D view: `3d/Maps/<scene>/landscape/*_height.heightmap` plus `*_colormap`.
+- Buildings and objects for 3D: the `.scg` geometry next to each scene.
 - `blitz/<scene>.mkm` (`kkm` header, a 1024² 2-bit grid) and `.lka`: probably terrain kinds and the ground-sound map; not needed so far.
 
 ## Open questions

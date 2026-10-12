@@ -12,8 +12,15 @@ needs the game installed and never calls the Wargaming API):
                         2D replay: `world` (the square the minimap shows),
                         `border` (the playable area), `minimap_crop`, the
                         Encounter `base` [x, z, radius] and the Supremacy
-                        `points` [[id, x, z, radius], ...]
+                        `points` [[id, x, z, radius], ...]; for the 3D view
+                        `terrain` {file, n}
     minimaps/<key>.webp 512x512 battle minimaps (MiniMapSmall@2x)
+    terrain/<scene>.bin the terrain's heights over the `world` square: n x n
+                        points, row by row from the south edge, each row
+                        west to east, in decimetres as i16le -- each row's
+                        first value as is, the rest as the step from the
+                        previous one; zlib-compressed (about 17 KB a map).
+                        Map variants of one scene share the file
 
 The tank id is the number replays carry: (index << 8) | (nation << 4) | 1,
 where `index` is the vehicle's <id> in its nation's list.xml and `nation` the
@@ -33,8 +40,10 @@ without it the crop is left out and the report uses the whole texture.
 import argparse
 import json
 import re
+import struct
 import sys
 import xml.etree.ElementTree as ET
+import zlib
 from datetime import date
 from pathlib import Path
 
@@ -52,6 +61,11 @@ OUT_DIR = ROOT / "src" / "blitzreview" / "assets"
 # state theirs (15 m); the fallback only covers a scene that would not.
 BASE_RADIUS = 25.0
 POINT_RADIUS = 15.0
+
+# The client's heightmaps are 512 x 512 over the 600 m terrain square; the
+# 3D view resamples them to this many points a side (3.8 m apart), which
+# keeps a map at about 30 KB compressed and every hill in place.
+TERRAIN_N = 160
 
 # First matching tag wins; Blitz has no artillery in random battles but the
 # client still knows the class, so it stays in the table.
@@ -208,9 +222,48 @@ def add_zones(key, entry, zones, problems):
         problems.append(f"{key}: a capture zone lies outside the border")
 
 
-def add_geometry(data_dir, maps):
-    """Add `world`, `border` and the capture zones to every map from its
-    scene. Returns problems."""
+def resample(size, values, n):
+    """`values` (size x size, row-major) bilinearly resampled to n x n points
+    spanning the same square, edges included."""
+    out = []
+    step = (size - 1) / (n - 1)
+    for j in range(n):
+        y = j * step
+        j0 = min(int(y), size - 2)
+        fy = y - j0
+        for i in range(n):
+            x = i * step
+            i0 = min(int(x), size - 2)
+            fx = x - i0
+            a = values[j0 * size + i0] * (1 - fx) + values[j0 * size + i0 + 1] * fx
+            b = values[(j0 + 1) * size + i0] * (1 - fx) + values[(j0 + 1) * size + i0 + 1] * fx
+            out.append(a * (1 - fy) + b * fy)
+    return out
+
+
+def write_terrain(data_dir, scene_name, land, out_dir):
+    """Write terrain/<scene folder>.bin for one scene (format in the module
+    docstring); returns the maps.json `terrain` entry."""
+    folder = scene_name.split("/")[0]
+    raw = dvpl.read(data_dir / "3d" / "Maps" / folder / f"{land['hmap']}.dvpl")
+    size, values = dava.read_heightmap(raw)
+    _x0, _y0, z0, _x1, _y1, z1 = land["bbox"]
+    decimetres = [round(10 * (z0 + v / 65535 * (z1 - z0)))
+                  for v in resample(size, values, TERRAIN_N)]
+    steps = []
+    for j in range(TERRAIN_N):
+        row = decimetres[j * TERRAIN_N:(j + 1) * TERRAIN_N]
+        steps.append(row[0])
+        steps.extend(b - a for a, b in zip(row, row[1:]))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / f"{folder}.bin").write_bytes(
+        zlib.compress(struct.pack(f"<{len(steps)}h", *steps), 9))
+    return {"file": folder, "n": TERRAIN_N}
+
+
+def add_geometry(data_dir, maps, terrain_dir=None):
+    """Add `world`, `border`, the capture zones and (with `terrain_dir`) the
+    terrain to every map from its scene. Returns problems."""
     problems, scenes = [], {}
     for key, entry in sorted(maps.items()):
         scene_name = entry.get("scene")
@@ -218,16 +271,22 @@ def add_geometry(data_dir, maps):
             problems.append(f"{key}: no scene in maps.yaml")
             continue
         if scene_name not in scenes:
+            terrain = None
             try:
                 scene = dava.read_scene(dvpl.read(data_dir / "3d" / "Maps" / f"{scene_name}.dvpl"))
+                land = dava.landscape(scene)
+                if terrain_dir is not None and land and land["hmap"]:
+                    terrain = write_terrain(data_dir, scene_name, land, terrain_dir)
                 scenes[scene_name] = (dava.landscape_bbox(scene), dava.map_borders(scene),
-                                      dava.capture_zones(scene))
+                                      dava.capture_zones(scene), terrain)
             except (OSError, dava.DavaError, dvpl.DvplError) as exc:
-                scenes[scene_name] = (None, [], [])
+                scenes[scene_name] = (None, [], [], None)
                 problems.append(f"{key}: {scene_name}: {exc}")
-        world, borders, zones = scenes[scene_name]
+        world, borders, zones, terrain = scenes[scene_name]
         if world:
             entry["world"] = _rounded(world)
+        if terrain:
+            entry["terrain"] = terrain
         border = pick_border(borders, entry.get("tag"))
         if border is None:
             problems.append(f"{key}: no border for tag {entry.get('tag')!r} "
@@ -284,6 +343,8 @@ def main():
                     help="World of Tanks Blitz install folder (contains Data/)")
     ap.add_argument("--out", type=Path, default=OUT_DIR)
     ap.add_argument("--no-minimaps", action="store_true")
+    ap.add_argument("--no-terrain", action="store_true",
+                    help="keep the terrain files and maps.json `terrain` as they are")
     args = ap.parse_args()
 
     data_dir = args.client / "Data"
@@ -295,7 +356,16 @@ def main():
 
     vehicles = extract_vehicles(data_dir, strings)
     maps = extract_maps(data_dir, strings)
-    problems = add_geometry(data_dir, maps)
+    terrain_dir = None if args.no_terrain else args.out / "terrain"
+    problems = add_geometry(data_dir, maps, terrain_dir)
+    if args.no_terrain:  # carry the existing entries over
+        try:
+            old = json.loads((args.out / "maps.json").read_text(encoding="utf-8"))["maps"]
+        except (OSError, ValueError, KeyError):
+            old = {}
+        for key, entry in maps.items():
+            if "terrain" in old.get(key, {}):
+                entry["terrain"] = old[key]["terrain"]
 
     args.out.mkdir(parents=True, exist_ok=True)
     if not args.no_minimaps:

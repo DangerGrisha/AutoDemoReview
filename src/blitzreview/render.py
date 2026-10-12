@@ -642,6 +642,15 @@ def _replay_events(battle):
     return {"hp": ev["hp"], "shots": ev["shots"], "hits": ev["hits"], "damage": ev["damage"]}
 
 
+def _replay_terrain(battle):
+    """The map's heights for the 3D view: {"n", "dz": base64 of the zlib file}
+    (see gamedata.terrain; the browser inflates it), or None without terrain."""
+    found = gamedata.terrain(battle["map"].get("key"))
+    if found is None:
+        return None
+    return {"n": found["n"], "dz": base64.b64encode(found["data"]).decode("ascii")}
+
+
 def _replay_data(battle, geo):
     rp = battle["replay"]
     return {
@@ -654,6 +663,7 @@ def _replay_data(battle, geo):
                   for k in battle["kills"] if k["t"] is not None],
         "obj": _replay_objectives(battle),
         "ev": _replay_events(battle),
+        "terrain": _replay_terrain(battle),
     }
 
 
@@ -751,7 +761,9 @@ def _replay(battle):
         + _seg("trail", [(0, "нет"), (20, "20 с"), (-1, "весь путь")], 20) + '</span>'
         + '<span class="rp-opt">подписи'
         + _seg("label", [("tank", "танки"), ("nick", "ники"), ("none", "нет")], "tank")
-        + '</span>')
+        + '</span>'
+        + ('<span class="rp-opt">вид' + _seg("view", [("2d", "2D"), ("3d", "3D")], "2d") + '</span>'
+           if data["terrain"] else ""))
     return (
         '<section class="card replay" id="replay">'
         '<div class="rp-head"><h2>2D-повтор</h2><span class="note">Противники видны, пока их '
@@ -765,7 +777,8 @@ def _replay(battle):
         f'{_advantage(battle, end)}'
         f'<input type="range" id="rp-scrub" min="0" max="{end:.1f}" step="0.1" value="0" '
         'aria-label="Время боя"></div>'
-        f'<div class="rp-controls">{controls}</div></div>'
+        f'<div class="rp-controls">{controls}</div>'
+        '<p class="note rp-3dnote" id="rp-3dnote" hidden></p></div>'
         f'<aside class="rp-side">{_focus_panel(battle)}<h3>Уничтожения</h3>'
         f'{_feed_list(battle, linked=True)}{_legend(data["obj"], data["ev"] is not None)}'
         '<p class="note">Пробел — пауза, ← → — на 5 секунд, Esc — снять выделение.</p>'
@@ -878,6 +891,8 @@ gap:4px 16px;margin-bottom:12px}
 border:1px solid var(--line);background:#06080A;outline:none;cursor:pointer}
 .rp-stage:focus-visible{border-color:var(--me)}
 .rp-stage canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.rp-stage.is3d{touch-action:none}
+.rp-3dnote{margin:6px 0 0}
 .rp-recent{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:3px;
 align-items:flex-end;pointer-events:none}
 .rp-recent div{font-size:12px;font-weight:600;background:rgba(11,14,17,.8);
@@ -1031,7 +1046,10 @@ document.querySelectorAll('time[data-ts]').forEach(function (el) {
 # trails, wrecks, "last seen" outlines, live tanks as the game's class marks
 # with a wedge for the hull heading, killer -> victim arrows, labels. A click
 # on a tank picks it: its whole route, the rest dimmed, its results beside
-# the map. Strings from the replay reach the page only through fillText and
+# the map. The 3D switch draws the terrain (heights from the client, the
+# minimap on top) and the tanks with WebGL -- no library -- and keeps every
+# overlay: they all go through pt(), which projects through the camera.
+# Strings from the replay reach the page only through fillText and
 # textContent.
 _REPLAY_SCRIPT = r"""
 (function () {
@@ -1105,6 +1123,11 @@ _REPLAY_SCRIPT = r"""
   var view = R.view;
   function px(x) { return (x - view[0]) / (view[2] - view[0]) * W; }
   function py(z) { return (view[3] - z) / (view[3] - view[1]) * H; }
+  var MODE = '2d';  // or '3d': the same overlays, projected through the camera
+  function pt(x, z, lift) {  // a world point on the screen, `lift` metres above the ground; null behind the camera
+    if (MODE === '2d') return {x: px(x), y: py(z)};
+    return project(x, ground(x, z) + (lift || 0), z);
+  }
   function ix(x) { return R.crop[0] + (x - R.world[0]) / (R.world[2] - R.world[0]) * (R.crop[2] - R.crop[0]); }
   function iy(z) { return R.crop[1] + (R.world[3] - z) / (R.world[3] - R.world[1]) * (R.crop[3] - R.crop[1]); }
 
@@ -1192,11 +1215,26 @@ _REPLAY_SCRIPT = r"""
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(text, x, y + 0.5 * dpr);
   }
+  function circle(zone, radius, from, to) {  // a path round a zone: flat in 2D, laid on the ground in 3D
+    ctx.beginPath();
+    if (MODE === '2d') {
+      ctx.arc(px(zone.x), py(zone.z), radius * W / (view[2] - view[0]), from - Math.PI / 2, to - Math.PI / 2);
+      return;
+    }
+    var pen = false;
+    for (var k = 0; k <= 48; k++) {  // angles clockwise from north, like the 2D arcs
+      var a = from + (to - from) * k / 48, q = pt(zone.x + radius * Math.sin(a), zone.z + radius * Math.cos(a), 0.4);
+      if (!q) { pen = false; continue; }
+      if (pen) ctx.lineTo(q.x, q.y); else { ctx.moveTo(q.x, q.y); pen = true; }
+    }
+  }
   function drawZones(t) {
     if (!OBJ) return;
     var scale = W / (view[2] - view[0]);
     OBJ.zones.forEach(function (zone) {
-      var x = px(zone.x), y = py(zone.z), r = zone.r * scale, owner = '', caps = [];
+      var c = pt(zone.x, zone.z, 0.4), r = zone.r, owner = '', caps = [];
+      if (!c) return;
+      var x = c.x, y = c.y;
       if (OBJ.kind === 'points') {
         var s = last(pointStates[zone.id] || [], t);
         if (s) { owner = s[2]; if (s[3] && s[4] > 0) caps.push([s[3], s[4]]); }
@@ -1207,7 +1245,7 @@ _REPLAY_SCRIPT = r"""
         });
       }
       ctx.save();
-      ctx.beginPath(); ctx.arc(x, y, r, 0, TAU);
+      circle(zone, r, 0, TAU);
       ctx.fillStyle = owner ? 'rgba(' + RGB[owner] + ',.22)' : 'rgba(255,255,255,.1)';
       ctx.fill();
       ctx.strokeStyle = 'rgba(0,0,0,.45)'; ctx.lineWidth = 3.5 * dpr; ctx.stroke();  // shows on pale maps
@@ -1217,8 +1255,7 @@ _REPLAY_SCRIPT = r"""
       ctx.stroke();
       ctx.setLineDash([]);
       caps.forEach(function (c, i) {  // capture progress, clockwise from the top
-        ctx.beginPath();
-        ctx.arc(x, y, r - i * 5 * dpr, -Math.PI / 2, -Math.PI / 2 + TAU * Math.min(c[1], 100) / 100);
+        circle(zone, r - i * 5 * dpr / scale, 0, TAU * Math.min(c[1], 100) / 100);
         ctx.strokeStyle = COL[c[0]]; ctx.lineWidth = 4 * dpr; ctx.stroke();
       });
       if (OBJ.kind === 'points') badge(x, y, zone.l, owner); else flag(x, y);
@@ -1231,8 +1268,10 @@ _REPLAY_SCRIPT = r"""
     ctx.beginPath();
     for (var k = from; k <= to; k++) {
       if (k > from && T[k] - T[k - 1] > GAP) pen = false;
-      if (pen) ctx.lineTo(px(v.X[k]), py(v.Z[k]));
-      else { ctx.moveTo(px(v.X[k]), py(v.Z[k])); pen = true; }
+      var q = pt(v.X[k], v.Z[k], 0.6);
+      if (!q) { pen = false; continue; }
+      if (pen) ctx.lineTo(q.x, q.y);
+      else { ctx.moveTo(q.x, q.y); pen = true; }
     }
     return pen;
   }
@@ -1250,8 +1289,8 @@ _REPLAY_SCRIPT = r"""
       ctx.setLineDash([]);
     }
     if (stop >= 0 && (stop > from || (s && s.k === 'live'))) {
-      var pen = path(v, from, stop);
-      if (pen && s && s.k === 'live') ctx.lineTo(px(s.x), py(s.z));
+      var pen = path(v, from, stop), here = s && s.k === 'live' ? pt(s.x, s.z, 0.6) : null;
+      if (pen && here) ctx.lineTo(here.x, here.y);
       ctx.globalAlpha = picked ? 1 : (v.s === 'm' ? .9 : .55) * (focus ? .3 : 1);
       ctx.lineWidth = (picked ? 3 : v.s === 'm' ? 2.2 : 1.5) * dpr;
       ctx.stroke();
@@ -1314,11 +1353,15 @@ _REPLAY_SCRIPT = r"""
     ctx.stroke();
   }
   function drawTank(v, s) {
-    var r = (v.s === 'm' ? 6 : 5) * dpr, c = COL[v.s];
+    var r = (v.s === 'm' ? 6 : 5) * dpr, c = COL[v.s], flat = MODE === '2d';
+    var q = pt(s.x, s.z, flat ? 0 : 2);
+    if (!q) return;
     ctx.save();
-    ctx.translate(px(s.x), py(s.z));
+    ctx.translate(q.x, q.y);
     ctx.globalAlpha = focus && v !== focus ? .3 : 1;
-    if (s.k === 'dead') {
+    if (!flat && s.k !== 'ghost') {
+      if (s.k === 'live' && v.s === 'm') ring(13 * dpr, 'rgba(255,255,255,.9)', 1.5);
+    } else if (s.k === 'dead') {
       ctx.lineCap = 'round';
       ctx.strokeStyle = 'rgba(0,0,0,.65)'; ctx.lineWidth = 4.5 * dpr; cross(r * .8);
       ctx.strokeStyle = c; ctx.lineWidth = 2.2 * dpr; cross(r * .8);
@@ -1336,16 +1379,17 @@ _REPLAY_SCRIPT = r"""
       if (v.s === 'm') ring(1.25 * r + 3.5 * dpr, 'rgba(255,255,255,.9)', 1.5);
     }
     if (v === focus) {
+      var fr = flat ? 1.25 * r + 8 * dpr : 17 * dpr;
       ctx.globalAlpha = 1;
-      ring(1.25 * r + 8 * dpr, 'rgba(0,0,0,.6)', 4);
-      ring(1.25 * r + 8 * dpr, '#FFFFFF', 2);
+      ring(fr, 'rgba(0,0,0,.6)', 4);
+      ring(fr, '#FFFFFF', 2);
     }
     ctx.restore();
   }
-  function drawHp(v, s, t) {  // a health bar under a live tank, as much of it as was left
-    var hp = hpAt(v, t);
-    if (hp === null || !v.hpMax) return;
-    var w = 18 * dpr, h = 3 * dpr, x = px(s.x) - w / 2, y = py(s.z) + 9 * dpr;
+  function drawHp(v, s, t) {  // a health bar under a live tank (over it in 3D), as much of it as was left
+    var hp = hpAt(v, t), q = pt(s.x, s.z, MODE === '2d' ? 0 : 4.5);
+    if (hp === null || !v.hpMax || !q) return;
+    var w = 18 * dpr, h = 3 * dpr, x = q.x - w / 2, y = q.y + (MODE === '2d' ? 9 : -6) * dpr;
     ctx.save();
     ctx.globalAlpha = focus && v !== focus ? .3 : 1;
     ctx.fillStyle = 'rgba(0,0,0,.75)'; ctx.fillRect(x - dpr, y - dpr, w + 2 * dpr, h + 2 * dpr);
@@ -1357,8 +1401,10 @@ _REPLAY_SCRIPT = r"""
     if (labels === 'none' && !picked) return;
     var text = picked || labels === 'nick' ? v.n : v.k;
     if (s.k === 'ghost') text += ' · ' + Math.round(s.age) + ' с';
-    var bar = s.k === 'live' && hpAt(v, cur) !== null ? 5 : 0;
-    var x = px(s.x), y = py(s.z) + ((picked ? 16 : s.k === 'dead' ? 7 : 10) + bar) * dpr;
+    var bar = s.k === 'live' && hpAt(v, cur) !== null ? 5 : 0, q = pt(s.x, s.z, MODE === '2d' ? 0 : 4.5);
+    if (!q) return;
+    var x = q.x, y = MODE === '2d' ? q.y + ((picked ? 16 : s.k === 'dead' ? 7 : 10) + bar) * dpr
+                                  : q.y - (bar ? 21 : 15) * dpr;
     ctx.save();
     ctx.font = '600 ' + Math.round(11 * dpr) + 'px ' + FONT;
     ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.lineJoin = 'round';
@@ -1413,12 +1459,14 @@ _REPLAY_SCRIPT = r"""
       if (age < 0 || age > 2 || !victim || !victim.T) return;
       var vs = state(victim, k.t + 0.05);
       if (!vs) return;
-      var x = px(vs.x), y = py(vs.z), killer = k.k !== k.v ? byId[k.k] : null, ks = seen(killer, k.t);
+      var vq = pt(vs.x, vs.z, 1.5);
+      if (!vq) return;
+      var x = vq.x, y = vq.y, killer = k.k !== k.v ? byId[k.k] : null, ks = seen(killer, k.t);
       ctx.save();
       ctx.globalAlpha = 1 - age / 2;
       var shot = !ks && killer ? killingShot(killer.id, k.v, k.t) : null;
-      if (ks) arrow(px(ks.x), py(ks.z), x, y, COL[killer.s]);
-      else if (shot) arrow(px(shot[2]), py(shot[3]), x, y, COL[killer.s], true);  // from the shell's start
+      var kq = ks ? pt(ks.x, ks.z, 1.5) : shot ? pt(shot[2], shot[3], 1.8) : null;
+      if (kq) arrow(kq.x, kq.y, x, y, COL[killer.s], !ks);  // dashed: from the start of the shell
       else if (killer && killer.s === 'e') caption('стрелок не в засвете', x, y - 12 * dpr);
       ctx.globalAlpha = Math.max(0, 1 - age / 1.5);
       ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 2 * dpr;
@@ -1427,6 +1475,294 @@ _REPLAY_SCRIPT = r"""
     });
   }
 
+  // ---- 3D: the terrain under the minimap, tanks as boxes, the overlays above ----
+  // World x east / z north / heights in metres become GL x / y / -z, so a
+  // camera at the south edge looks north with east to its right.
+  var gl = null, glc = null, G3 = null, TER = null, VP = null;
+  var cam = {tx: 0, tz: 0, yaw: 0, pitch: .8, dist: 450};
+  var BIG = 1.8;  // tanks drawn this much larger than life, or a 7 m hull is a dot from 400 m
+  var viewBtn = card.querySelector('.seg[data-group="view"]'), note3d = document.getElementById('rp-3dnote');
+  function ground(x, z) {  // terrain height at a point, bilinear; 0 before the terrain is loaded
+    if (!TER) return 0;
+    var w = R.world, n = TER.n, h = TER.h;
+    var u = (x - w[0]) / (w[2] - w[0]) * (n - 1), v = (z - w[1]) / (w[3] - w[1]) * (n - 1);
+    var i = Math.max(0, Math.min(n - 2, Math.floor(u))), j = Math.max(0, Math.min(n - 2, Math.floor(v)));
+    var fu = Math.max(0, Math.min(1, u - i)), fv = Math.max(0, Math.min(1, v - j));
+    var a = h[j * n + i] * (1 - fu) + h[j * n + i + 1] * fu;
+    return a * (1 - fv) + (h[(j + 1) * n + i] * (1 - fu) + h[(j + 1) * n + i + 1] * fu) * fv;
+  }
+  function loadTerrain(done) {  // the heights ship zlib-compressed: inflate once, in the browser
+    if (TER) { done(true); return; }
+    if (!R.terrain || typeof DecompressionStream === 'undefined') { done(false); return; }
+    var bin = atob(R.terrain.dz), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
+    new Response(stream).arrayBuffer().then(function (buf) {
+      var n = R.terrain.n, steps = new Int16Array(buf), h = new Float32Array(n * n);
+      for (var j = 0; j < n; j++) {
+        var value = 0;  // each row: its first height, then steps; decimetres
+        for (var k = 0; k < n; k++) {
+          value = k ? value + steps[j * n + k] : steps[j * n];
+          h[j * n + k] = value / 10;
+        }
+      }
+      TER = {n: n, h: h};
+      done(true);
+    }, function () { done(false); });
+  }
+
+  function mat(m) { return new Float32Array(m); }  // column-major 4x4
+  function mul(a, b) {
+    var o = new Float32Array(16);
+    for (var c = 0; c < 4; c++) for (var r = 0; r < 4; r++) {
+      o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+    }
+    return o;
+  }
+  function perspective(fov, aspect, near, far) {
+    var f = 1 / Math.tan(fov / 2), d = near - far;
+    return mat([f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (far + near) / d, -1, 0, 0, 2 * far * near / d, 0]);
+  }
+  function lookAt(e, c) {  // y up
+    var zx = e[0] - c[0], zy = e[1] - c[1], zz = e[2] - c[2], zl = Math.hypot(zx, zy, zz);
+    zx /= zl; zy /= zl; zz /= zl;
+    var xx = zz, xz = -zx, xl = Math.hypot(xx, xz) || 1;  // up x z, with up = (0, 1, 0)
+    xx /= xl; xz /= xl;
+    var yx = zy * xz, yy = zz * xx - zx * xz, yz = -zy * xx;
+    return mat([xx, yx, zx, 0, 0, yy, zy, 0, xz, yz, zz, 0,
+                -(xx * e[0] + xz * e[2]), -(yx * e[0] + yy * e[1] + yz * e[2]), -(zx * e[0] + zy * e[1] + zz * e[2]), 1]);
+  }
+  function tr(x, y, z) { return mat([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1]); }
+  function rotY(a) { var c = Math.cos(a), s = Math.sin(a); return mat([c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1]); }
+  function sc(x, y, z) { return mat([x, 0, 0, 0, 0, y, 0, 0, 0, 0, z, 0, 0, 0, 0, 1]); }
+  function project(x, y, z) {  // world point -> canvas pixels, null behind the camera or far off screen
+    if (!VP) return null;
+    var gz = -z, w = VP[3] * x + VP[7] * y + VP[11] * gz + VP[15];
+    if (w < 1) return null;
+    var sx = (VP[0] * x + VP[4] * y + VP[8] * gz + VP[12]) / w, sy = (VP[1] * x + VP[5] * y + VP[9] * gz + VP[13]) / w;
+    if (Math.abs(sx) > 3 || Math.abs(sy) > 3) return null;
+    return {x: (sx + 1) / 2 * W, y: (1 - sy) / 2 * H};
+  }
+
+  var VS_TER = 'attribute vec3 p;attribute vec3 nm;attribute vec2 uv;uniform mat4 mvp;' +
+    'varying vec2 vuv;varying vec3 vn;varying vec2 vw;' +
+    'void main(){vuv=uv;vn=nm;vw=vec2(p.x,-p.z);gl_Position=mvp*vec4(p,1.0);}';
+  var FS_TER = 'precision mediump float;uniform sampler2D tex;uniform vec4 bd;uniform vec3 sun;' +
+    'varying vec2 vuv;varying vec3 vn;varying vec2 vw;' +
+    'void main(){vec3 c=texture2D(tex,vuv).rgb;float l=.55+.6*max(dot(normalize(vn),sun),0.0);' +
+    'float inside=step(bd.x,vw.x)*step(vw.x,bd.z)*step(bd.y,vw.y)*step(vw.y,bd.w);' +
+    'gl_FragColor=vec4(c*l*mix(.5,1.0,inside),1.0);}';
+  var VS_BOX = 'attribute vec3 p;attribute vec3 nm;uniform mat4 mvp;uniform mat4 model;varying vec3 vn;' +
+    'void main(){vn=mat3(model[0].xyz,model[1].xyz,model[2].xyz)*nm;gl_Position=mvp*model*vec4(p,1.0);}';
+  var FS_BOX = 'precision mediump float;uniform vec4 col;uniform vec3 sun;varying vec3 vn;' +
+    'void main(){float l=.5+.65*max(dot(normalize(vn),sun),0.0);gl_FragColor=vec4(col.rgb*l,col.a);}';
+  function program(vs, fs) {
+    var p = gl.createProgram();
+    [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]].forEach(function (pair) {
+      var sh = gl.createShader(pair[0]);
+      gl.shaderSource(sh, pair[1]); gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+      gl.attachShader(p, sh);
+    });
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    var info = {p: p, a: {}, u: {}};
+    ['p', 'nm', 'uv'].forEach(function (name) { info.a[name] = gl.getAttribLocation(p, name); });
+    ['mvp', 'model', 'tex', 'bd', 'sun', 'col'].forEach(function (name) { info.u[name] = gl.getUniformLocation(p, name); });
+    return info;
+  }
+  function buffer(data, kind) {
+    var b = gl.createBuffer();
+    gl.bindBuffer(kind || gl.ARRAY_BUFFER, b);
+    gl.bufferData(kind || gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    return b;
+  }
+  function terrainMesh() {  // one vertex per height: position, normal, minimap uv
+    var n = TER.n, h = TER.h, w = R.world, c = R.crop, iw = img.naturalWidth || 512, ih = img.naturalHeight || 512;
+    var dx = (w[2] - w[0]) / (n - 1), dz = (w[3] - w[1]) / (n - 1);
+    var pos = new Float32Array(n * n * 3), nrm = new Float32Array(n * n * 3), uv = new Float32Array(n * n * 2);
+    for (var j = 0; j < n; j++) for (var i = 0; i < n; i++) {
+      var k = j * n + i, x = w[0] + i * dx, z = w[1] + j * dz;
+      pos[3 * k] = x; pos[3 * k + 1] = h[k]; pos[3 * k + 2] = -z;
+      var hx = h[j * n + Math.min(n - 1, i + 1)] - h[j * n + Math.max(0, i - 1)];
+      var hz = h[Math.min(n - 1, j + 1) * n + i] - h[Math.max(0, j - 1) * n + i];
+      var nx = -hx / (2 * dx), nz = hz / (2 * dz), nl = Math.hypot(nx, 1, nz);  // GL z runs south
+      nrm[3 * k] = nx / nl; nrm[3 * k + 1] = 1 / nl; nrm[3 * k + 2] = nz / nl;
+      uv[2 * k] = (c[0] + i / (n - 1) * (c[2] - c[0])) / iw;
+      uv[2 * k + 1] = (c[1] + (1 - j / (n - 1)) * (c[3] - c[1])) / ih;
+    }
+    var idx = new Uint16Array((n - 1) * (n - 1) * 6), m = 0;
+    for (var jj = 0; jj < n - 1; jj++) for (var ii = 0; ii < n - 1; ii++) {
+      var a = jj * n + ii;
+      idx[m++] = a; idx[m++] = a + 1; idx[m++] = a + n; idx[m++] = a + 1; idx[m++] = a + n + 1; idx[m++] = a + n;
+    }
+    return {pos: buffer(pos), nrm: buffer(nrm), uv: buffer(uv), idx: buffer(idx, gl.ELEMENT_ARRAY_BUFFER), count: m};
+  }
+  function boxMesh() {  // a unit box standing on y = 0, centred in x and z
+    var f = [[0, 1, 0], [0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]], pos = [], nrm = [], idx = [];
+    f.forEach(function (n, k) {
+      var u = n[1] ? [1, 0, 0] : [0, 1, 0], v = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]];
+      [[-1, -1], [1, -1], [1, 1], [-1, 1]].forEach(function (q) {
+        pos.push(.5 * (n[0] + q[0] * u[0] + q[1] * v[0]), .5 * (n[1] + q[0] * u[1] + q[1] * v[1]) + .5,
+                 .5 * (n[2] + q[0] * u[2] + q[1] * v[2]));
+        nrm.push(n[0], n[1], n[2]);
+      });
+      idx.push(4 * k, 4 * k + 1, 4 * k + 2, 4 * k, 4 * k + 2, 4 * k + 3);
+    });
+    return {pos: buffer(new Float32Array(pos)), nrm: buffer(new Float32Array(nrm)),
+            idx: buffer(new Uint16Array(idx), gl.ELEMENT_ARRAY_BUFFER), count: idx.length};
+  }
+  function initGL() {  // false when the browser has no WebGL
+    glc = document.createElement('canvas');
+    glc.className = 'rp-gl';
+    stage.insertBefore(glc, cv);
+    gl = glc.getContext('webgl', {antialias: true}) || glc.getContext('experimental-webgl');
+    if (!gl) return false;
+    try {
+      G3 = {ter: program(VS_TER, FS_TER), box: program(VS_BOX, FS_BOX), mesh: terrainMesh(), cube: boxMesh(),
+            tex: gl.createTexture()};
+    } catch (err) {
+      gl = null;
+      return false;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, G3.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    var b = R.border || view;
+    cam.tx = (b[0] + b[2]) / 2; cam.tz = (b[1] + b[3]) / 2;
+    cam.dist = Math.max(b[2] - b[0], b[3] - b[1]) * .9;
+    return true;
+  }
+  function bind(prog, mesh) {
+    gl.useProgram(prog.p);
+    [['p', mesh.pos, 3], ['nm', mesh.nrm, 3], ['uv', mesh.uv, 2]].forEach(function (a) {
+      var loc = prog.a[a[0]];
+      if (loc < 0 || loc === undefined) return;
+      if (!a[1]) { gl.disableVertexAttribArray(loc); return; }
+      gl.bindBuffer(gl.ARRAY_BUFFER, a[1]);
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, a[2], gl.FLOAT, false, 0, 0);
+    });
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, mesh.idx);
+  }
+  var SUN = [.45, .8, .38], DARK = [.22, .23, .25, 1];
+  function rgb(side) { var c = RGB[side].split(','); return [c[0] / 255, c[1] / 255, c[2] / 255, 1]; }
+  function box(model, color) {
+    gl.uniformMatrix4fv(G3.box.u.model, false, model);
+    gl.uniform4fv(G3.box.u.col, color);
+    gl.drawElements(gl.TRIANGLES, G3.cube.count, gl.UNSIGNED_SHORT, 0);
+  }
+  function drawGL(states) {
+    if (glc.width !== W || glc.height !== H) { glc.width = W; glc.height = H; }
+    gl.viewport(0, 0, W, H);
+    gl.clearColor(.05, .06, .07, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST);
+    if (focus) {  // the camera follows the picked tank
+      var fs = states[V.indexOf(focus)];
+      if (fs) { cam.tx = fs.x; cam.tz = fs.z; }
+    }
+    var ty = ground(cam.tx, cam.tz), cp = Math.cos(cam.pitch);
+    var eye = [cam.tx - Math.sin(cam.yaw) * cp * cam.dist, ty + Math.sin(cam.pitch) * cam.dist,
+               -cam.tz + Math.cos(cam.yaw) * cp * cam.dist];
+    VP = mul(perspective(.75, W / H, 2, 4000), lookAt(eye, [cam.tx, ty, -cam.tz]));
+    bind(G3.ter, G3.mesh);
+    gl.uniformMatrix4fv(G3.ter.u.mvp, false, VP);
+    var b = R.border || R.world;
+    gl.uniform4f(G3.ter.u.bd, b[0], b[1], b[2], b[3]);
+    gl.uniform3fv(G3.ter.u.sun, SUN);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, G3.tex);
+    gl.uniform1i(G3.ter.u.tex, 0);
+    gl.drawElements(gl.TRIANGLES, G3.mesh.count, gl.UNSIGNED_SHORT, 0);
+    bind(G3.box, G3.cube);
+    gl.uniformMatrix4fv(G3.box.u.mvp, false, VP);
+    gl.uniform3fv(G3.box.u.sun, SUN);
+    V.forEach(function (v, i) {
+      var st = states[i];
+      if (!st || st.k === 'ghost') return;
+      var k = BIG * (v.c === 'LT' ? .85 : v.c === 'HT' ? 1.12 : 1), base = mul(tr(st.x, ground(st.x, st.z), -st.z),
+          mul(rotY(-st.y * Math.PI / 180), sc(k, k, k)));
+      var dim = focus && v !== focus, col = st.k === 'dead' ? DARK : rgb(v.s);
+      if (dim) col = [col[0] * .55, col[1] * .55, col[2] * .55, 1];
+      box(mul(base, sc(3.3, 1.5, 6.6)), col);
+      if (st.k === 'dead') return;
+      var turret = mul(base, mul(tr(0, 1.5, .4), rotY(-(st.g || 0) * Math.PI / 180)));
+      box(mul(turret, sc(2.5, 1.05, 2.8)), col);
+      box(mul(turret, mul(tr(0, .35, -3.4), sc(.38, .38, 4.6))), [col[0] * .8, col[1] * .8, col[2] * .8, 1]);
+    });
+  }
+  function setView(mode) {
+    Array.prototype.forEach.call(viewBtn.querySelectorAll('button'), function (x) {
+      x.classList.toggle('on', x.getAttribute('data-v') === mode);
+    });
+    if (mode === '2d') {
+      MODE = '2d'; stage.classList.remove('is3d');
+      if (glc) glc.hidden = true;
+      note3d.hidden = true; draw(); return;
+    }
+    note3d.hidden = false;
+    note3d.textContent = 'Загружаю рельеф…';
+    loadTerrain(function (ok) {
+      if (ok && !gl && !G3) ok = initGL();
+      if (!ok || !gl) {
+        note3d.textContent = 'Этот браузер не умеет 3D (WebGL) — остаётся 2D.';
+        setView('2d'); note3d.hidden = false;
+        return;
+      }
+      note3d.textContent = 'Тяните — поворот, колесо или щипок — ближе/дальше, правая кнопка или Shift — сдвиг.';
+      MODE = '3d'; glc.hidden = false; stage.classList.add('is3d'); draw();
+    });
+  }
+  var drag = null, dragged = false, touches = {};
+  function pinch() {
+    var ids = Object.keys(touches);
+    return ids.length === 2 ? Math.hypot(touches[ids[0]].x - touches[ids[1]].x, touches[ids[0]].y - touches[ids[1]].y) : 0;
+  }
+  stage.addEventListener('pointerdown', function (e) {
+    if (MODE !== '3d') return;
+    touches[e.pointerId] = {x: e.clientX, y: e.clientY};
+    drag = {x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey, span: pinch()};
+    dragged = false;
+    if (stage.setPointerCapture) stage.setPointerCapture(e.pointerId);
+  });
+  stage.addEventListener('pointermove', function (e) {
+    if (MODE !== '3d' || !drag || !touches[e.pointerId]) return;
+    touches[e.pointerId] = {x: e.clientX, y: e.clientY};
+    var dx = e.clientX - drag.x, dy = e.clientY - drag.y, span = pinch();
+    if (Math.abs(dx) + Math.abs(dy) > 3 || span) dragged = true;
+    if (!dragged) return;
+    if (span && drag.span) {
+      cam.dist = Math.max(40, Math.min(900, cam.dist * drag.span / span));
+      drag.span = span;
+    } else if (drag.pan) {
+      // the ground moves with the pointer: right is (cos, -sin), forward (sin, cos)
+      var k = cam.dist * .79 / (stage.clientHeight || 600), s = Math.sin(cam.yaw), c = Math.cos(cam.yaw);
+      cam.tx += (-c * dx + s * dy) * k; cam.tz += (s * dx + c * dy) * k;
+    } else {
+      cam.yaw += dx * .006;
+      cam.pitch = Math.max(.2, Math.min(1.5, cam.pitch + dy * .005));
+    }
+    drag.x = e.clientX; drag.y = e.clientY;
+    draw();
+  });
+  function release(e) {
+    delete touches[e.pointerId];
+    if (!Object.keys(touches).length) drag = null;
+  }
+  stage.addEventListener('pointerup', release);
+  stage.addEventListener('pointercancel', release);
+  stage.addEventListener('wheel', function (e) {
+    if (MODE !== '3d') return;
+    e.preventDefault();
+    cam.dist = Math.max(40, Math.min(900, cam.dist * Math.exp(e.deltaY * .0012)));
+    draw();
+  }, {passive: false});
+  stage.addEventListener('contextmenu', function (e) { if (MODE === '3d') e.preventDefault(); });
+
   function lasting(base) { return Math.max(base, .3 * speed); }  // battle seconds an effect stays on screen
   function drawSpotted(v, s, t) {  // a ring that shrinks onto an enemy as it is spotted
     var span = lasting(1.2), i = at(v.spotted, t);
@@ -1434,7 +1770,9 @@ _REPLAY_SCRIPT = r"""
     var age = (t - v.spotted[i]) / span;
     ctx.save();
     ctx.globalAlpha = (1 - age) * (focus && v !== focus ? .35 : 1);
-    ctx.beginPath(); ctx.arc(px(s.x), py(s.z), (24 - 12 * age) * dpr, 0, TAU);
+    var q = pt(s.x, s.z, MODE === '2d' ? 0 : 2);
+    if (!q) { ctx.restore(); return; }
+    ctx.beginPath(); ctx.arc(q.x, q.y, (24 - 12 * age) * dpr, 0, TAU);
     ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 4 * dpr; ctx.stroke();
     ctx.strokeStyle = COL.e; ctx.lineWidth = 2 * dpr; ctx.stroke();
     ctx.restore();
@@ -1444,11 +1782,13 @@ _REPLAY_SCRIPT = r"""
     for (var i = since(SHOTS, t - span); i < SHOTS.length && SHOTS[i][0] <= t; i++) {
       var s = SHOTS[i], shooter = byId[s[1]], target = byId[s[6]];
       if (s[4] === null) continue;
+      var a = pt(s[2], s[3], 1.8), b = pt(s[4], s[5], s[6] ? 1.5 : 0.3);
+      if (!a || !b) continue;
       ctx.save();
       ctx.globalAlpha = (1 - (t - s[0]) / span) * (focus && shooter !== focus && target !== focus ? .2 : 1);
       ctx.lineCap = 'round';
       if (s[9]) ctx.setLineDash([3 * dpr, 3 * dpr]);
-      ctx.beginPath(); ctx.moveTo(px(s[2]), py(s[3])); ctx.lineTo(px(s[4]), py(s[5]));
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
       ctx.strokeStyle = INK; ctx.lineWidth = 3 * dpr; ctx.stroke();
       ctx.strokeStyle = shooter ? TEXT[shooter.s] : '#FFFFFF'; ctx.lineWidth = 1.4 * dpr; ctx.stroke();
       ctx.restore();
@@ -1457,9 +1797,9 @@ _REPLAY_SCRIPT = r"""
   var WORD = {0: 'рикошет', 1: 'рикошет', 2: 'не пробил', 4: 'крит'};  // a hit without damage
   var REASON = {1: 'пожар', 2: 'таран', 3: 'падение'};
   function floater(v, t0, t, span, text, color, stack) {  // rises over the tank and fades
-    var s = seen(v, t) || seen(v, t0);
-    if (!s) return;
-    var age = (t - t0) / span, x = px(s.x), y = py(s.z) - (15 + 14 * age + 13 * stack) * dpr;
+    var s = seen(v, t) || seen(v, t0), q = s && pt(s.x, s.z, MODE === '2d' ? 0 : 5);
+    if (!q) return;
+    var age = (t - t0) / span, x = q.x, y = q.y - ((MODE === '2d' ? 15 : 34) + 14 * age + 13 * stack) * dpr;
     ctx.save();
     ctx.globalAlpha = (1 - age) * (focus && v !== focus ? .35 : 1);
     ctx.font = '700 ' + Math.round(12 * dpr) + 'px ' + FONT;
@@ -1485,9 +1825,9 @@ _REPLAY_SCRIPT = r"""
 
   function render() {
     ctx.clearRect(0, 0, W, H);
-    drawMap();
-    drawZones(cur);
     var states = V.map(function (v) { return state(v, cur); });
+    if (MODE === '3d') drawGL(states); else drawMap();
+    drawZones(cur);
     V.forEach(function (v, i) { drawTrail(v, states[i], cur); });
     ['dead', 'ghost', 'live'].forEach(function (kind) {
       V.forEach(function (v, i) {
@@ -1671,7 +2011,9 @@ _REPLAY_SCRIPT = r"""
     V.forEach(function (v) {
       var s = state(v, cur);
       if (!s) return;
-      var d = Math.hypot(px(s.x) - x, py(s.z) - y) + (s.k === 'live' ? 0 : 6 * dpr);
+      var q = pt(s.x, s.z, MODE === '2d' ? 0 : 1.5);
+      if (!q) return;
+      var d = Math.hypot(q.x - x, q.y - y) + (s.k === 'live' ? 0 : 6 * dpr);
       if (d < bestD) { best = v; bestD = d; }
     });
     return best;
@@ -1698,6 +2040,7 @@ _REPLAY_SCRIPT = r"""
 
   playBtn.addEventListener('click', function () { play(!playing); });
   stage.addEventListener('click', function (e) {  // a tank picks it, anywhere else plays / pauses
+    if (dragged) { dragged = false; return; }  // that was the 3D camera
     var v = hit(e);
     if (v) pick(v === focus ? null : v); else play(!playing);
   });
@@ -1715,6 +2058,7 @@ _REPLAY_SCRIPT = r"""
         x.classList.toggle('on', x === b);
       });
       var g = seg.getAttribute('data-group'), value = b.getAttribute('data-v');
+      if (g === 'view') { setView(value); return; }
       if (g === 'speed') speed = +value;
       else if (g === 'trail') trail = +value;
       else labels = value;

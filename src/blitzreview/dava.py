@@ -32,7 +32,17 @@ replay's x / z):
   * capture zones -- entities whose CustomPropertiesComponent says "type":
     "controlpoint" (the Encounter base) or "strategicpoint" (a Supremacy
     point, numbered by "baseID"), placed by their TransformComponent. Variant
-    scenes label them like the borders.
+    scenes label them like the borders;
+  * the terrain's heights -- the Landscape object's "hmap" names a
+    .heightmap file next to the scene (read_heightmap).
+
+Heightmap files: size u32 | tile u32 | size x size u16le heights, stored
+tile by tile -- (size / tile)^2 tiles in row-major order, each `tile` rows
+of `tile` values. Untiled, row j is y (north) and column i is x (east), from
+the bbox's minimum corner: height = z0 + value / 65535 * (z1 - z0) over the
+bbox's z range. Checked against the tanks: on all 11 maps we have replays
+of, a tank's height is the terrain's under it to a few centimetres (median;
+90 % within 15 cm -- the rest stand on bridges and rocks).
 """
 
 import struct
@@ -177,15 +187,45 @@ def _floats(blob, count):
     return struct.unpack(f"<{count}f", blob)
 
 
-def landscape_bbox(scene):
-    """(x0, y0, x1, y1) of the terrain, or None if the scene has no landscape."""
+def landscape(scene):
+    """{"bbox": (x0, y0, z0, x1, y1, z1), "hmap": path of the heightmap
+    relative to the scene's folder or None}, or None without a landscape."""
     for entity in entities(scene):
         render = components(entity).get("RenderComponent")
         obj = (render or {}).get("rc.renderObj")
         if isinstance(obj, dict) and obj.get("##name") == "Landscape" and "bbox" in obj:
-            x0, y0, _z0, x1, y1, _z1 = _floats(obj["bbox"], 6)
-            return (x0, y0, x1, y1)
+            hmap = obj.get("hmap")
+            return {"bbox": _floats(obj["bbox"], 6), "hmap": str(hmap) if hmap else None}
     return None
+
+
+def landscape_bbox(scene):
+    """(x0, y0, x1, y1) of the terrain, or None if the scene has no landscape."""
+    land = landscape(scene)
+    if land is None:
+        return None
+    x0, y0, _z0, x1, y1, _z1 = land["bbox"]
+    return (x0, y0, x1, y1)
+
+
+def read_heightmap(raw):
+    """(size, heights) of a .heightmap file: heights row by row, row j = y,
+    as the raw u16 values (0..65535 over the landscape's z range)."""
+    if len(raw) < 8:
+        raise DavaError("heightmap: truncated header")
+    size, tile = struct.unpack_from("<II", raw, 0)
+    if not size or not tile or size % tile or len(raw) != 8 + 2 * size * size:
+        raise DavaError(f"heightmap: size {size}, tile {tile}, {len(raw)} bytes")
+    values = struct.unpack_from(f"<{size * size}H", raw, 8)
+    out = [0] * (size * size)
+    pos = 0
+    for block_row in range(size // tile):
+        for block_col in range(size // tile):
+            for y in range(tile):
+                start = (block_row * tile + y) * size + block_col * tile
+                out[start:start + tile] = values[pos:pos + tile]
+                pos += tile
+    return size, out
 
 
 def map_borders(scene):

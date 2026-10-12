@@ -120,8 +120,12 @@ the Encounter base or the Supremacy points with who holds them and the capture
 progress, a board with the tanks still in the battle per side (plus the
 Supremacy score), a strip under the timeline showing which side had more tanks
 when, play / scrub / speed, and the kill feed beside it (click a time to jump
-there). Click a tank to see its whole route, its health, damage and shots up to
-that moment and its results; "★ Лучший в команде" picks the teammate with the
+there). The **3D** switch shows the same replay on the map's relief (the
+terrain heights come from the client's heightmaps, the minimap is draped over
+them; drag to turn, wheel or pinch to zoom): tanks as models with their turret
+and gun, the same labels, health bars, tracers and damage numbers. Click a
+tank to see its whole route, its health, damage and shots up to that moment
+and its results; "★ Лучший в команде" picks the teammate with the
 most damage. Shots, hits and damage are decoded from the packet stream and
 checked against the battle results (`tests/test_wotb_events.py`). A battle
 uploaded before a feature existed gets it when its replay is dropped again.
@@ -132,9 +136,10 @@ links to the battles and moments. Battles live in their own table
 (`wotb_battles`, schema v4) and never mix into the CS2 matches or career. Windows/Steam replays live in
 `%LOCALAPPDATA%\wotblitz\DAVAProject\replays`; there is no API to download them.
 
-Tank and map names, tiers, minimaps and the minimap geometry come from
-`src/blitzreview/assets/`, generated once from an installed client with
-`tools/wotb_extract_assets.py` (measuring the minimaps needs Pillow).
+Tank and map names, tiers, minimaps, the minimap geometry and the terrain
+heights come from `src/blitzreview/assets/`, generated once from an installed
+client with `tools/wotb_extract_assets.py` (measuring the minimaps needs
+Pillow).
 The reverse-engineered format is documented in `docs/WOTB_FORMAT.md`.
 
 ## Project layout

@@ -1,4 +1,4 @@
-"""Static game data: tank and map names, tiers, classes, minimaps.
+"""Static game data: tank and map names, tiers, classes, minimaps, terrain.
 
 Everything comes from assets/ (generated from an installed client by
 tools/wotb_extract_assets.py and committed), so the analyzer works offline and
@@ -7,6 +7,8 @@ after the last extraction -- degrades to its id, never to an exception.
 """
 
 import json
+import struct
+import zlib
 from functools import lru_cache
 from pathlib import Path
 
@@ -100,6 +102,37 @@ def minimap(key, margin=0.04):
     vz0 = min(max((z0 + z1 - side) / 2, world[1]), world[3] - side)
     view = [round(v, 1) for v in (vx0, vz0, vx0 + side, vz0 + side)]
     return {"world": world, "crop": [int(v) for v in crop], "border": border, "view": view}
+
+
+def terrain(key):
+    """A map's terrain for the 3D view: {"n", "data"} -- `data` is the
+    zlib-compressed file as tools/wotb_extract_assets.py wrote it (n x n
+    heights over the `world` square, row by row from the south, decimetres,
+    each row delta-coded). None when the assets have no terrain for the map."""
+    entry = _table("maps.json", "maps").get(key) if key else None
+    info = (entry or {}).get("terrain")
+    if not info:
+        return None
+    path = ASSETS / "terrain" / f"{info['file']}.bin"
+    if not path.is_file():
+        return None
+    return {"n": int(info["n"]), "data": path.read_bytes()}
+
+
+def terrain_heights(key):
+    """(n, heights in metres, row by row from the south edge) or None."""
+    found = terrain(key)
+    if found is None:
+        return None
+    n = found["n"]
+    steps = struct.unpack(f"<{n * n}h", zlib.decompress(found["data"]))
+    heights = []
+    for j in range(n):
+        value = 0
+        for i in range(n):
+            value = steps[j * n] if i == 0 else value + steps[j * n + i]
+            heights.append(value / 10)
+    return n, heights
 
 
 def objectives(key, mode):
