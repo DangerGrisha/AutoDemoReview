@@ -56,6 +56,10 @@ def _invariants(b, label):
         assert b["outcome"] == "unknown", label
     for kill in b["kills"]:
         assert kill["t"] is not None and 0 <= kill["t"] <= (b["duration"] or 1e9) + 1, (label, kill)
+    # the capture updates of the mode: Encounter base records, Supremacy points and score
+    assert b["mode"] is not None, label
+    wanted = ("base",) if b["mode"]["id"] == 0 else ("points", "score")
+    assert all((b["objectives"] or {}).get(key) for key in wanted), (label, b["mode"])
 
 
 def test_canyon_with_results():
@@ -80,7 +84,8 @@ def test_old_client_version_with_results():
 def test_a_replay_without_results_still_names_everyone():
     b = _load("v11_20_savanna_no_results.wotbreplay")
     _invariants(b, "savanna")
-    assert not b["has_results"] and b["mode"] is None
+    assert not b["has_results"]
+    assert b["mode"]["id"] == 1  # no results: the stream's Supremacy updates tell it
     assert any("no battle results" in w for w in b["warnings"])
     assert all(v["stats"] is None for v in b["vehicles"])
     me = next(v for v in b["vehicles"] if v["is_author"])

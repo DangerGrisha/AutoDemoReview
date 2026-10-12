@@ -116,6 +116,35 @@ def test_an_unlabelled_single_border_and_a_scene_without_landscape():
                                         "rect": (-250.0, -250.0, 250.0, 250.0)}]
 
 
+def _zone(enc, name, props, pos, label=None):
+    values = {key: (enc.string(value) if isinstance(value, str) else
+                    b"\x03" + struct.pack("<f", value) if isinstance(value, float) else
+                    b"\x02" + struct.pack("<i", value)) for key, value in props.items()}
+    comps = [{"comp.typename": enc.string("TransformComponent"),
+              "tc.worldTranslation": b"\x0c" + struct.pack("<3f", *pos)},
+             {"comp.typename": enc.string("CustomPropertiesComponent"),
+              "cpc.properties.archive": enc.nested(values)}]
+    if label:
+        comps.append({"comp.typename": enc.string("LabelComponent"),
+                      "lc.labels": enc.vector([enc.string(label)])})
+    return enc.entity(name, comps)
+
+
+def test_capture_zones_come_with_their_kind_number_and_radius():
+    enc = _Encoder()
+    scene = dava.read_scene(enc.scene([
+        _zone(enc, "ControlPoint", {"type": "controlpoint", "pointsPerSecond": 1.0}, (28.4, 24.9, 26.3)),
+        _zone(enc, "2.sc2", {"type": "strategicpoint", "baseID": 1, "radius": 15.0}, (-54.7, 9.2, 30.0)),
+        _zone(enc, "Control2", {"type": "controlpoint", "radius": 15.0}, (-110.0, -11.0, 5.0), "mlb2"),
+        _zone(enc, "Spawn11", {"type": "spawnpoint", "team": 1}, (-236.0, 184.8, 31.6)),
+    ]))
+    zones = dava.capture_zones(scene)
+    assert [(z["kind"], z["id"], z["labels"], z["radius"]) for z in zones] == [
+        ("base", None, [], None), ("point", 1, [], 15.0), ("base", None, ["mlb2"], 15.0)]
+    x, y = zones[1]["pos"]  # the ground plane: x and y, never the height
+    assert abs(x + 54.7) < 1e-4 and abs(y - 9.2) < 1e-4
+
+
 def _raises(data, words):
     try:
         dava.read_scene(data)
@@ -148,3 +177,8 @@ def test_the_reader_agrees_with_the_shipped_maps_json():
     canyon = json.loads((gamedata.ASSETS / "maps.json").read_text(encoding="utf-8"))["maps"]["canyon"]
     assert [round(v, 1) for v in dava.landscape_bbox(scene)] == canyon["world"]
     assert [round(v, 1) for v in dava.map_borders(scene)[0]["rect"]] == canyon["border"]
+    zones = dava.capture_zones(scene)
+    base = next(z for z in zones if z["kind"] == "base")
+    assert [round(v, 1) for v in base["pos"]] == canyon["base"][:2]
+    points = sorted((z for z in zones if z["kind"] == "point"), key=lambda z: z["id"])
+    assert [[z["id"], *(round(v, 1) for v in z["pos"]), z["radius"]] for z in points] == canyon["points"]

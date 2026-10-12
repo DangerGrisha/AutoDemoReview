@@ -17,7 +17,8 @@ from blitzreview.container import ReplayError
 
 FIXTURES = Path(__file__).resolve().parent / "data" / "wotb"
 ALL = sorted(p.name for p in FIXTURES.glob("*.wotbreplay"))
-WITH_RESULTS = ("v11_20_canyon_results.wotbreplay", "v11_7_himmelsdorf_results.wotbreplay")
+WITH_RESULTS = ("v11_20_canyon_results.wotbreplay", "v11_7_himmelsdorf_results.wotbreplay",
+                "v11_20_rift_base_capture.wotbreplay")
 
 
 def _open(name):

@@ -28,7 +28,11 @@ replay's x / z):
     centred on the origin on every map; the battle minimap shows exactly it;
   * MapBorderComponent rects -- the playable area. Scenes with several map
     variants (milbase, milbase_02 ...) carry one border per variant, told
-    apart by a LabelComponent label that maps.yaml repeats as the map's `tags`.
+    apart by a LabelComponent label that maps.yaml repeats as the map's `tags`;
+  * capture zones -- entities whose CustomPropertiesComponent says "type":
+    "controlpoint" (the Encounter base) or "strategicpoint" (a Supremacy
+    point, numbered by "baseID"), placed by their TransformComponent. Variant
+    scenes label them like the borders.
 """
 
 import struct
@@ -192,8 +196,35 @@ def map_borders(scene):
         border = comps.get("MapBorderComponent")
         if border is None or "mbc.rect" not in border:
             continue
-        labels = (comps.get("LabelComponent") or {}).get("lc.labels") or []
-        out.append({"name": entity.get("name"),
-                    "labels": [str(label) for label in labels],
+        out.append({"name": entity.get("name"), "labels": _labels(comps),
                     "rect": _floats(border["mbc.rect"], 4)})
+    return out
+
+
+def _labels(comps):
+    return [str(label) for label in (comps.get("LabelComponent") or {}).get("lc.labels") or []]
+
+
+_ZONE_KINDS = {"controlpoint": "base", "strategicpoint": "point"}
+
+
+def capture_zones(scene):
+    """[{"kind", "id", "labels", "pos": (x, y), "radius"}] for every capture
+    zone: kind "base" (Encounter) or "point" (Supremacy, `id` = its baseID,
+    the number the arena updates use). `radius` is None when the scene leaves
+    it to the game -- most Encounter bases."""
+    out = []
+    for entity in entities(scene):
+        comps = components(entity)
+        props = (comps.get("CustomPropertiesComponent") or {}).get("cpc.properties.archive")
+        kind = _ZONE_KINDS.get(props.get("type")) if isinstance(props, dict) else None
+        if kind is None:
+            continue
+        where = (comps.get("TransformComponent") or {}).get("tc.worldTranslation")
+        if not (isinstance(where, tuple) and len(where) == 3):
+            raise DavaError(f"capture zone {entity.get('name')!r} has no position")
+        radius = props.get("radius")
+        out.append({"kind": kind, "id": props.get("baseID"), "labels": _labels(comps),
+                    "pos": (where[0], where[1]),
+                    "radius": float(radius) if isinstance(radius, (int, float)) else None})
     return out

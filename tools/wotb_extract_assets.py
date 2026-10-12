@@ -10,7 +10,9 @@ needs the game installed and never calls the Wargaming API):
     maps.json           map key -> id, scene name, modes, ru/en names,
                         assault-mode respawn points (world x/z), and for the
                         2D replay: `world` (the square the minimap shows),
-                        `border` (the playable area), `minimap_crop`
+                        `border` (the playable area), `minimap_crop`, the
+                        Encounter `base` [x, z, radius] and the Supremacy
+                        `points` [[id, x, z, radius], ...]
     minimaps/<key>.webp 512x512 battle minimaps (MiniMapSmall@2x)
 
 The tank id is the number replays carry: (index << 8) | (nation << 4) | 1,
@@ -43,6 +45,13 @@ from blitzreview import dava, dvpl  # noqa: E402
 
 DEFAULT_CLIENT = Path(r"D:\games\Steam\steamapps\common\World of Tanks Blitz")
 OUT_DIR = ROOT / "src" / "blitzreview" / "assets"
+
+# Radius of an Encounter base whose scene sets none (most of them): measured
+# on Rift, where a lone tank's capture began as it rolled within 25 m of the
+# base centre and stopped when it backed out to 27 m. Supremacy points all
+# state theirs (15 m); the fallback only covers a scene that would not.
+BASE_RADIUS = 25.0
+POINT_RADIUS = 15.0
 
 # First matching tag wins; Blitz has no artillery in random battles but the
 # client still knows the class, so it stays in the table.
@@ -164,8 +173,44 @@ def pick_border(borders, tag):
     return borders[0] if len(borders) == 1 else None
 
 
+def pick_zones(zones, tag):
+    """A map variant's capture zones: those labelled with its maps.yaml tag,
+    else the unlabelled ones (which is all an untagged map has)."""
+    if tag:
+        tagged = [z for z in zones if tag in z["labels"]]
+        if tagged:
+            return tagged
+    return [z for z in zones if not z["labels"]]
+
+
+def add_zones(key, entry, zones, problems):
+    """Add the Encounter `base` and the Supremacy `points` for the modes the
+    map is played in (maps.yaml `availableModes`: 0 Encounter, 1 Supremacy)."""
+    zones = pick_zones(zones, entry.get("tag"))
+    modes = entry.get("modes") or []
+    bases = [z for z in zones if z["kind"] == "base"]
+    points = sorted((z for z in zones if z["kind"] == "point"), key=lambda z: z["id"] or 0)
+    if 0 in modes:
+        if len(bases) == 1:
+            entry["base"] = _rounded((*bases[0]["pos"], bases[0]["radius"] or BASE_RADIUS))
+        else:
+            problems.append(f"{key}: {len(bases)} Encounter bases for tag {entry.get('tag')!r}")
+    if 1 in modes:
+        ids = [p["id"] or 0 for p in points]
+        if len(points) >= 2 and ids == list(range(len(points))):
+            entry["points"] = [[i, *_rounded((*p["pos"], p["radius"] or POINT_RADIUS))]
+                               for i, p in zip(ids, points)]
+        else:
+            problems.append(f"{key}: Supremacy points numbered {ids}")
+    x0, z0, x1, z1 = entry["border"]
+    places = ([entry["base"][:2]] if "base" in entry else []) + [p[1:3] for p in entry.get("points", [])]
+    if any(not (x0 <= x <= x1 and z0 <= z <= z1) for x, z in places):
+        problems.append(f"{key}: a capture zone lies outside the border")
+
+
 def add_geometry(data_dir, maps):
-    """Add `world` and `border` to every map from its scene. Returns problems."""
+    """Add `world`, `border` and the capture zones to every map from its
+    scene. Returns problems."""
     problems, scenes = [], {}
     for key, entry in sorted(maps.items()):
         scene_name = entry.get("scene")
@@ -175,11 +220,12 @@ def add_geometry(data_dir, maps):
         if scene_name not in scenes:
             try:
                 scene = dava.read_scene(dvpl.read(data_dir / "3d" / "Maps" / f"{scene_name}.dvpl"))
-                scenes[scene_name] = (dava.landscape_bbox(scene), dava.map_borders(scene))
+                scenes[scene_name] = (dava.landscape_bbox(scene), dava.map_borders(scene),
+                                      dava.capture_zones(scene))
             except (OSError, dava.DavaError, dvpl.DvplError) as exc:
-                scenes[scene_name] = (None, [])
+                scenes[scene_name] = (None, [], [])
                 problems.append(f"{key}: {scene_name}: {exc}")
-        world, borders = scenes[scene_name]
+        world, borders, zones = scenes[scene_name]
         if world:
             entry["world"] = _rounded(world)
         border = pick_border(borders, entry.get("tag"))
@@ -193,6 +239,7 @@ def add_geometry(data_dir, maps):
                       if not (x0 - 1 <= x <= x1 + 1 and z0 - 1 <= z <= z1 + 1))
         if outside:
             problems.append(f"{key}: {outside} respawn points outside the border")
+        add_zones(key, entry, zones, problems)
     return problems
 
 

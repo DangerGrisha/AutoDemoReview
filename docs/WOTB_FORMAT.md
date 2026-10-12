@@ -168,7 +168,10 @@ of the battle. All our fixtures split into packets byte for byte.
 of seconds to minutes -- and an enemy never spotted has no position at all.
 Every kill (102 of them) has a position of the victim at most 0.13 s before
 it, enemies included, so the death spot is always known; wrecks keep sending
-positions afterwards and slide a few metres at most.
+positions afterwards and slide a few metres at most. The killer is almost
+always in the stream at the moment of the kill too: 42 of 43 kills by enemies
+in 13 battles, often after only about 2 s of visibility. The game seems to
+reveal a shooter at the shot.
 
 **Recording end:** the stream stops when the recorder leaves the battle (often
 right after dying). The battle itself, and `battleDuration`, can run longer.
@@ -184,12 +187,19 @@ packed length (one byte, or `0xFF` + u24le), followed by protobuf.
 | 3 | period `[3]`: `{1 period, 2 length f64, 3 length s}`. Periods: 1 waiting (60 s), 2 pre-battle countdown (7 s), 3 battle (420 s), 4 after | battle start = clock of period 3 |
 | 4 | `[4]` list of entity ids (statistics?) | — |
 | 5 | `[5]` `{1 {1 entity id, 2 kills}}`, sent right after each kill | — |
-| 6 | vehicle killed `[6]`: `{1 victim, 2 killer, 3 ?}` | kill feed |
+| 6 | vehicle killed `[6]`: `{1 victim, 2 killer, 3 ?, 4 ?}` | kill feed |
 | 7 | avatar ready `[7]` `{1 entity id}`, one per player | — |
-| 8 | `[8]` `{1 team, 2 1}`, seen in encounter battles (base?) | — |
+| 8 | Encounter base `[8]`: `{1 team, 2 base id (1), 3 capture points scored AGAINST that team (0–100), 4 1 while the team's own tanks stand in the base}`. Both teams' records come together, every 0.5–1 s while someone captures. **sure**: on Rift a lone ally rolled within 25 m of the base twice and the progress counted up in the enemy team's record, then dropped to 0 when the ally backed out to 27 m. `arena.py` credits field 3 to the other team. The game's tip says the bar fills "до 100" | base capture |
+| 12 | Supremacy point `[11]`: `{1 point id (A = 0), 2 owner team, 3 capturing team, 4 capture progress %, 5 ?, 6 ?}`. Each update is the point's whole state, and protobuf leaves zeros out, so an empty message means point A, neutral, untouched. Captures take about 15 s. **sure**: every capture by the recorder's team (the only side that is always visible) starts with one of its tanks inside the point's 15 m | point owners |
+| 13 | Supremacy score `[12]`: `{1 team, 2 victory points}`. **sure**: a team's points drop exactly when it loses a tank, within 1 s, and by 30 or 40 (`gameplay_settings.yaml`: 40 for a top-tier tank, 30 for a lower one); the winner of a battle decided on points ended at exactly 1000 | score |
 | 15, 16, 17 | per-vehicle `{1 entity, …}` (effects? visibility?) | — |
-| 18 | `[17]` `{5 "regular", 9, 10 300, 11 1000, 12}` battle settings | — |
+| 18 | battle settings `[17]`: `{5 "regular", 9 ?, 10 victory points at the start (300), 11 victory points that win (1000), 12 ?}`. Sent in Encounter battles too | Supremacy goal |
 | 23 | tutorial hints | — |
+
+The capture updates also tell the **mode** of a replay without
+`battle_results.dat`: Supremacy battles send point states and scores from the
+start of the battle, Encounter battles the base records. This matched the
+results on every replay that has them.
 
 Compact descriptor: the first two bytes (u16le) are the **tank id**. This
 matched battle results on every vehicle. The rest of the descriptor (modules)
@@ -223,7 +233,7 @@ payload | original u32 | packed u32 | crc32(payload) u32 | kind u32 | "DVPL"
 |---|---|
 | `XML/item_defs/vehicles/*/list.xml` + `Strings/{ru,en}.yaml` | `vehicles.json`: tier, class from tags, ru/en names |
 | `maps.yaml` | `maps.json`: id, scene name, modes, variant `tag`, assault respawn points |
-| `3d/Maps/<scene>.sc2` (see below) | `maps.json`: `world` (terrain square), `border` (playable area) |
+| `3d/Maps/<scene>.sc2` (see below) | `maps.json`: `world` (terrain square), `border` (playable area), `base` (Encounter: x, z, radius), `points` (Supremacy: id, x, z, radius) |
 | `Gfx/UI/BattleScreenHUD/minimap/<key>/MiniMapSmall@2x.packed.webp` | `minimaps/<key>.webp`, 512×512; `maps.json`: `minimap_crop` |
 
 ### Scenes (`.sc2`) and the minimap
@@ -268,6 +278,19 @@ u = left + (x − x0) / (x1 − x0) · (right − left)      # world = x0 z0 x1 
 v = top  + (z1 − z) / (z1 − z0) · (bottom − top)      # crop  = left top right bottom
 ```
 
+**Capture zones** are entities with a CustomPropertiesComponent whose
+`cpc.properties.archive` has a `type`:
+- `controlpoint`: the Encounter base;
+- `strategicpoint`: a Supremacy point, with `baseID` (the point id of arena update 12, shown as A, B, C … in the game), `radius` 15 and its scoring settings.
+
+The position is the TransformComponent's `tc.worldTranslation`: x, y (the replay's z), height. It is the same frame as the spawn points.
+
+Variant scenes label their zones like their borders. An untagged map uses the unlabelled ones.
+
+Every map has its Encounter base, and the 30 maps played in Supremacy have 3 or 4 points. Himmelsdorf and Plant have four, and all four are live: the battles send states for all of them.
+
+Most bases carry no radius, so the game uses a default. It is **25 m**, measured on Rift: the capture started at 25 m from the centre and stopped at 27 m. Variant bases that state a radius say 15 m.
+
 Not done yet:
 - **Map geometry** for a future 3D view: `3d/Maps/<scene>/landscape/*_height.heightmap` plus `*_colormap`.
 - `blitz/<scene>.mkm` (`kkm` header, a 1024² 2-bit grid) and `.lka`: probably terrain kinds and the ground-sound map; not needed so far.
@@ -276,4 +299,4 @@ Not done yet:
 
 - Event methods: shots, damage, health changes. Entity method ids 0–48 have been seen. Decoded events will be checked against the result totals.
 - Assist kinds A and B: which one is spotting and which is tracking.
-- Game mode for replays without battle results. The period-1 update has a field 5 that matches the mode, but it is not present in every replay.
+- Point state fields 5 and 6 (seen while a capture stalls and while it runs faster, maybe the crew skill "Стремительный захват"), and kill field 4.

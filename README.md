@@ -105,10 +105,16 @@ dict as JSON and write the HTML report. Replays without `battle_results.dat`
 On the site: sign in, open **Blitz** in the top bar and drag replays onto the
 page (one or many at once). Each battle gets a report: your numbers with your
 rank in the lobby, both teams, and a **2D replay** on the game's minimap --
-every tank's movement and heading, enemies only while they were spotted (then a
-dashed "last seen" ring), wrecks where tanks died, trails, play / scrub /
-speed, and the kill feed beside it (click a time to jump there). A battle
-uploaded before the 2D replay existed gets it when its replay is dropped again. Battles live in their own table
+every tank as the game's class mark (LT / MT / HT / TD) with its heading,
+enemies only while they were spotted (then a dashed "last seen" outline), wrecks
+where tanks died, trails, an arrow from killer to victim at every kill, the
+Encounter base or the Supremacy points with who holds them and the capture
+progress, a board with the tanks still in the battle per side (plus the
+Supremacy score), a strip under the timeline showing which side had more tanks
+when, play / scrub / speed, and the kill feed beside it (click a time to jump
+there). Click a tank to see its whole route and its results; "★ Лучший в
+команде" picks the teammate with the most damage. A battle uploaded before
+a feature existed gets it when its replay is dropped again. Battles live in their own table
 (`wotb_battles`, schema v4) and never mix into the CS2 matches or career. Windows/Steam replays live in
 `%LOCALAPPDATA%\wotblitz\DAVAProject\replays`; there is no API to download them.
 

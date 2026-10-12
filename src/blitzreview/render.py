@@ -304,18 +304,171 @@ def _replay_ticks(battle, end):
     return "".join(marks)
 
 
+def _advantage(battle, end):
+    """A strip under the timeline: allies minus enemies still in the battle,
+    above the line while the allies have more tanks, below while the enemy
+    does. Hovering a stretch shows the count."""
+    if end <= 0:
+        return ""
+    allies = sum(1 for v in battle["vehicles"] if v["ally"])
+    enemies = len(battle["vehicles"]) - allies
+    deaths = sorted((v["death_time"], v["ally"]) for v in battle["vehicles"]
+                    if v["death_time"] is not None and v["death_time"] < end)
+    stretches, start = [], 0.0
+    for t, ally in deaths:
+        if t > start:
+            stretches.append((start, t, allies, enemies))
+            start = t
+        allies, enemies = allies - ally, enemies - (not ally)
+    stretches.append((start, end, allies, enemies))
+    peak = max([3] + [abs(a - e) for _, _, a, e in stretches])
+    parts = []
+    for t0, t1, a, e in stretches:
+        bar = ""
+        if a != e:
+            h = 9 * abs(a - e) / peak
+            bar = (f'<rect class="{"a" if a > e else "e"}" x="{t0:.1f}" '
+                   f'y="{10 - h if a > e else 10:.2f}" width="{t1 - t0:.1f}" height="{h:.2f}"/>')
+        parts.append(f'<g><title>{clock(t0)}–{clock(t1)}: в строю {a} : {e}</title>'
+                     f'<rect class="h" x="{t0:.1f}" y="0" width="{t1 - t0:.1f}" height="20"/>{bar}</g>')
+    return (f'<svg class="rp-adv" viewBox="0 0 {end:.1f} 20" preserveAspectRatio="none" '
+            'role="img" aria-label="Перевес по танкам в строю">'
+            f'<line x1="0" y1="10" x2="{end:.1f}" y2="10" vector-effect="non-scaling-stroke"/>'
+            f'{"".join(parts)}</svg>')
+
+
+def _replay_vehicle(v):
+    """What the replay script knows about one vehicle; `r` only with results."""
+    out = {"id": v["entity_id"], "n": v["nickname"], "k": v["tank"]["short"],
+           "s": _side_class(v), "d": v["death_time"], "c": v["tank"].get("type"),
+           "tn": v["tank"]["name"], "tk": _tank_kind(v["tank"]), "cl": v.get("clan_tag"),
+           "kid": v.get("killer_id")}
+    stats = v.get("stats")
+    if stats:
+        out["r"] = {"dmg": stats["damage"], "fr": stats["kills"], "as": stats["assist"],
+                    "bl": stats["damage_blocked"], "hp": stats["hp_left"],
+                    "mhp": stats.get("max_hp")}
+    return out
+
+
+def _team_side(battle, team):
+    """'a' for the recorder's team, 'e' for the other one, '' for nobody."""
+    mine = (battle.get("author") or {}).get("team")
+    if not team or mine is None:
+        return ""
+    return "a" if team == mine else "e"
+
+
+def _replay_objectives(battle):
+    """The capture zones of the battle's mode and what happened on them, in
+    sides instead of team numbers; None when the map or the mode has none.
+    Battles stored before format 3 get the zones without their history."""
+    mode = (battle.get("mode") or {}).get("id")
+    zones = gamedata.objectives(battle["map"].get("key"), mode)
+    if not zones:
+        return None
+    stored = battle.get("objectives") or {}
+
+    def side(team):
+        return _team_side(battle, team)
+
+    out = {"kind": "points" if mode == 1 else "base",
+           "zones": [{"id": z["id"], "l": z["label"], "x": z["x"], "z": z["z"], "r": z["r"]}
+                     for z in zones]}
+    if mode == 1:
+        out["states"] = [[t, i, side(owner), side(capturer), progress]
+                         for t, i, owner, capturer, progress in stored.get("points") or ()]
+        score, now = [], {}
+        for t, team, points in stored.get("score") or ():
+            now[side(team)] = points
+            row = [t, now.get("a"), now.get("e")]
+            if score and score[-1][0] == t:
+                score[-1] = row  # both teams arrive in the same instant
+            else:
+                score.append(row)
+        out["score"] = score
+        out["goal"] = stored.get("goal")
+    else:
+        out["base"] = [[t, side(team), points] for t, team, points in stored.get("base") or ()]
+    return out
+
+
+def _best_ally(battle):
+    """Entity id of the recorder's teammate (or the recorder) with the most
+    damage, None without results."""
+    allies = [v for v in battle["vehicles"] if v["ally"] and v.get("stats")]
+    best = max(allies, key=lambda v: v["stats"]["damage"], default=None)
+    return best["entity_id"] if best and best["stats"]["damage"] > 0 else None
+
+
 def _replay_data(battle, geo):
     rp = battle["replay"]
     return {
         "end": rp["end"], "gap": rp["gap"],
         "world": geo["world"], "crop": geo["crop"], "border": geo["border"],
         "view": geo["view"],
-        "vehicles": [{"id": v["entity_id"], "n": v["nickname"], "k": v["tank"]["short"],
-                      "s": _side_class(v), "d": v["death_time"]} for v in battle["vehicles"]],
+        "vehicles": [_replay_vehicle(v) for v in battle["vehicles"]],
         "tracks": rp["tracks"],
         "kills": [{"t": k["t"], "v": k["victim"], "k": k["killer"]}
                   for k in battle["kills"] if k["t"] is not None],
+        "obj": _replay_objectives(battle),
     }
+
+
+def _replay_hud(battle, obj):
+    """The board in the stage's corner: tanks still in the battle per side,
+    and the Supremacy score or the Encounter capture."""
+    allies = sum(1 for v in battle["vehicles"] if v["ally"])
+    rows = [f'<div title="Танков в строю: союзники : противники"><span class="lbl">в строю</span>'
+            f'<b class="a" id="rp-na">{allies}</b>:<b class="e" id="rp-ne">'
+            f'{len(battle["vehicles"]) - allies}</b></div>']
+    if obj and obj.get("score"):
+        goal = f" (победа — {num(obj['goal'])})" if obj.get("goal") else ""
+        rows.append(f'<div id="rp-score" title="Очки победы: союзники : противники{goal}">'
+                    '<span class="lbl">очки</span><b class="a"></b>:<b class="e"></b></div>')
+    if obj and obj.get("base"):
+        rows.append('<div id="rp-cap" title="Захват базы: шкала до 100" hidden>'
+                    '<span class="lbl">захват</span><b></b></div>')
+    return f'<div class="rp-hud">{"".join(rows)}</div>'
+
+
+def _focus_panel(battle):
+    best = _best_ally(battle)
+    button = (f'<button type="button" class="rbtn" id="rp-best" data-id="{best}">'
+              '★ Лучший в команде</button>' if best else "")
+    return ('<div class="rp-focus"><div id="rp-hint"><p class="note">Нажмите на танк на '
+            f'карте — покажу его путь и итоги боя.</p>{button}</div>'
+            '<div class="rp-card" id="rp-card" hidden></div></div>')
+
+
+# The game's minimap class marks (BattleScreenHUD/MinimapTank): a diamond for
+# tanks -- plain for LT, cut once for MT, twice for HT -- and a triangle
+# pointing down for tank destroyers. The script draws the same shapes.
+_MARKS = {
+    "LT": '<path d="M0-6 6 0 0 6-6 0z"/>',
+    "MT": '<path d="M0-6 6 0 0 6-6 0z"/><path class="cut" d="M3-3-3 3"/>',
+    "HT": '<path d="M0-6 6 0 0 6-6 0z"/><path class="cut" d="M4-2-2 4M2-4-4 2"/>',
+    "TD": '<path d="M-6.5-4.6H6.5L0 6.5z"/>',
+}
+_FLAG = '<path class="pole" d="M-2.5 6.5V-6.5"/><path d="M-2.5-6.5 5-3.5-2.5-.5z"/>'
+
+
+def _mark(svg_body):
+    return f'<svg viewBox="-7 -7 14 14" aria-hidden="true">{svg_body}</svg>'
+
+
+def _legend(obj):
+    classes = "".join(f'<span>{_mark(_MARKS[code])}{gamedata.class_name(code)}</span>'
+                      for code in ("LT", "MT", "HT", "TD"))
+    zones = ""
+    if obj and obj["kind"] == "points":
+        zones = '<span><b class="lp">A</b>точки захвата</span>'
+    elif obj:
+        zones = f'<span>{_mark(_FLAG)}база</span>'
+    return ('<div class="rp-legend"><span><i class="lm"></i>вы</span>'
+            '<span><i class="la"></i>союзники</span><span><i class="le"></i>противники</span>'
+            f'{classes}<span><i class="lg"></i>последний раз видели</span><span>✕ уничтожен</span>'
+            f'<span>→ кто кого уничтожил</span>{zones}</div>')
 
 
 SPEEDS = (1, 2, 4, 8, 16)
@@ -343,6 +496,7 @@ def _replay(battle):
                else "В реплее нет позиций танков — 2D-повтор недоступен.")
         return f'<section class="card"><h2>2D-повтор</h2><p class="note">{why}</p></section>'
     end = battle["replay"]["end"]
+    data = _replay_data(battle, geo)
     controls = (
         '<button type="button" class="rbtn play" id="rp-play" title="Смотреть (пробел)">▶</button>'
         f'<span class="rtime" id="rp-time">0:00 / {clock(end)}</span>'
@@ -352,9 +506,6 @@ def _replay(battle):
         + '<span class="rp-opt">подписи'
         + _seg("label", [("tank", "танки"), ("nick", "ники"), ("none", "нет")], "tank")
         + '</span>')
-    legend = ('<div class="rp-legend"><span><i class="lm"></i>вы</span>'
-              '<span><i class="la"></i>союзники</span><span><i class="le"></i>противники</span>'
-              '<span><i class="lg"></i>последний раз видели</span><span>✕ уничтожен</span></div>')
     return (
         '<section class="card replay" id="replay">'
         '<div class="rp-head"><h2>2D-повтор</h2><span class="note">Противники видны, пока их '
@@ -362,14 +513,18 @@ def _replay(battle):
         '<div class="rp-grid"><div class="rp-main">'
         '<div class="rp-stage" id="rp-stage" tabindex="0">'
         f'<canvas id="rp-canvas" aria-label="2D-повтор боя на миникарте: '
-        f'{esc(battle["map"]["name"])}"></canvas><div class="rp-recent" id="rp-recent"></div></div>'
+        f'{esc(battle["map"]["name"])}"></canvas>{_replay_hud(battle, data["obj"])}'
+        '<div class="rp-recent" id="rp-recent"></div></div>'
         f'<div class="rp-timeline"><div class="rp-ticks">{_replay_ticks(battle, end)}</div>'
+        f'{_advantage(battle, end)}'
         f'<input type="range" id="rp-scrub" min="0" max="{end:.1f}" step="0.1" value="0" '
         'aria-label="Время боя"></div>'
         f'<div class="rp-controls">{controls}</div></div>'
-        f'<aside class="rp-side"><h3>Уничтожения</h3>{_feed_list(battle, linked=True)}{legend}'
-        '<p class="note">Пробел — пауза, ← → — на 5 секунд.</p></aside></div>'
-        f'<script type="application/json" id="replay-data">{embed_json(_replay_data(battle, geo))}'
+        f'<aside class="rp-side">{_focus_panel(battle)}<h3>Уничтожения</h3>'
+        f'{_feed_list(battle, linked=True)}{_legend(data["obj"])}'
+        '<p class="note">Пробел — пауза, ← → — на 5 секунд, Esc — снять выделение.</p>'
+        '</aside></div>'
+        f'<script type="application/json" id="replay-data">{embed_json(data)}'
         '</script></section>')
 
 
@@ -396,6 +551,7 @@ _CSS = """
 --body:"Inter",-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
 --mono:"JetBrains Mono",ui-monospace,Menlo,monospace}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 var(--body)}
 .wrap{max-width:1180px;margin:0 auto;padding:12px 16px 24px}
 .muted{color:var(--muted)}
@@ -480,12 +636,24 @@ border:1px solid var(--line);background:#06080A;outline:none;cursor:pointer}
 align-items:flex-end;pointer-events:none}
 .rp-recent div{font-size:12px;font-weight:600;background:rgba(11,14,17,.8);
 border:1px solid var(--line);border-radius:6px;padding:2px 7px;white-space:nowrap}
+.rp-hud{position:absolute;top:8px;left:8px;display:flex;flex-direction:column;gap:3px;
+align-items:flex-start;pointer-events:none}
+.rp-hud div{display:flex;align-items:baseline;gap:4px;font:700 13px var(--mono);
+background:rgba(11,14,17,.8);border:1px solid var(--line);border-radius:6px;padding:2px 8px;
+white-space:nowrap}
+.rp-hud .lbl{font:600 10px var(--body);color:var(--muted);text-transform:uppercase;
+letter-spacing:.5px;margin-right:3px}
+.rp-hud b.a{color:var(--ally)}.rp-hud b.e{color:var(--enemy)}
 .rp-timeline{margin-top:10px}
 .rp-ticks{position:relative;height:8px;margin:0 7px}
 .rp-ticks i{position:absolute;top:0;width:3px;height:8px;margin-left:-1px;border-radius:1px;
 background:var(--muted)}
 .rp-ticks i.a{background:var(--ally)}.rp-ticks i.e{background:var(--enemy)}
 .rp-ticks i.m{background:var(--me)}
+.rp-adv{display:block;width:calc(100% - 14px);height:16px;margin:3px 7px 0}
+.rp-adv line{stroke:rgba(255,255,255,.2);stroke-width:1}
+.rp-adv rect.h{fill:transparent}
+.rp-adv rect.a{fill:var(--ally);opacity:.75}.rp-adv rect.e{fill:var(--enemy);opacity:.75}
 #rp-scrub{width:100%;margin:2px 0 0;accent-color:var(--me)}
 .rp-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px}
 .rbtn{font:inherit;font-size:13px;color:var(--text);background:var(--panel2);
@@ -513,6 +681,24 @@ font-size:12px}
 .rp-legend .la{background:var(--ally)}.rp-legend .le{background:var(--enemy)}
 .rp-legend .lm{background:var(--me)}
 .rp-legend .lg{border:1.5px dashed var(--enemy)}
+.rp-legend svg{width:13px;height:13px;flex:none;fill:#C9CED3;stroke:#0B0E11;stroke-width:1}
+.rp-legend svg .cut,.rp-legend svg .pole{fill:none;stroke-width:1.5}
+.rp-legend svg .pole{stroke:#C9CED3}
+.rp-legend .lp{display:inline-block;width:14px;height:14px;border:1.5px solid #C9CED3;
+font:700 9px/11px var(--body);text-align:center;color:#C9CED3}
+.rp-focus{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+padding:10px 12px;margin-bottom:14px}
+.rp-focus .note{margin:0 0 8px}
+.rp-focus .rbtn{font-size:12px}
+.rc-head{display:flex;align-items:baseline;gap:6px;font-size:15px;font-weight:700}
+.rc-close{margin-left:auto;font:inherit;font-size:13px;color:var(--muted);background:none;
+border:0;cursor:pointer;padding:0 2px}
+.rc-close:hover{color:var(--text)}
+.rc-tank{color:var(--muted);font-size:12px;margin-top:2px}
+.rc-stats{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:8px;color:var(--muted);font-size:12px}
+.rc-stats b{font:700 15px var(--mono);color:var(--text)}
+.rc-fate{margin-top:6px;font-size:13px}
+.rc-fate a.t{color:inherit}
 @media(max-width:900px){.rp-grid{grid-template-columns:minmax(0,1fr)}
 .rp-side .feed{max-height:none}}
 details.tech{color:var(--muted);font-size:12px;margin:18px 0 6px}
@@ -531,9 +717,12 @@ document.querySelectorAll('time[data-ts]').forEach(function (el) {
 
 # The 2D replay. Tracks are decoded once (see replay.py for the delta coding),
 # then every frame draws: the minimap cropped to the view, the outside of the
-# playable border dimmed, trails, wrecks, "last seen" rings, live tanks (hull
-# heading as the nose), labels, and a ring where somebody just died. Strings
-# from the replay reach the page only through fillText and textContent.
+# playable border dimmed, the capture zones with their owners and progress,
+# trails, wrecks, "last seen" outlines, live tanks as the game's class marks
+# with a wedge for the hull heading, killer -> victim arrows, labels. A click
+# on a tank picks it: its whole route, the rest dimmed, its results beside
+# the map. Strings from the replay reach the page only through fillText and
+# textContent.
 _REPLAY_SCRIPT = r"""
 (function () {
   var dataEl = document.getElementById('replay-data');
@@ -548,16 +737,22 @@ _REPLAY_SCRIPT = r"""
   var playBtn = document.getElementById('rp-play');
   var timeEl = document.getElementById('rp-time');
   var recentEl = document.getElementById('rp-recent');
+  var aliveA = document.getElementById('rp-na'), aliveE = document.getElementById('rp-ne');
+  var scoreEl = document.getElementById('rp-score'), capEl = document.getElementById('rp-cap');
+  var hintEl = document.getElementById('rp-hint'), cardEl = document.getElementById('rp-card');
+  var bestBtn = document.getElementById('rp-best');
   var feed = Array.prototype.slice.call(card.querySelectorAll('.feed li[data-t]'));
   var COL = {m: '#E8C25A', a: '#7BBE7B', e: '#D86A5A'};
+  var RGB = {m: '232,194,90', a: '123,190,123', e: '216,106,90'};
   var TEXT = {m: '#F6DE94', a: '#BFE6BF', e: '#F4AEA2'};
-  var END = R.end, GAP = R.gap, TAU = Math.PI * 2, NOSE = Math.acos(1 / 1.75);
+  var INK = 'rgba(0,0,0,.75)', FONT = 'Inter, "Segoe UI", Roboto, sans-serif';
+  var END = R.end, GAP = R.gap, TAU = Math.PI * 2;
   function chosen(group) {  // the defaults are whichever buttons the page marked "on"
     var b = card.querySelector('.seg[data-group="' + group + '"] button.on');
     return b ? b.getAttribute('data-v') : null;
   }
   var speed = +chosen('speed') || 4, trail = +chosen('trail'), labels = chosen('label') || 'tank';
-  var cur = 0, playing = false, lastTs = 0, W = 1, H = 1, dpr = 1, recentSig = '';
+  var cur = 0, playing = false, lastTs = 0, W = 1, H = 1, dpr = 1, recentSig = '', focus = null;
 
   var byId = {}, V = [];
   R.vehicles.forEach(function (v) { byId[v.id] = v; });
@@ -579,6 +774,12 @@ _REPLAY_SCRIPT = r"""
   var ORDER = {e: 0, a: 1, m: 2};  // the recorder is drawn last, on top
   V.sort(function (a, b) { return ORDER[a.s] - ORDER[b.s]; });
 
+  var OBJ = R.obj, pointStates = {}, baseStates = {a: [], e: []};
+  if (OBJ) {
+    (OBJ.states || []).forEach(function (s) { (pointStates[s[1]] = pointStates[s[1]] || []).push(s); });
+    (OBJ.base || []).forEach(function (s) { if (baseStates[s[1]]) baseStates[s[1]].push(s); });
+  }
+
   var view = R.view;
   function px(x) { return (x - view[0]) / (view[2] - view[0]) * W; }
   function py(z) { return (view[3] - z) / (view[3] - view[1]) * H; }
@@ -590,6 +791,14 @@ _REPLAY_SCRIPT = r"""
     while (lo <= hi) {
       var mid = (lo + hi) >> 1;
       if (T[mid] <= t) { found = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return found;
+  }
+  function last(list, t) {  // the last [t, ...] row at or before t, or null
+    var lo = 0, hi = list.length - 1, found = null;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (list[mid][0] <= t) { found = list[mid]; lo = mid + 1; } else { hi = mid - 1; }
     }
     return found;
   }
@@ -625,24 +834,134 @@ _REPLAY_SCRIPT = r"""
     ctx.strokeRect(bx, by, bw, bh);
     ctx.restore();
   }
-  function drawTrail(v, s, t) {
-    if (!trail) return;
-    var T = v.T, stop = s && s.k === 'dead' ? at(T, v.d + 0.25) : at(T, t);
-    var j = trail > 0 ? Math.max(0, at(T, t - trail)) : 0;
-    if (stop < 0 || stop <= j && !(s && s.k === 'live')) return;
-    ctx.save();
-    ctx.strokeStyle = COL[v.s]; ctx.globalAlpha = v.s === 'm' ? .9 : .55;
-    ctx.lineWidth = (v.s === 'm' ? 2.2 : 1.5) * dpr; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+
+  function flag(x, y) {  // the Encounter base
+    var u = dpr;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(x - 3 * u, y + 7 * u); ctx.lineTo(x - 3 * u, y - 7 * u);
+    ctx.strokeStyle = INK; ctx.lineWidth = 3.4 * u; ctx.stroke();
+    ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 1.6 * u; ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x - 3 * u, y - 7 * u); ctx.lineTo(x + 6 * u, y - 4 * u);
+    ctx.lineTo(x - 3 * u, y - u); ctx.closePath();
+    ctx.fillStyle = '#FFFFFF'; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = 1.2 * u; ctx.stroke();
+  }
+  function badge(x, y, text, owner) {  // a Supremacy point: its letter, filled with the owner's colour
+    var b = 7.5 * dpr;
+    ctx.fillStyle = owner ? COL[owner] : 'rgba(14,17,20,.85)';
+    ctx.fillRect(x - b, y - b, 2 * b, 2 * b);
+    ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.lineWidth = 1.4 * dpr;
+    ctx.strokeRect(x - b, y - b, 2 * b, 2 * b);
+    ctx.fillStyle = owner ? '#0B0E11' : '#FFFFFF';
+    ctx.font = '700 ' + Math.round(11 * dpr) + 'px ' + FONT;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, x, y + 0.5 * dpr);
+  }
+  function drawZones(t) {
+    if (!OBJ) return;
+    var scale = W / (view[2] - view[0]);
+    OBJ.zones.forEach(function (zone) {
+      var x = px(zone.x), y = py(zone.z), r = zone.r * scale, owner = '', caps = [];
+      if (OBJ.kind === 'points') {
+        var s = last(pointStates[zone.id] || [], t);
+        if (s) { owner = s[2]; if (s[3] && s[4] > 0) caps.push([s[3], s[4]]); }
+      } else {
+        ['a', 'e'].forEach(function (side) {
+          var s = last(baseStates[side], t);
+          if (s && s[2] > 0) caps.push([side, s[2]]);
+        });
+      }
+      ctx.save();
+      ctx.beginPath(); ctx.arc(x, y, r, 0, TAU);
+      ctx.fillStyle = owner ? 'rgba(' + RGB[owner] + ',.22)' : 'rgba(255,255,255,.1)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,.45)'; ctx.lineWidth = 3.5 * dpr; ctx.stroke();  // shows on pale maps
+      ctx.lineWidth = 1.6 * dpr;
+      ctx.strokeStyle = owner ? COL[owner] : 'rgba(255,255,255,.85)';
+      if (!owner) ctx.setLineDash([4 * dpr, 3 * dpr]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      caps.forEach(function (c, i) {  // capture progress, clockwise from the top
+        ctx.beginPath();
+        ctx.arc(x, y, r - i * 5 * dpr, -Math.PI / 2, -Math.PI / 2 + TAU * Math.min(c[1], 100) / 100);
+        ctx.strokeStyle = COL[c[0]]; ctx.lineWidth = 4 * dpr; ctx.stroke();
+      });
+      if (OBJ.kind === 'points') badge(x, y, zone.l, owner); else flag(x, y);
+      ctx.restore();
+    });
+  }
+
+  function path(v, from, to) {  // a stretch of track, broken where the vehicle was unseen
+    var T = v.T, pen = false;
     ctx.beginPath();
-    var pen = false;
-    for (var k = j; k <= stop; k++) {
-      if (k > j && T[k] - T[k - 1] > GAP) pen = false;  // unseen stretch: no line
+    for (var k = from; k <= to; k++) {
+      if (k > from && T[k] - T[k - 1] > GAP) pen = false;
       if (pen) ctx.lineTo(px(v.X[k]), py(v.Z[k]));
       else { ctx.moveTo(px(v.X[k]), py(v.Z[k])); pen = true; }
     }
-    if (pen && s && s.k === 'live') ctx.lineTo(px(s.x), py(s.z));
-    ctx.stroke();
+    return pen;
+  }
+  function drawTrail(v, s, t) {
+    var T = v.T, picked = v === focus, span = picked ? -1 : trail;
+    if (!span) return;
+    var dead = s && s.k === 'dead', stop = dead ? at(T, v.d + 0.25) : at(T, t);
+    var from = span > 0 ? Math.max(0, at(T, t - span)) : 0;
+    ctx.save();
+    ctx.strokeStyle = COL[v.s]; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    if (picked && !dead && stop + 1 < T.length) {  // where it goes next: faint dashes
+      path(v, Math.max(stop, 0), v.d !== null ? Math.max(0, at(T, v.d + 0.25)) : T.length - 1);
+      ctx.globalAlpha = .5; ctx.lineWidth = 1.6 * dpr; ctx.setLineDash([4 * dpr, 4 * dpr]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    if (stop >= 0 && (stop > from || (s && s.k === 'live'))) {
+      var pen = path(v, from, stop);
+      if (pen && s && s.k === 'live') ctx.lineTo(px(s.x), py(s.z));
+      ctx.globalAlpha = picked ? 1 : (v.s === 'm' ? .9 : .55) * (focus ? .3 : 1);
+      ctx.lineWidth = (picked ? 3 : v.s === 'm' ? 2.2 : 1.5) * dpr;
+      ctx.stroke();
+    }
     ctx.restore();
+  }
+
+  function shape(c, r) {  // the game's minimap class marks, centred on 0,0
+    ctx.beginPath();
+    if (c === 'TD') {
+      ctx.moveTo(-1.1 * r, -.8 * r); ctx.lineTo(1.1 * r, -.8 * r); ctx.lineTo(0, 1.1 * r); ctx.closePath();
+    } else if (c === 'LT' || c === 'MT' || c === 'HT') {
+      var d = 1.2 * r;
+      ctx.moveTo(0, -d); ctx.lineTo(d, 0); ctx.lineTo(0, d); ctx.lineTo(-d, 0); ctx.closePath();
+    } else if (c === 'SPG') {
+      ctx.rect(-.9 * r, -.9 * r, 1.8 * r, 1.8 * r);
+    } else {
+      ctx.arc(0, 0, r, 0, TAU);
+    }
+  }
+  function cuts(c, r) {  // MT: one cut across the diamond, HT: two -- along x + y = k
+    var n = c === 'MT' ? 1 : c === 'HT' ? 2 : 0, d = 1.2 * r;
+    if (!n) return;
+    ctx.save();
+    shape(c, r); ctx.clip();
+    ctx.beginPath();
+    for (var i = 0; i < n; i++) {
+      var k = n === 1 ? 0 : (i ? d : -d) / 3;
+      ctx.moveTo(2 * d, k - 2 * d); ctx.lineTo(-2 * d, k + 2 * d);
+    }
+    ctx.strokeStyle = INK; ctx.lineWidth = 1.3 * dpr; ctx.stroke();
+    ctx.restore();
+  }
+  function wedge(yaw, r, c) {  // hull heading: 0 = north, clockwise like the canvas
+    var o = 1.25 * r;
+    ctx.save();
+    ctx.rotate(yaw * Math.PI / 180);
+    ctx.beginPath();
+    ctx.moveTo(0, -o - 5 * dpr); ctx.lineTo(2.8 * dpr, -o - dpr); ctx.lineTo(-2.8 * dpr, -o - dpr);
+    ctx.closePath();
+    ctx.fillStyle = c; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = dpr; ctx.stroke();
+    ctx.restore();
+  }
+  function ring(radius, color, width) {
+    ctx.beginPath(); ctx.arc(0, 0, radius, 0, TAU);
+    ctx.strokeStyle = color; ctx.lineWidth = width * dpr; ctx.stroke();
   }
   function cross(r) {
     ctx.beginPath();
@@ -650,57 +969,92 @@ _REPLAY_SCRIPT = r"""
     ctx.stroke();
   }
   function drawTank(v, s) {
-    var r = (v.s === 'm' ? 6.5 : 5.5) * dpr, c = COL[v.s];
+    var r = (v.s === 'm' ? 6 : 5) * dpr, c = COL[v.s];
     ctx.save();
     ctx.translate(px(s.x), py(s.z));
+    ctx.globalAlpha = focus && v !== focus ? .3 : 1;
     if (s.k === 'dead') {
       ctx.lineCap = 'round';
       ctx.strokeStyle = 'rgba(0,0,0,.65)'; ctx.lineWidth = 4.5 * dpr; cross(r * .8);
       ctx.strokeStyle = c; ctx.lineWidth = 2.2 * dpr; cross(r * .8);
     } else if (s.k === 'ghost') {
-      ctx.globalAlpha = Math.max(.3, .85 - s.age / 60);
+      ctx.globalAlpha *= Math.max(.3, .85 - s.age / 60);
       ctx.setLineDash([2.5 * dpr, 2 * dpr]);
-      ctx.strokeStyle = c; ctx.lineWidth = 1.6 * dpr;
-      ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.stroke();
+      shape(v.c, r); ctx.strokeStyle = c; ctx.lineWidth = 1.6 * dpr; ctx.stroke();
+      ctx.setLineDash([]);
     } else {
-      ctx.rotate(s.y * Math.PI / 180);  // 0 = north, clockwise -- canvas rotates clockwise too
-      ctx.beginPath();
-      ctx.moveTo(0, -1.75 * r);
-      ctx.arc(0, 0, r, -Math.PI / 2 + NOSE, -Math.PI / 2 - NOSE + TAU);
-      ctx.closePath();
-      ctx.fillStyle = c; ctx.fill();
-      ctx.strokeStyle = 'rgba(0,0,0,.75)'; ctx.lineWidth = 1.4 * dpr; ctx.stroke();
-      if (v.s === 'm') {
-        ctx.beginPath(); ctx.arc(0, 0, r + 3 * dpr, 0, TAU);
-        ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.lineWidth = 1.5 * dpr; ctx.stroke();
-      }
+      wedge(s.y, r, c);
+      shape(v.c, r); ctx.fillStyle = c; ctx.fill();
+      cuts(v.c, r);
+      shape(v.c, r); ctx.strokeStyle = INK; ctx.lineWidth = 1.3 * dpr; ctx.stroke();
+      if (v.s === 'm') ring(1.25 * r + 3.5 * dpr, 'rgba(255,255,255,.9)', 1.5);
+    }
+    if (v === focus) {
+      ctx.globalAlpha = 1;
+      ring(1.25 * r + 8 * dpr, 'rgba(0,0,0,.6)', 4);
+      ring(1.25 * r + 8 * dpr, '#FFFFFF', 2);
     }
     ctx.restore();
   }
   function drawLabel(v, s) {
-    if (labels === 'none') return;
-    var text = labels === 'nick' ? v.n : v.k;
+    var picked = v === focus;
+    if (labels === 'none' && !picked) return;
+    var text = picked || labels === 'nick' ? v.n : v.k;
     if (s.k === 'ghost') text += ' · ' + Math.round(s.age) + ' с';
-    var x = px(s.x), y = py(s.z) + (s.k === 'dead' ? 7 : 10) * dpr;
+    var x = px(s.x), y = py(s.z) + (picked ? 16 : s.k === 'dead' ? 7 : 10) * dpr;
     ctx.save();
-    ctx.font = '600 ' + Math.round(11 * dpr) + 'px Inter, "Segoe UI", Roboto, sans-serif';
+    ctx.font = '600 ' + Math.round(11 * dpr) + 'px ' + FONT;
     ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.lineJoin = 'round';
-    ctx.globalAlpha = s.k === 'live' ? 1 : .65;
+    ctx.globalAlpha = (s.k === 'live' || picked ? 1 : .65) * (focus && !picked ? .3 : 1);
     ctx.lineWidth = 3 * dpr; ctx.strokeStyle = 'rgba(0,0,0,.85)';
     ctx.strokeText(text, x, y);
-    ctx.fillStyle = s.k === 'dead' ? '#A2AAB3' : TEXT[v.s];
+    ctx.fillStyle = s.k === 'dead' && !picked ? '#A2AAB3' : TEXT[v.s];
     ctx.fillText(text, x, y);
     ctx.restore();
   }
-  function drawFlashes(t) {
+
+  function seen(v, t) {  // where a vehicle could be seen at t, or null
+    if (!v || !v.T) return null;
+    var s = state(v, t);
+    if (s && (s.k === 'live' || (s.k === 'dead' && t - v.d < 1.5))) return s;
+    return null;
+  }
+  function arrow(x0, y0, x1, y1, color) {  // from the killer to the victim, clear of both marks
+    var dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy);
+    if (len < 24 * dpr) return;
+    var ux = dx / len, uy = dy / len, hs = 7 * dpr;
+    var sx = x0 + ux * 9 * dpr, sy = y0 + uy * 9 * dpr, ex = x1 - ux * 11 * dpr, ey = y1 - uy * 11 * dpr;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex - ux * hs * .8, ey - uy * hs * .8);
+    ctx.strokeStyle = INK; ctx.lineWidth = 4 * dpr; ctx.stroke();
+    ctx.strokeStyle = color; ctx.lineWidth = 2 * dpr; ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(ex - ux * hs - uy * hs * .6, ey - uy * hs + ux * hs * .6);
+    ctx.lineTo(ex - ux * hs + uy * hs * .6, ey - uy * hs - ux * hs * .6);
+    ctx.closePath();
+    ctx.fillStyle = color; ctx.fill(); ctx.strokeStyle = INK; ctx.lineWidth = dpr; ctx.stroke();
+  }
+  function caption(text, x, y) {
+    ctx.font = '600 ' + Math.round(11 * dpr) + 'px ' + FONT;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.lineJoin = 'round';
+    ctx.lineWidth = 3 * dpr; ctx.strokeStyle = 'rgba(0,0,0,.85)'; ctx.strokeText(text, x, y);
+    ctx.fillStyle = '#E4E7EA'; ctx.fillText(text, x, y);
+  }
+  function drawKills(t) {  // the first two seconds after each kill
     R.kills.forEach(function (k) {
-      var age = t - k.t, v = byId[k.v];
-      if (age < 0 || age > 1.5 || !v || !v.T) return;
-      var s = state(v, k.t + 0.05);
-      if (!s) return;
+      var age = t - k.t, victim = byId[k.v];
+      if (age < 0 || age > 2 || !victim || !victim.T) return;
+      var vs = state(victim, k.t + 0.05);
+      if (!vs) return;
+      var x = px(vs.x), y = py(vs.z), killer = k.k !== k.v ? byId[k.k] : null, ks = seen(killer, k.t);
       ctx.save();
-      ctx.globalAlpha = 1 - age / 1.5; ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 2 * dpr;
-      ctx.beginPath(); ctx.arc(px(s.x), py(s.z), (8 + age * 22) * dpr, 0, TAU); ctx.stroke();
+      ctx.globalAlpha = 1 - age / 2;
+      if (ks) arrow(px(ks.x), py(ks.z), x, y, COL[killer.s]);
+      else if (killer && killer.s === 'e') caption('стрелок не в засвете', x, y - 12 * dpr);
+      ctx.globalAlpha = Math.max(0, 1 - age / 1.5);
+      ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 2 * dpr;
+      ctx.beginPath(); ctx.arc(x, y, (8 + age * 22) * dpr, 0, TAU); ctx.stroke();
       ctx.restore();
     });
   }
@@ -708,25 +1062,31 @@ _REPLAY_SCRIPT = r"""
   function render() {
     ctx.clearRect(0, 0, W, H);
     drawMap();
+    drawZones(cur);
     var states = V.map(function (v) { return state(v, cur); });
     V.forEach(function (v, i) { drawTrail(v, states[i], cur); });
     ['dead', 'ghost', 'live'].forEach(function (kind) {
-      V.forEach(function (v, i) { if (states[i] && states[i].k === kind) drawTank(v, states[i]); });
+      V.forEach(function (v, i) {
+        if (v !== focus && states[i] && states[i].k === kind) drawTank(v, states[i]);
+      });
     });
+    var f = focus ? V.indexOf(focus) : -1;
+    if (f >= 0 && states[f]) drawTank(focus, states[f]);  // the picked tank on top
     V.forEach(function (v, i) { if (states[i]) drawLabel(v, states[i]); });
-    drawFlashes(cur);
+    drawKills(cur);  // over the labels: it only lasts two seconds
   }
 
   function fmt(t) {
     t = Math.max(0, Math.floor(t));
     return Math.floor(t / 60) + ':' + ('0' + t % 60).slice(-2);
   }
-  function who(v) {
-    var span = document.createElement('span');
-    span.className = v ? v.s : 'muted';
-    span.textContent = v ? (labels === 'nick' ? v.n : v.k) : '—';
-    return span;
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
   }
+  function who(v) { return el('span', v ? v.s : 'muted', v ? (labels === 'nick' ? v.n : v.k) : '—'); }
   function showRecent(t) {
     var list = R.kills.filter(function (k) { return k.t <= t && t - k.t <= 12; }).slice(-5).reverse();
     var sig = labels + list.map(function (k) { return k.t + ':' + k.v; }).join('|');
@@ -734,23 +1094,116 @@ _REPLAY_SCRIPT = r"""
     recentSig = sig;
     recentEl.textContent = '';
     list.forEach(function (k) {
-      var row = document.createElement('div');
+      var row = el('div');
       row.appendChild(who(byId[k.k]));
       row.appendChild(document.createTextNode(' ✕ '));
       row.appendChild(who(byId[k.v]));
       recentEl.appendChild(row);
     });
   }
+  function showBoard(t) {
+    var na = 0, ne = 0;
+    R.vehicles.forEach(function (v) {
+      if (v.d === null || t < v.d) { if (v.s === 'e') ne++; else na++; }
+    });
+    aliveA.textContent = na; aliveE.textContent = ne;
+    if (scoreEl) {
+      var s = last(OBJ.score, t), b = scoreEl.getElementsByTagName('b');
+      b[0].textContent = s && s[1] !== null ? s[1] : '—';
+      b[1].textContent = s && s[2] !== null ? s[2] : '—';
+    }
+    if (capEl) {
+      var caps = [];
+      ['a', 'e'].forEach(function (side) {
+        var c = last(baseStates[side], t);
+        if (c && c[2] > 0) caps.push([side, c[2]]);
+      });
+      capEl.hidden = !caps.length;
+      if (caps.length) {  // both sides at once is rare; the map shows both arcs
+        caps.sort(function (a, b) { return b[1] - a[1]; });
+        var label = capEl.getElementsByTagName('b')[0];
+        label.className = caps[0][0];
+        label.textContent = Math.min(caps[0][1], 100) + '%';
+      }
+    }
+  }
+  function num(n) { return n === null || n === undefined ? '—' : Math.round(n).toLocaleString('ru-RU'); }
+  function showCard() {
+    hintEl.hidden = !!focus;
+    cardEl.hidden = !focus;
+    cardEl.textContent = '';
+    if (!focus) return;
+    var v = focus, head = el('div', 'rc-head');
+    head.appendChild(el('span', v.s, v.n));
+    if (v.cl) head.appendChild(el('span', 'clan', '[' + v.cl + ']'));
+    var close = el('button', 'rc-close', '✕');
+    close.type = 'button'; close.title = 'Снять выделение (Esc)';
+    close.addEventListener('click', function () { pick(null); });
+    head.appendChild(close);
+    cardEl.appendChild(head);
+    cardEl.appendChild(el('div', 'rc-tank', v.tn + (v.tk ? ' · ' + v.tk : '')));
+    if (v.r) {
+      var stats = el('div', 'rc-stats');
+      [[v.r.dmg, 'урон'], [v.r.fr, 'фраги'], [v.r.as, 'помощь'], [v.r.bl, 'блок']].forEach(function (p) {
+        var item = el('span');
+        item.appendChild(el('b', null, num(p[0])));
+        item.appendChild(document.createTextNode(' ' + p[1]));
+        stats.appendChild(item);
+      });
+      cardEl.appendChild(stats);
+    }
+    var fate = el('div', 'rc-fate');
+    if (v.d !== null) {
+      fate.appendChild(document.createTextNode('Уничтожен на '));
+      var link = el('a', 't', fmt(v.d));
+      link.href = '#t=' + Math.max(0, Math.floor(v.d - 5));
+      fate.appendChild(link);
+      var killer = byId[v.kid];
+      if (killer && killer !== v) {
+        fate.appendChild(document.createTextNode(' — '));
+        fate.appendChild(el('span', killer.s, killer.n));
+      }
+    } else if (v.r && v.r.hp > 0) {
+      fate.textContent = 'Выжил: ' + num(v.r.hp) + (v.r.mhp ? ' из ' + num(v.r.mhp) : '') + ' HP';
+    } else if (v.r) {
+      fate.textContent = 'Уничтожен уже после конца записи';
+    } else {
+      fate.textContent = 'В строю на конец записи';
+    }
+    cardEl.appendChild(fate);
+    if (!v.T) cardEl.appendChild(el('p', 'note', 'Его ни разу не засветили — пути на карте нет.'));
+  }
   function draw() {
     render();
-    scrub.value = cur.toFixed(1);
-    timeEl.textContent = fmt(cur) + ' / ' + fmt(END);
+    var shown = Math.round(cur * 10) / 10;  // the slider's own rounding
+    scrub.value = shown.toFixed(1);
+    timeEl.textContent = fmt(shown) + ' / ' + fmt(END);
     feed.forEach(function (li) {
       var t = +li.getAttribute('data-t');
       li.classList.toggle('past', t <= cur);
       li.classList.toggle('now', t <= cur && cur - t <= 4);
     });
     showRecent(cur);
+    showBoard(cur);
+  }
+
+  function pick(v) {
+    focus = v || null;
+    showCard();
+    draw();
+  }
+  function hit(e) {  // the tank under the pointer, live ones first
+    var box = cv.getBoundingClientRect();
+    if (!box.width) return null;
+    var x = (e.clientX - box.left) * W / box.width, y = (e.clientY - box.top) * H / box.height;
+    var best = null, bestD = 16 * dpr;
+    V.forEach(function (v) {
+      var s = state(v, cur);
+      if (!s) return;
+      var d = Math.hypot(px(s.x) - x, py(s.z) - y) + (s.k === 'live' ? 0 : 6 * dpr);
+      if (d < bestD) { best = v; bestD = d; }
+    });
+    return best;
   }
 
   function setPlay() {
@@ -773,7 +1226,15 @@ _REPLAY_SCRIPT = r"""
   function seek(t) { cur = Math.max(0, Math.min(END, t)); draw(); }
 
   playBtn.addEventListener('click', function () { play(!playing); });
-  stage.addEventListener('click', function () { play(!playing); });
+  stage.addEventListener('click', function (e) {  // a tank picks it, anywhere else plays / pauses
+    var v = hit(e);
+    if (v) pick(v === focus ? null : v); else play(!playing);
+  });
+  stage.addEventListener('mousemove', function (e) {
+    var v = hit(e);
+    stage.title = v ? v.n + ' · ' + v.k : '';
+  });
+  if (bestBtn) bestBtn.addEventListener('click', function () { pick(byId[+bestBtn.getAttribute('data-id')]); });
   scrub.addEventListener('input', function () { seek(+scrub.value); });
   Array.prototype.forEach.call(card.querySelectorAll('.seg'), function (seg) {
     seg.addEventListener('click', function (e) {
@@ -793,6 +1254,7 @@ _REPLAY_SCRIPT = r"""
     if (e.key === ' ') { e.preventDefault(); play(!playing); }
     else if (e.key === 'ArrowLeft') { e.preventDefault(); seek(cur - 5); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); seek(cur + 5); }
+    else if (e.key === 'Escape' && focus) { pick(null); }
   });
 
   function fromHash(scroll) {

@@ -9,7 +9,9 @@ Joins three sources that overlap on purpose:
     final numbers of all 14 players (damage, shots, hp left, xp ...).
 
 The stream also gives every visible vehicle's position, which becomes the
-`replay` block -- the tracks of the 2D minimap replay (see replay.py).
+`replay` block -- the tracks of the 2D minimap replay (see replay.py) -- and
+the capture updates, which become `objectives`: who captured what and when,
+and the Supremacy score (see arena.py).
 
 Vehicles are keyed by entity id: a battle result's id IS the vehicle's entity
 id in the stream, so the sources join exactly, with no name matching. A broken
@@ -21,9 +23,12 @@ from . import arena, battle_results, gamedata, replay
 from .container import open_replay
 from .packets import positions, read_stream
 
-# 2: adds the `replay` block (vehicle tracks). Battles stored in an older
-# format are re-parsed when their replay is uploaded again (web/blitz.py).
-FORMAT = 2
+# 2: adds the `replay` block (vehicle tracks).
+# 3: adds `objectives` (base and point captures, the Supremacy score) and takes
+#    the mode of a battle without results from the stream.
+# Battles stored in an older format are re-parsed when their replay is
+# uploaded again (web/blitz.py).
+FORMAT = 3
 
 _STAT_FIELDS = ("damage", "kills", "shots", "hits", "penetrations", "assist",
                 "damage_received", "hits_received", "nonpen_received",
@@ -107,6 +112,31 @@ def _vehicles(meta, arena_info, results):
     return rows
 
 
+def _objectives(info, start):
+    """The capture updates in battle time, compact for storage, or None when
+    the stream has none:
+
+        base    [t, capturing team, capture points 0..100]   Encounter
+        points  [t, point id, owner, capturing team, progress %]   Supremacy
+        score   [t, team, victory points]   Supremacy; `goal` points win
+
+    Team 0 means nobody. Each base / point entry is the whole state from t on.
+    """
+    if start is None or not (info["base"] or info["points"] or info["score"]):
+        return None
+
+    def t(entry):
+        return round(entry["clock"] - start, 1)
+
+    return {
+        "goal": info["goal"],
+        "base": [[t(e), e["team"], e["points"]] for e in info["base"]],
+        "points": [[t(e), e["id"], e["owner"], e["capturer"], e["progress"]]
+                   for e in info["points"]],
+        "score": [[t(e), e["team"], e["points"]] for e in info["score"]],
+    }
+
+
 def build(meta, stream, arena_info, results, warnings=(), lang="ru"):
     rows = _vehicles(meta, arena_info, results)
     start = arena_info["battle_start"]
@@ -168,7 +198,7 @@ def build(meta, stream, arena_info, results, warnings=(), lang="ru"):
         winner = results["winner_team"]
         outcome = "draw" if not winner else ("win" if winner == author_team else "loss")
 
-    mode = results["mode"] if results else None
+    mode = results["mode"] if results else arena_info["mode"]
     end_clock = stream.end_clock if stream else None
     tracks = None
     if stream is not None and start is not None:
@@ -203,5 +233,6 @@ def build(meta, stream, arena_info, results, warnings=(), lang="ru"):
                    "victim": k["victim"], "killer": k["killer"]}
                   for k in arena_info["kills"]],
         "replay": tracks,
+        "objectives": _objectives(arena_info["objectives"], start),
         "warnings": list(warnings),
     }

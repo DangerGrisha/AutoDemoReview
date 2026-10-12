@@ -136,3 +136,56 @@ def test_a_battle_stored_before_the_2d_replay_asks_for_a_fresh_upload():
     assert "загрузите реплей заново" in page
     assert 'id="replay-data"' not in page and 'href="#t=' not in page
     assert "<h2>Уничтожения</h2>" in page         # the plain feed is back
+
+
+def test_the_replay_knows_each_tanks_class_and_the_supremacy_points():
+    b = _battle("v11_7_himmelsdorf_results.wotbreplay")
+    data = _replay_json(render_battle_html(b))
+    classes = {v["id"]: v["c"] for v in data["vehicles"]}
+    assert classes == {v["entity_id"]: v["tank"]["type"] for v in b["vehicles"]}
+    assert set(classes.values()) <= {"LT", "MT", "HT", "TD"}
+    obj = data["obj"]
+    assert obj["kind"] == "points" and [z["l"] for z in obj["zones"]] == ["A", "B", "C", "D"]
+    assert obj["states"] and all(s[2] in ("a", "e", "") and s[3] in ("a", "e", "")
+                                 for s in obj["states"])
+    assert obj["score"][0][1:] == [300, 300] and obj["goal"] == 1000
+    page = render_battle_html(b)
+    assert 'id="rp-score"' in page and 'id="rp-cap"' not in page
+
+
+def test_the_encounter_base_capture_is_shown_for_the_side_on_it():
+    b = _battle("v11_20_rift_base_capture.wotbreplay")
+    page = render_battle_html(b)
+    obj = _replay_json(page)["obj"]
+    assert obj["kind"] == "base" and len(obj["zones"]) == 1 and obj["zones"][0]["l"] == ""
+    assert {side for _t, side, value in obj["base"] if value > 0} == {"a"}  # an ally was on it
+    assert 'id="rp-cap"' in page and 'id="rp-score"' not in page
+
+
+def test_the_advantage_strip_counts_the_tanks_still_in_the_battle():
+    # Canyon: three allies fall at 1:18, 1:18 and 1:49 before the recording
+    # stops (2:04); the rest of the wipe happened after the recorder left.
+    page = render_battle_html(_battle())
+    strip = re.search(r'<svg class="rp-adv".*?</svg>', page, re.S).group(0)
+    counts = re.findall(r"(\d+:\d\d)–(\d+:\d\d): в строю (\d) : (\d)", strip)
+    assert counts == [("0:00", "1:18", "7", "7"), ("1:18", "1:18", "6", "7"),
+                      ("1:18", "1:49", "5", "7"), ("1:49", "2:04", "4", "7")]
+    assert 'class="e"' in strip and 'class="a"' not in strip  # never ahead in that battle
+
+
+def test_the_best_ally_button_picks_the_top_damage_teammate():
+    b = _battle()
+    best = max((v for v in b["vehicles"] if v["ally"]), key=lambda v: v["stats"]["damage"])
+    assert f'id="rp-best" data-id="{best["entity_id"]}"' in render_battle_html(b)
+    no_results = render_battle_html(_battle("v11_20_savanna_no_results.wotbreplay"))
+    assert 'id="rp-best"' not in no_results and 'id="rp-card"' in no_results
+
+
+def test_a_battle_stored_before_format_3_keeps_its_zones_without_history():
+    b = copy.deepcopy(_battle("v11_7_himmelsdorf_results.wotbreplay"))
+    b["format"] = 2
+    del b["objectives"]
+    page = render_battle_html(b)
+    obj = _replay_json(page)["obj"]
+    assert len(obj["zones"]) == 4 and obj["states"] == [] and obj["score"] == []
+    assert 'id="rp-score"' not in page

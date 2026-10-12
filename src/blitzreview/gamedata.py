@@ -26,6 +26,10 @@ CLASS_NAMES = {"LT": {"ru": "ЛТ", "en": "LT"},
 
 ROMAN = ("", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X")
 
+# Supremacy points by id, as the game's chat commands name them ("Двигаюсь в
+# точку A" ... "F").
+POINT_LETTERS = "ABCDEF"
+
 
 @lru_cache(maxsize=None)
 def _table(name, section):
@@ -96,6 +100,23 @@ def minimap(key, margin=0.04):
     vz0 = min(max((z0 + z1 - side) / 2, world[1]), world[3] - side)
     view = [round(v, 1) for v in (vx0, vz0, vx0 + side, vz0 + side)]
     return {"world": world, "crop": [int(v) for v in crop], "border": border, "view": view}
+
+
+def objectives(key, mode):
+    """The capture zones of a battle on map `key`: the Encounter base (mode 0)
+    or the Supremacy points (mode 1), as [{"id", "label", "x", "z", "r"}] in
+    world metres. The base has an empty label, points are A, B, C ... by id.
+    [] when the map, its zones or the mode are unknown."""
+    entry = _table("maps.json", "maps").get(key) if key else None
+    if not entry:
+        return []
+    if mode == 0 and entry.get("base"):
+        x, z, r = entry["base"]
+        return [{"id": 0, "label": "", "x": x, "z": z, "r": r}]
+    if mode == 1:
+        return [{"id": i, "label": POINT_LETTERS[i] if i < len(POINT_LETTERS) else str(i + 1),
+                 "x": x, "z": z, "r": r} for i, x, z, r in entry.get("points") or ()]
+    return []
 
 
 def mode_name(mode, lang="ru"):
