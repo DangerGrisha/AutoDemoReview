@@ -1,8 +1,20 @@
 {
  "maps": {
   "amigosville": {
+   "border": [
+    -256.3,
+    -271.0,
+    265.0,
+    252.3
+   ],
    "id": 5,
    "key": "amigosville",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -127,11 +139,30 @@
      ]
     ]
    },
-   "scene": "05_amigosville_am/05_amigosville_am.sc2"
+   "scene": "05_amigosville_am/05_amigosville_am.sc2",
+   "tag": "am1",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "amigosville_02": {
+   "border": [
+    -8.8,
+    -271.0,
+    265.0,
+    252.3
+   ],
    "id": 48,
    "key": "amigosville_02",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -199,11 +230,30 @@
      ]
     ]
    },
-   "scene": "05_amigosville_am/05_amigosville_am.sc2"
+   "scene": "05_amigosville_am/05_amigosville_am.sc2",
+   "tag": "am2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "amigosville_03": {
+   "border": [
+    -256.3,
+    -271.0,
+    17.0,
+    252.3
+   ],
    "id": 49,
    "key": "amigosville_03",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -271,11 +321,30 @@
      ]
     ]
    },
-   "scene": "05_amigosville_am/05_amigosville_am.sc2"
+   "scene": "05_amigosville_am/05_amigosville_am.sc2",
+   "tag": "am3",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "amigosville_old": {
+   "border": [
+    -250.0,
+    -250.3,
+    249.5,
+    251.0
+   ],
    "id": 85,
    "key": "amigosville_old",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -399,11 +468,29 @@
      ]
     ]
    },
-   "scene": "amigosville_old/amigosville_old.sc2"
+   "scene": "amigosville_old/amigosville_old.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "canal": {
+   "border": [
+    -269.0,
+    -263.0,
+    264.0,
+    263.4
+   ],
    "id": 21,
    "key": "canal",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -528,11 +615,30 @@
      ]
     ]
    },
-   "scene": "18_canal_cn/18_canal_cn.sc2"
+   "scene": "18_canal_cn/18_canal_cn.sc2",
+   "tag": "cn0",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "canal_01": {
+   "border": [
+    -269.0,
+    -137.4,
+    103.0,
+    263.4
+   ],
    "id": 56,
    "key": "canal_01",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -600,11 +706,30 @@
      ]
     ]
    },
-   "scene": "18_canal_cn/18_canal_cn.sc2"
+   "scene": "18_canal_cn/18_canal_cn.sc2",
+   "tag": "cn1",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "canyon": {
+   "border": [
+    -264.6,
+    -264.1,
+    264.0,
+    264.1
+   ],
    "id": 27,
    "key": "canyon",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -729,11 +854,29 @@
      ]
     ]
    },
-   "scene": "25_canyon_ca/25_canyon_ca.sc2"
+   "scene": "25_canyon_ca/25_canyon_ca.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "desert_train": {
+   "border": [
+    -256.0,
+    -251.0,
+    260.0,
+    254.3
+   ],
    "id": 2,
    "key": "desert_train",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -858,11 +1001,30 @@
      ]
     ]
    },
-   "scene": "02_desert_train_dt/02_desert_train_dt.sc2"
+   "scene": "02_desert_train_dt/02_desert_train_dt.sc2",
+   "tag": "dt1",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "desert_train_02": {
+   "border": [
+    52.5,
+    -251.0,
+    260.0,
+    254.3
+   ],
    "id": 44,
    "key": "desert_train_02",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -930,11 +1092,30 @@
      ]
     ]
    },
-   "scene": "02_desert_train_dt/02_desert_train_dt.sc2"
+   "scene": "02_desert_train_dt/02_desert_train_dt.sc2",
+   "tag": "dt2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "desert_train_03": {
+   "border": [
+    -256.0,
+    -251.0,
+    40.6,
+    254.3
+   ],
    "id": 45,
    "key": "desert_train_03",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -1002,11 +1183,30 @@
      ]
     ]
    },
-   "scene": "02_desert_train_dt/02_desert_train_dt.sc2"
+   "scene": "02_desert_train_dt/02_desert_train_dt.sc2",
+   "tag": "dt3",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "erlenberg": {
+   "border": [
+    -237.3,
+    -237.0,
+    238.8,
+    250.2
+   ],
    "id": 3,
    "key": "erlenberg",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -1131,11 +1331,30 @@
      ]
     ]
    },
-   "scene": "03_erlenberg_er/03_erlenberg_er.sc2"
+   "scene": "03_erlenberg_er/03_erlenberg_er.sc2",
+   "tag": "er0",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "erlenberg_01": {
+   "border": [
+    -237.4,
+    -237.0,
+    35.8,
+    250.3
+   ],
    "id": 54,
    "key": "erlenberg_01",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -1203,11 +1422,30 @@
      ]
     ]
    },
-   "scene": "03_erlenberg_er/03_erlenberg_er.sc2"
+   "scene": "03_erlenberg_er/03_erlenberg_er.sc2",
+   "tag": "er1",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "erlenberg_02": {
+   "border": [
+    35.8,
+    -237.0,
+    238.8,
+    250.3
+   ],
    "id": 55,
    "key": "erlenberg_02",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -1275,11 +1513,30 @@
      ]
     ]
    },
-   "scene": "03_erlenberg_er/03_erlenberg_er.sc2"
+   "scene": "03_erlenberg_er/03_erlenberg_er.sc2",
+   "tag": "er2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "erlenberg_old": {
+   "border": [
+    -212.8,
+    -239.8,
+    223.6,
+    250.8
+   ],
    "id": 83,
    "key": "erlenberg_old",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -1403,11 +1660,29 @@
      ]
     ]
    },
-   "scene": "erlenberg_old/erlenberg_old.sc2"
+   "scene": "erlenberg_old/erlenberg_old.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "faust": {
+   "border": [
+    -249.6,
+    -249.1,
+    249.0,
+    249.7
+   ],
    "id": 39,
    "key": "faust",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -1532,11 +1807,29 @@
      ]
     ]
    },
-   "scene": "32_faust_fa_night/32_faust_fa_night.sc2"
+   "scene": "32_faust_fa_night/32_faust_fa_night.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "forgecity": {
+   "border": [
+    -237.0,
+    -244.2,
+    269.4,
+    253.4
+   ],
    "id": 40,
    "key": "forgecity",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -1661,11 +1954,29 @@
      ]
     ]
    },
-   "scene": "34_forgecity_fc/34_forgecity_fc.sc2"
+   "scene": "34_forgecity_fc/34_forgecity_fc.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "fort": {
+   "border": [
+    -231.3,
+    -234.9,
+    231.2,
+    235.2
+   ],
    "id": 8,
    "key": "fort",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -1790,11 +2101,29 @@
      ]
     ]
    },
-   "scene": "07_fort_ft/07_fort_ft.sc2"
+   "scene": "07_fort_ft/07_fort_ft.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "grossberg": {
+   "border": [
+    -249.9,
+    -250.0,
+    259.9,
+    253.2
+   ],
    "id": 31,
    "key": "grossberg",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -1919,11 +2248,29 @@
      ]
     ]
    },
-   "scene": "30_grossberg_sh/30_grossberg_sh.sc2"
+   "scene": "30_grossberg_sh/30_grossberg_sh.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "himmelsdorf": {
+   "border": [
+    -259.1,
+    -260.8,
+    182.9,
+    255.1
+   ],
    "id": 9,
    "key": "himmelsdorf",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -2048,11 +2395,29 @@
      ]
     ]
    },
-   "scene": "19_himmelsdorf_hm/19_himmelsdorf_hm.sc2"
+   "scene": "19_himmelsdorf_hm/19_himmelsdorf_hm.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "holland": {
+   "border": [
+    -255.5,
+    -260.0,
+    263.1,
+    266.9
+   ],
    "id": 14,
    "key": "holland",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -2177,11 +2542,29 @@
      ]
     ]
    },
-   "scene": "16_holland_hl/16_holland_hl.sc2"
+   "scene": "16_holland_hl/16_holland_hl.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "holmeisk": {
+   "border": [
+    -249.8,
+    -249.9,
+    250.2,
+    250.1
+   ],
    "id": 71,
    "key": "holmeisk",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -2306,11 +2689,29 @@
      ]
     ]
    },
-   "scene": "26_holmeisk_hk/26_holmeisk_hk.sc2"
+   "scene": "26_holmeisk_hk/26_holmeisk_hk.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "iceworld": {
+   "border": [
+    -247.0,
+    -245.0,
+    243.0,
+    247.0
+   ],
    "id": 72,
    "key": "iceworld",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -2434,11 +2835,29 @@
      ]
     ]
    },
-   "scene": "41_iceworld_ic/41_iceworld_ic.sc2"
+   "scene": "41_iceworld_ic/41_iceworld_ic.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "idle": {
+   "border": [
+    -270.0,
+    -267.0,
+    261.8,
+    257.0
+   ],
    "id": 13,
    "key": "idle",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -2563,11 +2982,29 @@
      ]
     ]
    },
-   "scene": "08_idle_id/08_idle_id.sc2"
+   "scene": "08_idle_id/08_idle_id.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "italy": {
+   "border": [
+    -249.8,
+    -249.3,
+    249.6,
+    249.8
+   ],
    "id": 23,
    "key": "italy",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -2692,11 +3129,29 @@
      ]
     ]
    },
-   "scene": "22_italy_it/22_italy_it.sc2"
+   "scene": "22_italy_it/22_italy_it.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "karelia": {
+   "border": [
+    -261.2,
+    -263.1,
+    266.6,
+    264.4
+   ],
    "id": 1,
    "key": "karelia",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -2821,11 +3276,29 @@
      ]
     ]
    },
-   "scene": "17_karelia_ka/17_karelia_ka.sc2"
+   "scene": "17_karelia_ka/17_karelia_ka.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "karieri": {
+   "border": [
+    -230.6,
+    -186.9,
+    249.5,
+    223.4
+   ],
    "id": 4,
    "key": "karieri",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -2950,11 +3423,29 @@
      ]
     ]
    },
-   "scene": "23_karieri_kr/23_karieri_kr.sc2"
+   "scene": "23_karieri_kr/23_karieri_kr.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "lagoon": {
+   "border": [
+    -270.0,
+    -260.0,
+    260.0,
+    270.0
+   ],
    "id": 26,
    "key": "lagoon",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -3079,11 +3570,29 @@
      ]
     ]
    },
-   "scene": "15_lagoon_ln/15_lagoon_ln.sc2"
+   "scene": "15_lagoon_ln/15_lagoon_ln.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "lumber": {
+   "border": [
+    -253.3,
+    -253.5,
+    253.2,
+    253.2
+   ],
    "id": 38,
    "key": "lumber",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -3208,11 +3717,30 @@
      ]
     ]
    },
-   "scene": "31_lumber_lm/31_lumber_lm.sc2"
+   "scene": "31_lumber_lm/31_lumber_lm.sc2",
+   "tag": "lm0",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "lumber_01": {
+   "border": [
+    -92.1,
+    -253.5,
+    253.2,
+    77.0
+   ],
    "id": 57,
    "key": "lumber_01",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -3280,11 +3808,30 @@
      ]
     ]
    },
-   "scene": "31_lumber_lm/31_lumber_lm.sc2"
+   "scene": "31_lumber_lm/31_lumber_lm.sc2",
+   "tag": "lm1",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "malinovka": {
+   "border": [
+    -267.7,
+    -269.5,
+    267.4,
+    272.0
+   ],
    "id": 19,
    "key": "malinovka",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -3409,11 +3956,29 @@
      ]
     ]
    },
-   "scene": "12_malinovka_ma/12_malinovka_ma.sc2"
+   "scene": "12_malinovka_ma/12_malinovka_ma.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "medvedkovo": {
+   "border": [
+    -263.5,
+    -263.6,
+    264.2,
+    264.2
+   ],
    "id": 7,
    "key": "medvedkovo",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -3538,11 +4103,30 @@
      ]
     ]
    },
-   "scene": "04_medvedkovo_md/04_medvedkovo_md.sc2"
+   "scene": "04_medvedkovo_md/04_medvedkovo_md.sc2",
+   "tag": "md1",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "medvedkovo_02": {
+   "border": [
+    -263.5,
+    -263.6,
+    25.5,
+    264.2
+   ],
    "id": 46,
    "key": "medvedkovo_02",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -3610,11 +4194,30 @@
      ]
     ]
    },
-   "scene": "04_medvedkovo_md/04_medvedkovo_md.sc2"
+   "scene": "04_medvedkovo_md/04_medvedkovo_md.sc2",
+   "tag": "md2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "medvedkovo_03": {
+   "border": [
+    32.0,
+    -263.6,
+    264.2,
+    264.2
+   ],
    "id": 47,
    "key": "medvedkovo_03",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -3682,11 +4285,30 @@
      ]
     ]
    },
-   "scene": "04_medvedkovo_md/04_medvedkovo_md.sc2"
+   "scene": "04_medvedkovo_md/04_medvedkovo_md.sc2",
+   "tag": "md3",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "milbase": {
+   "border": [
+    -263.7,
+    -263.7,
+    264.2,
+    263.7
+   ],
    "id": 25,
    "key": "milbase",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -3811,11 +4433,30 @@
      ]
     ]
    },
-   "scene": "24_milibase_mlb/24_milibase_mlb.sc2"
+   "scene": "24_milibase_mlb/24_milibase_mlb.sc2",
+   "tag": "mlb1",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "milbase_02": {
+   "border": [
+    -263.7,
+    -263.7,
+    -2.1,
+    263.7
+   ],
    "id": 50,
    "key": "milbase_02",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -3883,11 +4524,30 @@
      ]
     ]
    },
-   "scene": "24_milibase_mlb/24_milibase_mlb.sc2"
+   "scene": "24_milibase_mlb/24_milibase_mlb.sc2",
+   "tag": "mlb2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "milbase_03": {
+   "border": [
+    38.3,
+    -263.7,
+    264.2,
+    263.6
+   ],
    "id": 51,
    "key": "milbase_03",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -3955,11 +4615,30 @@
      ]
     ]
    },
-   "scene": "24_milibase_mlb/24_milibase_mlb.sc2"
+   "scene": "24_milibase_mlb/24_milibase_mlb.sc2",
+   "tag": "mlb3",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "milbase_04": {
+   "border": [
+    -263.7,
+    -150.5,
+    264.2,
+    134.2
+   ],
    "id": 52,
    "key": "milbase_04",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -4027,11 +4706,30 @@
      ]
     ]
    },
-   "scene": "24_milibase_mlb/24_milibase_mlb.sc2"
+   "scene": "24_milibase_mlb/24_milibase_mlb.sc2",
+   "tag": "mlb4",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "milbase_05": {
+   "border": [
+    -263.7,
+    -150.5,
+    202.6,
+    220.6
+   ],
    "id": 53,
    "key": "milbase_05",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -4099,11 +4797,30 @@
      ]
     ]
    },
-   "scene": "24_milibase_mlb/24_milibase_mlb.sc2"
+   "scene": "24_milibase_mlb/24_milibase_mlb.sc2",
+   "tag": "mlb5",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "moon": {
+   "border": [
+    -249.0,
+    -243.8,
+    249.1,
+    240.0
+   ],
    "id": 70,
    "key": "moon",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -4227,11 +4944,29 @@
      ]
     ]
    },
-   "scene": "40_moon_mn/40_moon_mn.sc2"
+   "scene": "40_moon_mn/40_moon_mn.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "mountain": {
+   "border": [
+    -256.2,
+    -277.8,
+    272.2,
+    254.4
+   ],
    "id": 10,
    "key": "mountain",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -4356,11 +5091,29 @@
      ]
     ]
    },
-   "scene": "21_mountain_mnt/21_mountain_mnt.sc2"
+   "scene": "21_mountain_mnt/21_mountain_mnt.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "neptune": {
+   "border": [
+    -287.0,
+    -275.4,
+    274.0,
+    276.6
+   ],
    "id": 42,
    "key": "neptune",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -4485,11 +5238,30 @@
      ]
     ]
    },
-   "scene": "33_neptune_nt/33_neptune_nt.sc2"
+   "scene": "33_neptune_nt/33_neptune_nt.sc2",
+   "tag": "nt0",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "neptune_01": {
+   "border": [
+    6.7,
+    -275.4,
+    274.0,
+    276.6
+   ],
    "id": 58,
    "key": "neptune_01",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -4557,11 +5329,30 @@
      ]
     ]
    },
-   "scene": "33_neptune_nt/33_neptune_nt.sc2"
+   "scene": "33_neptune_nt/33_neptune_nt.sc2",
+   "tag": "nt1",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "neptune_02": {
+   "border": [
+    -281.9,
+    -275.4,
+    13.0,
+    276.6
+   ],
    "id": 59,
    "key": "neptune_02",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -4629,11 +5420,30 @@
      ]
     ]
    },
-   "scene": "33_neptune_nt/33_neptune_nt.sc2"
+   "scene": "33_neptune_nt/33_neptune_nt.sc2",
+   "tag": "nt2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "plant": {
+   "border": [
+    -259.0,
+    -263.1,
+    266.7,
+    264.6
+   ],
    "id": 12,
    "key": "plant",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -4758,11 +5568,29 @@
      ]
     ]
    },
-   "scene": "11_plant_pn/11_plant_pn.sc2"
+   "scene": "11_plant_pn/11_plant_pn.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "pliego": {
+   "border": [
+    -260.1,
+    -257.2,
+    256.6,
+    246.9
+   ],
    "id": 20,
    "key": "pliego",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -4887,11 +5715,29 @@
      ]
     ]
    },
-   "scene": "13_pliego_pl/13_pliego_pl.sc2"
+   "scene": "13_pliego_pl/13_pliego_pl.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "port": {
+   "border": [
+    -268.3,
+    -270.1,
+    267.4,
+    270.4
+   ],
    "id": 15,
    "key": "port",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -5016,11 +5862,29 @@
      ]
     ]
    },
-   "scene": "14_port_pt/14_port_pt.sc2"
+   "scene": "14_port_pt/14_port_pt.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "rift": {
+   "border": [
+    -260.6,
+    -262.4,
+    266.5,
+    264.1
+   ],
    "id": 43,
    "key": "rift",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -5145,11 +6009,29 @@
      ]
     ]
    },
-   "scene": "35_rift_rt/35_rift_rt.sc2"
+   "scene": "35_rift_rt/35_rift_rt.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "rock": {
+   "border": [
+    -265.6,
+    -266.4,
+    266.1,
+    267.1
+   ],
    "id": 30,
    "key": "rock",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -5274,11 +6156,29 @@
      ]
     ]
    },
-   "scene": "28_rock_rc/28_rock_rc.sc2"
+   "scene": "28_rock_rc/28_rock_rc.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "rudniki": {
+   "border": [
+    -239.9,
+    -239.8,
+    234.5,
+    247.8
+   ],
    "id": 6,
    "key": "rudniki",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -5402,11 +6302,30 @@
      ]
     ]
    },
-   "scene": "06_rudniki_rd/06_rudniki_rd.sc2"
+   "scene": "06_rudniki_rd/06_rudniki_rd.sc2",
+   "tag": "rd0",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "rudniki_01": {
+   "border": [
+    -96.7,
+    -239.8,
+    62.0,
+    247.8
+   ],
    "id": 60,
    "key": "rudniki_01",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -5458,11 +6377,30 @@
      ]
     ]
    },
-   "scene": "06_rudniki_rd/06_rudniki_rd.sc2"
+   "scene": "06_rudniki_rd/06_rudniki_rd.sc2",
+   "tag": "rd1",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "rudniki_02": {
+   "border": [
+    14.0,
+    -147.0,
+    234.5,
+    247.8
+   ],
    "id": 61,
    "key": "rudniki_02",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -5514,11 +6452,30 @@
      ]
     ]
    },
-   "scene": "06_rudniki_rd/06_rudniki_rd.sc2"
+   "scene": "06_rudniki_rd/06_rudniki_rd.sc2",
+   "tag": "rd2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "rudniki_03": {
+   "border": [
+    -96.7,
+    -239.8,
+    234.5,
+    247.8
+   ],
    "id": 62,
    "key": "rudniki_03",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -5642,11 +6599,30 @@
      ]
     ]
    },
-   "scene": "06_rudniki_rd/06_rudniki_rd.sc2"
+   "scene": "06_rudniki_rd/06_rudniki_rd.sc2",
+   "tag": "rd3",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "savanna": {
+   "border": [
+    -272.0,
+    -266.6,
+    263.4,
+    270.0
+   ],
    "id": 11,
    "key": "savanna",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -5771,11 +6747,29 @@
      ]
     ]
    },
-   "scene": "09_savanna_sv/09_savanna_sv.sc2"
+   "scene": "09_savanna_sv/09_savanna_sv.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "savanna_old": {
+   "border": [
+    -262.5,
+    -274.7,
+    264.7,
+    264.0
+   ],
    "id": 89,
    "key": "savanna_old",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0
    ],
@@ -5899,11 +6893,29 @@
      ]
     ]
    },
-   "scene": "savanna_old/savanna_old.sc2"
+   "scene": "savanna_old/savanna_old.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   },
   "skit": {
+   "border": [
+    -265.1,
+    -260.7,
+    257.7,
+    261.8
+   ],
    "id": 35,
    "key": "skit",
+   "minimap_crop": [
+    0,
+    0,
+    505,
+    505
+   ],
    "modes": [
     0,
     1
@@ -6028,7 +7040,13 @@
      ]
     ]
    },
-   "scene": "29_skit_sk/29_skit_sk.sc2"
+   "scene": "29_skit_sk/29_skit_sk.sc2",
+   "world": [
+    -300.0,
+    -300.0,
+    300.0,
+    300.0
+   ]
   }
  },
  "source": {

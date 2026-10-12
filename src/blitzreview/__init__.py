@@ -11,8 +11,12 @@ Pipeline (each step is a plain function over bytes/dicts, testable alone):
     battle_results.parse    battle_results.dat -> every player's final results
     packets.read_stream     data.wotreplay -> typed packet list
     arena.parse             the roster, battle periods and kill feed
+    replay.build            every vehicle's track for the 2D minimap replay
     battle.load             all of the above joined into one JSON-able dict --
                             what the web app stores and the report renders
+
+Offline only (tools/wotb_extract_assets.py, on an installed client): dvpl
+unpacks client files, dava reads map scenes for the minimap geometry.
 
 Format notes and the confidence of every decoded field: docs/WOTB_FORMAT.md.
 """

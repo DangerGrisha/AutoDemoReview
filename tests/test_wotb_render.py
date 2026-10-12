@@ -5,10 +5,14 @@ nickname and clan tag is chosen by whoever made the replay -- so the first
 thing pinned here is that hostile strings come out escaped. The rest guards
 meaning: the ranks shown next to "your" numbers must point the right way, a
 replay without results must explain itself instead of showing zeros, and the
-lobby ranking must treat ties and small samples sanely.
+lobby ranking must treat ties and small samples sanely. The 2D replay ships
+the nicknames a second time, inside a JSON block that a browser would end at
+the first '</script>' -- so that block is checked separately.
 """
 
 import copy
+import json
+import re
 from pathlib import Path
 
 from blitzreview import analysis, battle
@@ -88,3 +92,47 @@ def test_team_summary_counts_the_living_and_known_ratings():
     assert allies["alive"] == 0 and enemies["alive"] == 6  # canyon: allies wiped out
     assert allies["players"] == enemies["players"] == 7
     assert allies["damage"] == sum(v["stats"]["damage"] for v in b["vehicles"] if v["ally"])
+
+
+def _replay_json(page):
+    m = re.search(r'<script type="application/json" id="replay-data">(.*?)</script>', page, re.S)
+    assert m, "no replay data block"
+    return json.loads(m.group(1))
+
+
+def test_the_2d_replay_ships_every_vehicle_and_its_track():
+    b = _battle()
+    page = render_battle_html(b)
+    assert 'id="replay"' in page and 'id="rp-canvas"' in page and 'id="minimap-img"' in page
+    data = _replay_json(page)
+    assert {v["id"] for v in data["vehicles"]} == {v["entity_id"] for v in b["vehicles"]}
+    assert data["tracks"] == b["replay"]["tracks"]
+    assert data["view"] and data["world"] == [-300.0, -300.0, 300.0, 300.0]
+    assert [k["t"] for k in data["kills"]] == [k["t"] for k in b["kills"]]
+
+
+def test_a_hostile_nickname_cannot_break_out_of_the_replay_data():
+    b = copy.deepcopy(_battle())
+    evil = '</script><script>alert(1)</script><!--'
+    b["vehicles"][0]["nickname"] = evil
+    page = render_battle_html(b)
+    assert "<script>alert(1)" not in page and "<!--" not in page
+    names = {v["n"] for v in _replay_json(page)["vehicles"]}
+    assert evil in names  # escaped on the way in, intact on the way out
+
+
+def test_kill_times_jump_the_replay_and_the_feed_moves_into_its_card():
+    page = render_battle_html(_battle())
+    assert page.count('href="#t=') >= 3          # every kill in the feed + the author's death
+    assert 'data-t="78.' in page or 'data-t="77.' in page
+    assert page.count("<h2>Уничтожения</h2>") == 0  # no second, standalone feed card
+
+
+def test_a_battle_stored_before_the_2d_replay_asks_for_a_fresh_upload():
+    b = copy.deepcopy(_battle())
+    b["format"] = 1
+    del b["replay"]
+    page = render_battle_html(b)
+    assert "загрузите реплей заново" in page
+    assert 'id="replay-data"' not in page and 'href="#t=' not in page
+    assert "<h2>Уничтожения</h2>" in page         # the plain feed is back

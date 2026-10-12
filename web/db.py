@@ -554,21 +554,25 @@ _WOTB_COLS = (
 )
 
 
+# `format` is the battle dict's own version (blitzreview.battle.FORMAT): a row
+# stored by an older parser gets re-parsed when its replay comes in again.
+_WOTB_FIND = ("SELECT id, has_results, "
+              "COALESCE(json_extract(data_json, '$.format'), 1) AS format FROM wotb_battles ")
+
+
 def find_wotb_battle(uploader_steamid, *, sha256=None, arena_id=None, recorder_account=None):
     """The uploader's existing row for this file (by hash) or this battle, or None."""
     conn = connect()
     try:
         if sha256:
             row = conn.execute(
-                "SELECT id, has_results FROM wotb_battles "
-                "WHERE uploader_steamid = ? AND replay_sha256 = ?",
+                _WOTB_FIND + "WHERE uploader_steamid = ? AND replay_sha256 = ?",
                 (uploader_steamid, sha256)).fetchone()
             if row:
                 return row
         if arena_id is not None and recorder_account is not None:
             return conn.execute(
-                "SELECT id, has_results FROM wotb_battles WHERE uploader_steamid = ? "
-                "AND arena_id = ? AND recorder_account = ?",
+                _WOTB_FIND + "WHERE uploader_steamid = ? AND arena_id = ? AND recorder_account = ?",
                 (uploader_steamid, arena_id, recorder_account)).fetchone()
         return None
     finally:

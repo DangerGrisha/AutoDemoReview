@@ -75,8 +75,9 @@ def _row(battle, *, uploader, filename, sha256):
 def ingest(data, *, uploader, filename):
     """Parse and store one replay. Returns a per-file result dict for the UI.
 
-    status: "new" | "duplicate" (already stored) | "updated" (an earlier copy of
-    the same battle had no battle results and this one does).
+    status: "new" | "duplicate" (already stored) | "updated" (the stored copy
+    of the battle had no battle results and this one does, or it was parsed by
+    an older version and lacks what the report now shows, e.g. the 2D replay).
     """
     result = {"name": filename, "ok": False}
     if not filename.lower().endswith(REPLAY_SUFFIX):
@@ -88,7 +89,7 @@ def ingest(data, *, uploader, filename):
     sha256 = hashlib.sha256(data).hexdigest()
 
     existing = db.find_wotb_battle(uploader, sha256=sha256)
-    if existing:
+    if existing and existing["format"] >= blitz_battle.FORMAT:
         return {**result, "ok": True, "status": "duplicate", "id": existing["id"]}
 
     try:
@@ -101,10 +102,14 @@ def ingest(data, *, uploader, filename):
         return result
 
     row = _row(battle, uploader=uploader, filename=filename, sha256=sha256)
-    same = db.find_wotb_battle(uploader, arena_id=row["arena_id"],
-                               recorder_account=row["recorder_account"])
+    same = existing or db.find_wotb_battle(uploader, arena_id=row["arena_id"],
+                                           recorder_account=row["recorder_account"])
     if same:
-        if row["has_results"] and not same["has_results"]:
+        gains_results = row["has_results"] and not same["has_results"]
+        outdated = same["format"] < blitz_battle.FORMAT
+        # Never trade the battle results for anything: a thinner copy of an
+        # outdated battle still leaves it alone.
+        if gains_results or (outdated and row["has_results"] >= same["has_results"]):
             db.replace_wotb_battle(same["id"], row)
             return {**result, "ok": True, "status": "updated", "id": same["id"]}
         return {**result, "ok": True, "status": "duplicate", "id": same["id"]}

@@ -2,13 +2,15 @@
 
 What can go wrong for a user: someone else's battle shows up in my list, the
 same replay dropped twice becomes two battles, a later copy of a replay that
-finally HAS the battle results is thrown away as a duplicate, one bad file in
-a batch sinks the good ones, or the schema migration breaks an existing
-database. Each test runs against its own temporary SQLite file and a minimal
+finally HAS the battle results is thrown away as a duplicate, a battle stored
+by an older parser can never get the new report (the 2D replay) because its
+file is "already uploaded", one bad file in a batch sinks the good ones, or
+the schema migration breaks an existing database. Each test runs against its own temporary SQLite file and a minimal
 app (just the Blitz router + sessions), so the CS2 pipeline is never imported.
 """
 
 import io
+import json
 import os
 import sqlite3
 import tempfile
@@ -127,6 +129,50 @@ def test_a_later_copy_with_results_upgrades_the_battle_in_place():
         late = site.upload(("copy.wotbreplay", _without_results(CANYON))).json()["results"][0]
         assert late["status"] == "duplicate"
         assert site.db.get_wotb_battle(early["id"], ALICE)["has_results"] == 1
+
+
+def _store_as_format_1(site, battle_id):
+    """Rewrite a stored battle the way the parser before the 2D replay left it."""
+    conn = site.db.connect()
+    try:
+        data = json.loads(conn.execute("SELECT data_json FROM wotb_battles WHERE id = ?",
+                                       (battle_id,)).fetchone()["data_json"])
+        data["format"] = 1
+        data.pop("replay", None)
+        conn.execute("UPDATE wotb_battles SET data_json = ? WHERE id = ?",
+                     (json.dumps(data), battle_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_a_battle_from_an_older_parser_is_reparsed_when_uploaded_again():
+    with _Site() as site:
+        site.login(ALICE)
+        first = site.upload((CANYON.name, CANYON.read_bytes())).json()["results"][0]
+        _store_as_format_1(site, first["id"])
+        assert "загрузите реплей заново" in site.client.get(f"/blitz/battles/{first['id']}").text
+
+        again = site.upload((CANYON.name, CANYON.read_bytes())).json()["results"][0]
+        assert again["status"] == "updated" and again["id"] == first["id"], again
+        stored = json.loads(site.db.get_wotb_battle(first["id"], ALICE)["data_json"])
+        assert stored["format"] >= 2 and stored["replay"]["tracks"]
+        assert 'id="replay-data"' in site.client.get(f"/blitz/battles/{first['id']}").text
+        # current now: the same file is a plain duplicate again
+        third = site.upload((CANYON.name, CANYON.read_bytes())).json()["results"][0]
+        assert third["status"] == "duplicate"
+        assert len(site.db.list_wotb_battles(ALICE)) == 1
+
+
+def test_an_outdated_battle_never_trades_its_results_for_tracks():
+    with _Site() as site:
+        site.login(ALICE)
+        first = site.upload((CANYON.name, CANYON.read_bytes())).json()["results"][0]
+        _store_as_format_1(site, first["id"])
+        thin = site.upload(("copy.wotbreplay", _without_results(CANYON))).json()["results"][0]
+        assert thin["status"] == "duplicate", thin
+        row = site.db.get_wotb_battle(first["id"], ALICE)
+        assert row["has_results"] == 1 and row["damage"] == 1399
 
 
 def test_other_users_cannot_see_a_battle():

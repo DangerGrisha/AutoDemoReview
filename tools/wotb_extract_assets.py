@@ -8,13 +8,24 @@ needs the game installed and never calls the Wargaming API):
 
     vehicles.json       tank_id -> internal key, nation, tier, class, ru/en names
     maps.json           map key -> id, scene name, modes, ru/en names,
-                        assault-mode respawn points (world x/z)
+                        assault-mode respawn points (world x/z), and for the
+                        2D replay: `world` (the square the minimap shows),
+                        `border` (the playable area), `minimap_crop`
     minimaps/<key>.webp 512x512 battle minimaps (MiniMapSmall@2x)
 
 The tank id is the number replays carry: (index << 8) | (nation << 4) | 1,
 where `index` is the vehicle's <id> in its nation's list.xml and `nation` the
 <id> in vehicles/common/nations.xml. Re-run after a game update that adds
 tanks or maps; the analyzer shows internal names for anything missing.
+
+Minimap geometry (checked against the tracks of real replays, which run along
+the roads, and against the variant minimaps, whose greyed-out part ends
+exactly at the variant's border): a minimap shows the scene's whole terrain
+square (`world`, x0 z0 x1 z1 -- 600 x 600 m around the origin on every map)
+with x to the right and z up; the picture fills only the top-left
+`minimap_crop` box of the 512 x 512 texture (505 x 505 -- the rest is
+transparent padding). Measuring the crop needs Pillow (`pip install pillow`);
+without it the crop is left out and the report uses the whole texture.
 """
 
 import argparse
@@ -28,7 +39,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from blitzreview import dvpl  # noqa: E402
+from blitzreview import dava, dvpl  # noqa: E402
 
 DEFAULT_CLIENT = Path(r"D:\games\Steam\steamapps\common\World of Tanks Blitz")
 OUT_DIR = ROOT / "src" / "blitzreview" / "assets"
@@ -113,13 +124,15 @@ def extract_maps(data_dir, strings):
             continue
         if current is None:
             continue
-        m = re.match(r"^        (id|localName|availableModes):\s*(.+?)\s*$", line)
+        m = re.match(r"^        (id|localName|availableModes|tags):\s*(.+?)\s*$", line)
         if m:
             name, value = m.groups()
             if name == "id":
                 current["id"] = int(value)
             elif name == "localName":
                 current["scene"] = value.strip('"')
+            elif name == "tags":
+                current["tag"] = value.strip('"')
             else:
                 current["modes"] = [int(v) for v in re.findall(r"-?\d+", value)]
             continue
@@ -136,6 +149,70 @@ def extract_maps(data_dir, strings):
         for lang, table in strings.items():
             entry[f"name_{lang}"] = table.get(loc_key, key)
     return maps
+
+
+def _rounded(values):
+    return [round(v, 1) for v in values]
+
+
+def pick_border(borders, tag):
+    """A map variant's border: the one labelled with its maps.yaml tag; an
+    untagged map lives in a scene with a single border."""
+    if tag:
+        tagged = [b for b in borders if tag in b["labels"]]
+        return tagged[0] if len(tagged) == 1 else None
+    return borders[0] if len(borders) == 1 else None
+
+
+def add_geometry(data_dir, maps):
+    """Add `world` and `border` to every map from its scene. Returns problems."""
+    problems, scenes = [], {}
+    for key, entry in sorted(maps.items()):
+        scene_name = entry.get("scene")
+        if not scene_name:
+            problems.append(f"{key}: no scene in maps.yaml")
+            continue
+        if scene_name not in scenes:
+            try:
+                scene = dava.read_scene(dvpl.read(data_dir / "3d" / "Maps" / f"{scene_name}.dvpl"))
+                scenes[scene_name] = (dava.landscape_bbox(scene), dava.map_borders(scene))
+            except (OSError, dava.DavaError, dvpl.DvplError) as exc:
+                scenes[scene_name] = (None, [])
+                problems.append(f"{key}: {scene_name}: {exc}")
+        world, borders = scenes[scene_name]
+        if world:
+            entry["world"] = _rounded(world)
+        border = pick_border(borders, entry.get("tag"))
+        if border is None:
+            problems.append(f"{key}: no border for tag {entry.get('tag')!r} "
+                            f"among {[b['labels'] for b in borders]}")
+            continue
+        entry["border"] = _rounded(border["rect"])
+        x0, z0, x1, z1 = border["rect"]
+        outside = sum(1 for team in entry["respawn"].values() for x, z in team
+                      if not (x0 - 1 <= x <= x1 + 1 and z0 - 1 <= z <= z1 + 1))
+        if outside:
+            problems.append(f"{key}: {outside} respawn points outside the border")
+    return problems
+
+
+def add_minimap_crops(maps, minimap_dir):
+    """Add `minimap_crop` (the opaque box of the texture) to every map with a
+    minimap. Returns how many were measured, or None without Pillow."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    measured = 0
+    for key, entry in maps.items():
+        path = minimap_dir / f"{key}.webp"
+        if not path.is_file():
+            continue
+        with Image.open(path) as image:
+            box = image.getchannel("A").getbbox() if "A" in image.getbands() else None
+            entry["minimap_crop"] = list(box or (0, 0, image.width, image.height))
+        measured += 1
+    return measured
 
 
 def extract_minimaps(data_dir, keys, out_dir):
@@ -171,18 +248,24 @@ def main():
 
     vehicles = extract_vehicles(data_dir, strings)
     maps = extract_maps(data_dir, strings)
+    problems = add_geometry(data_dir, maps)
 
     args.out.mkdir(parents=True, exist_ok=True)
+    if not args.no_minimaps:
+        written, missing = extract_minimaps(data_dir, maps, args.out / "minimaps")
+        print(f"minimaps: {written} written" + (f", none for {missing}" if missing else ""))
+    cropped = add_minimap_crops(maps, args.out / "minimaps")
+    if cropped is None:
+        problems.append("Pillow is not installed: minimap_crop left out (pip install pillow)")
+
     for name, payload in (("vehicles.json", {"source": source, "vehicles": vehicles}),
                           ("maps.json", {"source": source, "maps": maps})):
         (args.out / name).write_text(
             json.dumps(payload, ensure_ascii=False, indent=1, sort_keys=True) + "\n",
             encoding="utf-8")
     print(f"client {version}: {len(vehicles)} vehicles, {len(maps)} maps -> {args.out}")
-
-    if not args.no_minimaps:
-        written, missing = extract_minimaps(data_dir, maps, args.out / "minimaps")
-        print(f"minimaps: {written} written" + (f", none for {missing}" if missing else ""))
+    for problem in problems:
+        print(f"  ! {problem}")
 
 
 if __name__ == "__main__":

@@ -73,6 +73,31 @@ def minimap_path(key):
     return path if path.is_file() else None
 
 
+def minimap(key, margin=0.04):
+    """How a map's minimap sits in the world, for drawing positions on it.
+
+    world   x0, z0, x1, z1 -- the square the picture shows (x right, z up)
+    crop    left, top, right, bottom -- the picture's pixels in the texture
+    border  x0, z0, x1, z1 -- the playable area, or None
+    view    a square around the border plus `margin`, inside `world`: what a
+            replay shows (tanks never leave the border)
+    None when the map has no minimap or no geometry (assets older than the
+    2D replay).
+    """
+    entry = _table("maps.json", "maps").get(key) if key else None
+    if entry is None or not entry.get("world") or minimap_path(key) is None:
+        return None
+    world = [float(v) for v in entry["world"]]
+    border = [float(v) for v in entry["border"]] if entry.get("border") else None
+    crop = entry.get("minimap_crop") or [0, 0, 512, 512]
+    x0, z0, x1, z1 = border or world
+    side = min(max(x1 - x0, z1 - z0) * (1 + 2 * margin), world[2] - world[0], world[3] - world[1])
+    vx0 = min(max((x0 + x1 - side) / 2, world[0]), world[2] - side)
+    vz0 = min(max((z0 + z1 - side) / 2, world[1]), world[3] - side)
+    view = [round(v, 1) for v in (vx0, vz0, vx0 + side, vz0 + side)]
+    return {"world": world, "crop": [int(v) for v in crop], "border": border, "view": view}
+
+
 def mode_name(mode, lang="ru"):
     names = MODE_NAMES.get(mode)
     return names[lang] if names else None

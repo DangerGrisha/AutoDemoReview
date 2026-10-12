@@ -159,12 +159,16 @@ of the battle. All our fixtures split into packets byte for byte.
 | 5 | entity create | starts with the entity id u32; rest not decoded |
 | 7 | entity property | `entity u32, property u32, size u32, value`. Property ids 0–10 seen; not decoded yet |
 | 8 | entity method | `entity u32, method u32, size u32, args` |
-| 10 | position, 49 bytes | `entity u32, space u32, vehicle u32, x y z f32, error xyz f32, yaw pitch roll f32, flag u8`. x/z = ground plane in metres (maps are about ±250 m), y = height, yaw in radians. Sent about 10 times a second per visible vehicle |
+| 10 | position, 49 bytes | `entity u32, space u32, vehicle u32, x y z f32, error xyz f32, yaw pitch roll f32, flag u8`. x/z = ground plane in metres, x east and z north (the playable area is about ±230…285 m), y = height. yaw = hull heading in radians: 0 faces +z, positive turns toward +x, i.e. clockwise on the minimap (`yaw = atan2(dx, dz)` of the travel direction, median error 0.1° over 5.8k moving samples). Sent about 10 times a second per visible vehicle |
 | 39 | 28 bytes, ~8k per battle | f32s that look like the recorder's camera or aim point; not decoded |
 | 0xFFFFFFFF | end marker | |
 
-**Visibility:** allies are tracked for the whole battle. Enemies appear in the
-stream only while spotted, and an enemy never spotted has no position at all.
+**Visibility:** allies are tracked for the whole battle (the longest silence in
+13 battles: 1.1 s). Enemies appear in the stream only while spotted -- silences
+of seconds to minutes -- and an enemy never spotted has no position at all.
+Every kill (102 of them) has a position of the victim at most 0.13 s before
+it, enemies included, so the death spot is always known; wrecks keep sending
+positions afterwards and slide a few metres at most.
 
 **Recording end:** the stream stops when the recorder leaves the battle (often
 right after dying). The battle itself, and `battleDuration`, can run longer.
@@ -218,12 +222,55 @@ payload | original u32 | packed u32 | crc32(payload) u32 | kind u32 | "DVPL"
 | source | output |
 |---|---|
 | `XML/item_defs/vehicles/*/list.xml` + `Strings/{ru,en}.yaml` | `vehicles.json`: tier, class from tags, ru/en names |
-| `maps.yaml` | `maps.json`: id, scene name, modes, assault respawn points |
-| `Gfx/UI/BattleScreenHUD/minimap/<key>/MiniMapSmall@2x.packed.webp` | `minimaps/<key>.webp`, 512×512 |
+| `maps.yaml` | `maps.json`: id, scene name, modes, variant `tag`, assault respawn points |
+| `3d/Maps/<scene>.sc2` (see below) | `maps.json`: `world` (terrain square), `border` (playable area) |
+| `Gfx/UI/BattleScreenHUD/minimap/<key>/MiniMapSmall@2x.packed.webp` | `minimaps/<key>.webp`, 512×512; `maps.json`: `minimap_crop` |
+
+### Scenes (`.sc2`) and the minimap
+
+A scene is a DAVA engine file (`blitzreview/dava.py` reads it):
+
+```
+"SFV2" | version i32 (48) | node count i32
+version tags: "KA" format 1, empty
+descriptor: size u32 | size bytes
+string table: "KA" 0x0002 | count u32 | count × (u16 len + utf-8) | count × u32 id
+body: count u32, then (u32 key id, variant) items: #dataNodes, #hierarchy, ...
+```
+
+After the string table every key, string, fast name and file path is a u32 id.
+Keyed archives are `"KA" | u16 format` with format 0x0102 (`count u32`, then
+`id, variant` pairs) or 0xFF02 (empty, nothing follows). A variant is a type
+byte plus payload (DAVA `VariantType` numbering: 1 bool … 8 keyed archive with
+a byte size in front, 19 AABBox3, 27 variant vector …). All 36 scenes of the
+11.20 client parse to their last byte.
+
+Entities sit in `#hierarchy` (children in their own `#hierarchy`); components
+name their kind in `comp.typename`. Two of them place the minimap:
+
+- the **Landscape** render object's `bbox` (6 floats): the terrain is
+  600 × 600 m around the origin on every map;
+- **MapBorderComponent** `mbc.rect` (4 floats: x0, y0, x1, y1): the playable
+  area. Scenes with map variants (`milbase` … `milbase_05`) carry one border per
+  variant; its LabelComponent label (`mlb4`) is the variant's `tags` in
+  `maps.yaml`. Scene y is the replay's z.
+
+**Minimap geometry**, checked three ways: the tracks of all 13 local replays
+follow the roads on the picture; the variant minimaps grey out everything
+outside the variant's border, and that edge (a thin white line) sits where the
+transform puts the border, within 1–2 px; the recorder's team starts on the
+`maps.yaml` spawn points. The minimap shows the whole terrain square, x to
+the right and z up, and fills only the top-left **505 × 505** pixels of the
+512 × 512 texture (the rest is transparent; its 6 × 6 grid is 100 m a cell):
+
+```
+u = left + (x − x0) / (x1 − x0) · (right − left)      # world = x0 z0 x1 z1
+v = top  + (z1 − z) / (z1 − z0) · (bottom − top)      # crop  = left top right bottom
+```
 
 Not done yet:
-- **Map bounds.** Needed to place world coordinates on the minimap; not in `maps.yaml`. Candidates: the scene `.sc2`, or `blitz/<map>.mkm` (a 1024² 2-bit grid).
 - **Map geometry** for a future 3D view: `3d/Maps/<scene>/landscape/*_height.heightmap` plus `*_colormap`.
+- `blitz/<scene>.mkm` (`kkm` header, a 1024² 2-bit grid) and `.lka`: probably terrain kinds and the ground-sound map; not needed so far.
 
 ## Open questions
 

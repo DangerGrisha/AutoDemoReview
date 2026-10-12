@@ -8,17 +8,22 @@ Joins three sources that overlap on purpose:
   * battle_results.dat -- only if the recorder waited for the results: the
     final numbers of all 14 players (damage, shots, hp left, xp ...).
 
+The stream also gives every visible vehicle's position, which becomes the
+`replay` block -- the tracks of the 2D minimap replay (see replay.py).
+
 Vehicles are keyed by entity id: a battle result's id IS the vehicle's entity
 id in the stream, so the sources join exactly, with no name matching. A broken
 or missing results file degrades the report (no final numbers) instead of
 rejecting the replay; the reason goes into `warnings`.
 """
 
-from . import arena, battle_results, gamedata
+from . import arena, battle_results, gamedata, replay
 from .container import open_replay
-from .packets import read_stream
+from .packets import positions, read_stream
 
-FORMAT = 1
+# 2: adds the `replay` block (vehicle tracks). Battles stored in an older
+# format are re-parsed when their replay is uploaded again (web/blitz.py).
+FORMAT = 2
 
 _STAT_FIELDS = ("damage", "kills", "shots", "hits", "penetrations", "assist",
                 "damage_received", "hits_received", "nonpen_received",
@@ -165,6 +170,11 @@ def build(meta, stream, arena_info, results, warnings=(), lang="ru"):
 
     mode = results["mode"] if results else None
     end_clock = stream.end_clock if stream else None
+    tracks = None
+    if stream is not None and start is not None:
+        tracks = replay.build(positions(stream), start,
+                              [(v["entity_id"], v["death_time"]) for v in vehicles],
+                              end_clock - start)
     return {
         "format": FORMAT,
         "client_version": meta["version"],
@@ -192,5 +202,6 @@ def build(meta, stream, arena_info, results, warnings=(), lang="ru"):
         "kills": [{"t": round(k["clock"] - start, 1) if start is not None else None,
                    "victim": k["victim"], "killer": k["killer"]}
                   for k in arena_info["kills"]],
+        "replay": tracks,
         "warnings": list(warnings),
     }
