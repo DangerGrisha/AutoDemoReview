@@ -13,7 +13,7 @@ import html
 import json
 from datetime import datetime, timezone
 
-from . import analysis, gamedata
+from . import analysis, coachrules, gamedata
 
 OUTCOME = {
     "win": ("Победа", "win"),
@@ -284,6 +284,53 @@ def _feed_list(battle, linked=False):
 
 def _feed(battle):
     return f'<section class="card"><h2>Уничтожения</h2>{_feed_list(battle)}</section>'
+
+
+SEVERITY_LABEL = {"high": "критично", "medium": "заметно", "low": "мелочь"}
+
+
+def _coach(battle):
+    """"Разбор боя": the free coach's report (coachrules.py) about the recorder,
+    every cited moment a link into the 2D replay. A coach bug must not take the
+    whole page down, so it shows as a short note instead."""
+    try:
+        _facts, report = coachrules.analyse_and_build(battle)
+    except Exception as exc:  # noqa: BLE001
+        return ('<section class="card coach"><h2>Разбор боя</h2><p class="note">Разбор не '
+                f'удалось собрать ({esc(type(exc).__name__)}).</p></section>')
+    if report is None:
+        return ""
+    linked = _replay_geo(battle) is not None
+
+    def moment(t):
+        if linked:
+            return f'<a class="t" href="{_seek(t)}">{clock(t)}</a>'
+        return clock(t)
+
+    parts = [f'<p class="c-head">{esc(report["headline"])}</p>']
+    if report["strengths"]:
+        items = "".join(f'<li><b>{esc(s["point"])}</b> — {esc(s["evidence"])}</li>'
+                        for s in report["strengths"])
+        parts.append(f'<h3>Что получилось</h3><ul class="c-good">{items}</ul>')
+    if report["problems"]:
+        blocks = []
+        for p in report["problems"]:
+            moments = ""
+            if p["moments"]:
+                moments = ('<p class="c-moments">Моменты: '
+                           + ", ".join(moment(t) for t in p["moments"]) + "</p>")
+            blocks.append(
+                f'<div class="c-prob {esc(p["severity"])}"><div class="c-title">{esc(p["title"])}'
+                f'<span class="sev">{SEVERITY_LABEL.get(p["severity"], "")}</span></div>'
+                f'<p><b>Почему:</b> {esc(p["cause"])}</p><p><b>Данные:</b> {esc(p["evidence"])}</p>'
+                f'{moments}<p><b>Что делать:</b> {esc(p["fix"])}</p></div>')
+        parts.append(f'<h3>Что стоит исправить</h3>{"".join(blocks)}')
+    drill = report["drill"]
+    parts.append(f'<h3>Что тренировать</h3><div class="c-drill"><b>{esc(drill["name"])}</b> — '
+                 f'{esc(drill["how"])}<div class="muted">Цель: {esc(drill["target"])}</div></div>')
+    return (f'<section class="card coach" id="coach"><h2>Разбор боя</h2>{"".join(parts)}'
+            '<p class="note">Бесплатный разбор по правилам: смотрит только этот бой и сравнивает '
+            'вас с лобби. Повторяющиеся ошибки по многим боям — на странице карьеры.</p></section>')
 
 
 # What one hit did, in words: hits.kind (events.HIT_*) when there was no
@@ -908,6 +955,24 @@ border:0;cursor:pointer;padding:0 2px}
 .rp-legend .lt{width:16px;height:2px;border-radius:1px;background:#BFE6BF;box-shadow:0 0 0 1px rgba(0,0,0,.6)}
 .rp-legend .lh{width:16px;height:4px;border-radius:0;background:linear-gradient(90deg,var(--ally) 65%,#000 65%)}
 .rp-legend .ld{font:700 11px var(--body);color:#FFD27A}
+.coach .c-head{font-size:16px;font-weight:600;margin:0 0 4px}
+.coach h3,.fgrid h3{font:700 16px var(--display);letter-spacing:.5px;text-transform:uppercase;
+margin:14px 0 6px}
+.c-good{margin:0;padding-left:18px}
+.c-good li{margin:3px 0}
+.c-prob{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--muted);
+border-radius:8px;padding:10px 12px;margin:8px 0}
+.c-prob.high{border-left-color:var(--enemy)}
+.c-prob.medium{border-left-color:var(--me)}
+.c-title{font-weight:700;font-size:15px}
+.c-prob p{margin:5px 0 0;font-size:13px}
+.c-prob .sev{font:600 11px var(--mono);text-transform:uppercase;letter-spacing:.4px;
+color:var(--muted);margin-left:8px}
+.c-prob.high .sev{color:var(--enemy)}
+.c-prob.medium .sev{color:var(--me)}
+.c-moments a.t{margin-right:2px}
+.c-drill{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.c-drill .muted{margin-top:4px;font-size:13px}
 .fchart svg{display:block;width:100%;height:150px;background:var(--panel2);border:1px solid var(--line);
 border-radius:8px}
 .fchart path{fill:none;vector-effect:non-scaling-stroke}
@@ -935,7 +1000,7 @@ border-radius:8px}
 .flegend i.kd{background:var(--enemy)}
 .flegend i.kf{width:0;height:12px;border-left:2px dashed var(--me);border-radius:0}
 .fgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px 24px;margin-top:14px}
-.fgrid h3{font:700 16px var(--display);letter-spacing:.5px;text-transform:uppercase;margin:0 0 4px}
+.fgrid h3{margin:0 0 4px}
 .flist td{padding:4px 6px}
 .flist td:first-child{width:44px;padding-left:0}
 .flist td:nth-child(2){white-space:normal}
@@ -1703,7 +1768,7 @@ def render_battle_html(battle, site_nav=""):
     title = f'{battle["map"]["name"]} — {label} · Blitz · demoReview'
     leaders = analysis.leaders(battle)
     has_replay = _replay_geo(battle) is not None  # the replay card carries the kill feed
-    body = (_hero(battle) + _me(battle) + _fight(battle) + _replay(battle)
+    body = (_hero(battle) + _me(battle) + _coach(battle) + _fight(battle) + _replay(battle)
             + f'<div class="teams">{_team(battle, True, leaders)}{_team(battle, False, leaders)}</div>'
             + ("" if has_replay else _feed(battle)) + _footer(battle))
     script = _SCRIPT + (_REPLAY_SCRIPT if has_replay else "")

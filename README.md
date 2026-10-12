@@ -104,7 +104,11 @@ dict as JSON and write the HTML report. Replays without `battle_results.dat`
 
 On the site: sign in, open **Blitz** in the top bar and drag replays onto the
 page (one or many at once). Each battle gets a report: your numbers with your
-rank in the lobby; **the course of your battle** -- your damage and hit points
+rank in the lobby; a free **coach's review** (rules, no AI service) -- what
+went well, up to three mistakes with the reason, the numbers and the moments
+in the replay (dying far from the team, under several guns, early or cheaply,
+standing still under fire, a lone flank, misses, shots that did not pierce),
+and what to practise; **the course of your battle** -- your damage and hit points
 over time, every shot you fired and what it did, everything that hit you, each
 a link into the replay; both teams; and a **2D replay** on the game's minimap --
 every tank as the game's class mark (LT / MT / HT / TD) with its heading, where
@@ -120,7 +124,11 @@ there). Click a tank to see its whole route, its health, damage and shots up to
 that moment and its results; "★ Лучший в команде" picks the teammate with the
 most damage. Shots, hits and damage are decoded from the packet stream and
 checked against the battle results (`tests/test_wotb_events.py`). A battle
-uploaded before a feature existed gets it when its replay is dropped again. Battles live in their own table
+uploaded before a feature existed gets it when its replay is dropped again.
+**Карьера** (`/blitz/career`) puts one player's battles together: results per
+tank, what goes well again and again, and the coach's mistakes that keep
+coming back (a habit: at least two battles and a fifth of them), each with
+links to the battles and moments. Battles live in their own table
 (`wotb_battles`, schema v4) and never mix into the CS2 matches or career. Windows/Steam replays live in
 `%LOCALAPPDATA%\wotblitz\DAVAProject\replays`; there is no API to download them.
 

@@ -16,6 +16,9 @@ Pipeline (each step is a plain function over bytes/dicts, testable alone):
     replay.build            every vehicle's track for the 2D minimap replay
     battle.load             all of the above joined into one JSON-able dict --
                             what the web app stores and the report renders
+    tactics.analyse         the recorder's fact sheet: lobby ranks + map moments
+    coachrules.build_report the free coach: rules over the fact sheet
+    career.summarize        many battles of one player: per tank and habits
 
 Offline only (tools/wotb_extract_assets.py, on an installed client): dvpl
 unpacks client files, dava reads map scenes for the minimap geometry and

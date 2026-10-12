@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Карьера Blitz &mdash; demoReview{% endblock %}
+{% block content %}
+{% set c = career %}{% set o = career.overall %}
+<div class="page-head">
+  <h1>Карьера Blitz{% if chosen %} &mdash; {{ chosen.name }}{% endif %}</h1>
+  <a class="btn ghost small" href="/blitz">&#8592; Мои бои</a>
+</div>
+{% if recorders|length > 1 %}
+<p class="muted small rec-pick">Чьи реплеи:
+  {% for r in recorders %}
+    {% if chosen and r.recorder_account == chosen.recorder_account %}<b>{{ r.name }}</b>
+    {% else %}<a href="/blitz/career?account={{ r.recorder_account }}">{{ r.name }}</a>{% endif %}
+    <span class="muted">({{ r.battles }})</span>{% if not loop.last %} &middot; {% endif %}
+  {% endfor %}
+</p>
+{% endif %}
+
+{% if not c.recent %}
+<p class="muted empty">Пока ни одного боя &mdash; <a href="/blitz">загрузите реплеи</a>, и здесь
+появятся итоги по танкам и ошибки, которые повторяются из боя в бой.</p>
+{% else %}
+<div class="tiles">
+  <div class="tile"><span class="tlabel">Боёв</span><span class="tval">{{ o.battles }}</span>
+    <span class="tsub">{{ o.wins }} {{ plu(o.wins, 'победа', 'победы', 'побед') }} &middot;
+      {{ o.losses }} {{ plu(o.losses, 'поражение', 'поражения', 'поражений') }}</span></div>
+  <div class="tile hi"><span class="tlabel">Победы</span><span class="tval">{{ o.win_rate|pct }}</span>
+    <span class="tsub">из {{ o.with_results }} с итогами</span></div>
+  <div class="tile"><span class="tlabel">Средний урон</span><span class="tval">{{ o.avg_damage|num }}</span>
+    <span class="tsub">размен {{ o.avg_damage_net|num }}</span></div>
+  <div class="tile"><span class="tlabel">Фраги за бой</span><span class="tval">{{ o.avg_kills|num(1) }}</span></div>
+  <div class="tile"><span class="tlabel">Выживаемость</span><span class="tval">{{ o.survival|pct }}</span></div>
+  <div class="tile"><span class="tlabel">Точность</span><span class="tval">{{ o.accuracy|pct }}</span>
+    <span class="tsub">пробития {{ o.pen_rate|pct }}</span></div>
+</div>
+
+<section class="card habits">
+  <h2>Повторяющиеся ошибки</h2>
+  {% if c.habits %}
+    {% for h in c.habits %}
+    <div class="habit">
+      <div class="h-head"><b>{{ h.title }}</b>
+        <span class="muted">&mdash; в {{ h.count }} из {{ o.battles }} {{ plu(o.battles, 'боя', 'боёв', 'боёв') }} ({{ h.share|pct }})</span></div>
+      <div class="h-drill">Что тренировать: <b>{{ h.drill[0] }}</b> &mdash; {{ h.drill[1] }}
+        <span class="muted">Цель: {{ h.drill[2] }}</span></div>
+      <div class="h-battles">
+        {% for b in h.battles[:8] %}
+          <a href="/blitz/battles/{{ b.id }}{% if b.moment is not none %}#t={{ b.moment|int }}{% endif %}">{{ b.map }} &middot; {{ b.tank }}</a>
+        {% endfor %}
+        {% if h.battles|length > 8 %}<span class="muted">и ещё {{ h.battles|length - 8 }}</span>{% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="muted">Ни одна ошибка из разбора не повторилась хотя бы в двух боях{% if o.battles < 5 %}
+      &mdash; загрузите ещё бои, чтобы увидеть закономерности{% endif %}.</p>
+  {% endif %}
+</section>
+
+{% if c.good %}
+<section class="card">
+  <h2>Что получается стабильно</h2>
+  <ul class="good-list">
+    {% for g in c.good %}<li><b>{{ g.title }}</b> <span class="muted">&mdash; в {{ g.count }} из {{ o.battles }} {{ plu(o.battles, 'боя', 'боёв', 'боёв') }}</span></li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>По танкам</h2>
+  <div class="table-wrap">
+  <table class="matches slim">
+    <thead><tr><th>Танк</th><th class="num">Боёв</th><th class="num">Победы</th>
+      <th class="num">Урон</th><th class="num">Фраги</th><th class="num">Выжил</th>
+      <th class="num">Точность</th></tr></thead>
+    <tbody>
+    {% for t in c.tanks %}
+      <tr><td>{{ t.tank }} <span class="muted small">{{ tier_roman(t.tier) }} {{ class_name(t.type) or '' }}</span></td>
+        <td class="num">{{ t.battles }}</td><td class="num">{{ t.win_rate|pct }}</td>
+        <td class="num">{{ t.avg_damage|num }}</td><td class="num">{{ t.avg_kills|num(1) }}</td>
+        <td class="num">{{ t.survival|pct }}</td><td class="num">{{ t.accuracy|pct }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Последние бои</h2>
+  <div class="table-wrap">
+  <table class="matches slim">
+    <thead><tr><th>Дата</th><th>Карта</th><th>Танк</th><th>Итог</th><th class="num">Урон</th>
+      <th>Разбор</th></tr></thead>
+    <tbody>
+    {% for b in c.recent %}
+      <tr class="{{ b.outcome }}">
+        <td class="mono muted">{% if b.started_at %}<time data-ts="{{ b.started_at }}"></time>{% endif %}</td>
+        <td class="map"><a href="/blitz/battles/{{ b.id }}">{{ b.map or '—' }}</a></td>
+        <td>{{ b.tank }}</td>
+        <td><span class="tag {{ b.outcome }}">{{ {'win': 'Победа', 'loss': 'Поражение', 'draw': 'Ничья'}.get(b.outcome, '?') }}</span></td>
+        <td class="num">{{ b.damage|num }}</td>
+        <td class="h-main">{% if b.problems %}<a href="/blitz/battles/{{ b.id }}#coach">{{ b.problems[0].title }}</a>{% else %}<span class="muted">без ошибок</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+<p class="muted small">Ошибки и сильные стороны &mdash; из бесплатного разбора по правилам, тот же, что в отчёте
+каждого боя. Числа с итогами боя (урон, точность, победы) считаются по боям, где итоги есть.</p>
+{% endif %}
+
+<script>
+document.querySelectorAll('time[data-ts]').forEach(function (el) {
+  var d = new Date(+el.dataset.ts * 1000);
+  el.textContent = d.toLocaleString('ru-RU', {day: '2-digit', month: '2-digit',
+    hour: '2-digit', minute: '2-digit'});
+});
+</script>
+{% endblock %}

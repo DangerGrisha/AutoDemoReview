@@ -13,6 +13,7 @@ no-JS form may send many at once and gets the same per-file results rendered.
 import hashlib
 import html
 import json
+import logging
 import sqlite3
 import sys
 from pathlib import Path
@@ -28,12 +29,44 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 from blitzreview import battle as blitz_battle  # noqa: E402
+from blitzreview import career as blitz_career  # noqa: E402
 from blitzreview import gamedata  # noqa: E402
 from blitzreview.container import MAX_FILE_BYTES, ReplayError  # noqa: E402
 from blitzreview.render import render_battle_html  # noqa: E402
 
+log = logging.getLogger("web.blitz")
+
 router = APIRouter(prefix="/blitz")
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "templates"))
+
+
+def _pct(value):
+    return "—" if value is None else f"{round(100 * value)}%"
+
+
+def _num(value, digits=0):
+    if value is None:
+        return "—"
+    if digits:
+        return f"{value:.{digits}f}".replace(".", ",")
+    return f"{int(round(value)):,}".replace(",", " ")
+
+
+def _plu(n, one, few, many):
+    """Russian noun agreement: 1 победа, 2 победы, 5 побед."""
+    n = abs(int(n or 0))
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return few
+    return many
+
+
+templates.env.filters["pct"] = _pct
+templates.env.filters["num"] = _num
+templates.env.globals["plu"] = _plu
+templates.env.globals["class_name"] = gamedata.class_name
+templates.env.globals["tier_roman"] = gamedata.tier_roman
 
 MAX_FILES_PER_REQUEST = 50
 REPLAY_SUFFIX = ".wotbreplay"
@@ -172,6 +205,30 @@ def blitz_upload(request: Request, replays: list[UploadFile] = File(...)):
     return _list_page(request, user, results=results)
 
 
+@router.get("/career", response_class=HTMLResponse)
+def blitz_career_view(request: Request, account: int | None = None):
+    """One recorder's battles together: per tank and their habits (the coach's
+    rules that keep firing). Replays of several accounts never mix -- the
+    uploader picks whose; by default the one with the most battles."""
+    user = _user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=302)
+    recorders = [dict(r) for r in db.wotb_recorders(user["steamid64"])]
+    chosen = next((r for r in recorders if r["recorder_account"] == account), None)
+    chosen = chosen or (recorders[0] if recorders else None)
+    lines = []
+    if chosen:
+        for row in db.list_wotb_battle_data(user["steamid64"], chosen["recorder_account"]):
+            try:
+                lines.append(blitz_career.battle_line(row["id"], json.loads(row["data_json"])))
+            except Exception:  # noqa: BLE001 -- one odd battle must not hide the career
+                log.exception("career line failed for wotb battle %s", row["id"])
+    return templates.TemplateResponse(
+        request, "blitz_career.html",
+        {"user": user, "recorders": recorders, "chosen": chosen,
+         "career": blitz_career.summarize(lines)})
+
+
 @router.get("/battles/{battle_id}", response_class=HTMLResponse)
 def blitz_battle_view(request: Request, battle_id: int):
     user = _user(request)
@@ -184,6 +241,7 @@ def blitz_battle_view(request: Request, battle_id: int):
     avatar = (f'<img src="{html.escape(user["avatar_url"])}" alt="">'
               if user["avatar_url"] else "")
     site_nav = ('<nav class="site-nav"><a href="/blitz">&#8592; Мои бои Blitz</a>'
+                '<a href="/blitz/career">Карьера</a>'
                 '<span class="sn-brand">demoReview</span>'
                 f'<span class="sn-user">{avatar}{html.escape(user["persona_name"])}</span></nav>')
     return HTMLResponse(render_battle_html(battle, site_nav=site_nav))

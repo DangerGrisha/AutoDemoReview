@@ -228,3 +228,31 @@ def test_migrating_a_v3_database_adds_the_table_and_keeps_matches():
         assert "wotb_battles" in tables
         assert conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0] == 1
         conn.close()
+
+
+RIFT = FIXTURES / "v11_20_rift_base_capture.wotbreplay"
+HIMMELSDORF = FIXTURES / "v11_7_himmelsdorf_results.wotbreplay"  # recorded by another player
+
+
+def test_the_career_keeps_each_recorders_battles_apart():
+    with _Site() as site:
+        site.login(ALICE)
+        assert "Пока ни одного боя" in site.client.get("/blitz/career").text
+        ids = [site.upload((p.name, p.read_bytes())).json()["results"][0]["id"]
+               for p in (CANYON, RIFT, HIMMELSDORF)]
+        assert "/blitz/career" in site.client.get("/blitz").text
+
+        page = site.client.get("/blitz/career").text  # the account with the most battles
+        assert "Карьера Blitz &mdash; _P1ratiC_" in page
+        assert "Объект 704" in page and "ИСУ-130" in page and "T77" not in page
+        assert f"/blitz/battles/{ids[0]}" in page and f"/blitz/battles/{ids[2]}" not in page
+        assert "Погибли в отрыве от команды" in page  # canyon's coach, in the recent list
+        assert "_oleg12054_" in page                  # ...and the other recorder to pick
+
+        other = site.db.get_wotb_battle(ids[2], ALICE)["recorder_account"]
+        page = site.client.get(f"/blitz/career?account={other}").text
+        assert "Карьера Blitz &mdash; _oleg12054_" in page and "T77" in page
+        assert "Объект 704" not in page
+
+        site.login(BOB)  # nobody else's battles
+        assert "Пока ни одного боя" in site.client.get("/blitz/career").text

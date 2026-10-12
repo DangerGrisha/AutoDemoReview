@@ -622,6 +622,32 @@ def list_wotb_battles(uploader_steamid):
         conn.close()
 
 
+def list_wotb_battle_data(uploader_steamid, recorder_account):
+    """One recorder's battles among the uploader's, WITH their data_json, for
+    the career page. `IS` so a battle without a recorder id groups with its
+    kind instead of with everybody."""
+    conn = connect()
+    try:
+        return conn.execute(
+            "SELECT id, started_at, recorder_account, recorder_name, data_json "
+            "FROM wotb_battles WHERE uploader_steamid = ? AND recorder_account IS ? "
+            "ORDER BY started_at DESC, id DESC", (uploader_steamid, recorder_account)).fetchall()
+    finally:
+        conn.close()
+
+
+def wotb_recorders(uploader_steamid):
+    """Whose replays the uploader has: [(recorder_account, name, battles)], most first."""
+    conn = connect()
+    try:
+        return conn.execute(
+            "SELECT recorder_account, MAX(recorder_name) AS name, COUNT(*) AS battles "
+            "FROM wotb_battles WHERE uploader_steamid = ? GROUP BY recorder_account "
+            "ORDER BY battles DESC, name", (uploader_steamid,)).fetchall()
+    finally:
+        conn.close()
+
+
 def get_wotb_battle(battle_id, uploader_steamid):
     """Access-scoped fetch: only the uploader sees a battle (no WG login yet)."""
     conn = connect()
