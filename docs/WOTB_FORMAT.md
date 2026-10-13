@@ -160,7 +160,9 @@ of the battle. All our fixtures split into packets byte for byte.
 | 7 | entity property | `entity u32, property u32, size u32, value` |
 | 8 | entity method | `entity u32, method u32, size u32, args` |
 | 10 | position, 49 bytes | `entity u32, space u32, vehicle u32, x y z f32, error xyz f32, yaw pitch roll f32, flag u8`. x/z = ground plane in metres, x east and z north (the playable area is about ±230…285 m), y = height. yaw = hull heading in radians: 0 faces +z, positive turns toward +x, i.e. clockwise on the minimap (`yaw = atan2(dx, dz)` of the travel direction, median error 0.1° over 5.8k moving samples). Sent about 10 times a second per visible vehicle |
-| 39 | 28 bytes, ~8k per battle | f32s that look like the recorder's camera or aim point; not decoded |
+| 23 | u32 | the recorder enters (`0`) or leaves (`1`) the sniper sight, see [the recorder's camera](#the-recorders-camera-packets-23-31-and-39) |
+| 31 | f32 | field of view in degrees, every frame inside the sight |
+| 39 | 28 bytes, about 60 a second | the recorder's camera: yaw, pitch, aim point, turret yaw, gun pitch |
 | 0xFFFFFFFF | end marker | |
 
 **Visibility:** allies are tracked for the whole battle (the longest silence in
@@ -216,7 +218,7 @@ Vehicle entity (entity type 2 in the create packet):
 | what | layout | confidence |
 |---|---|---|
 | create, properties | `0 u8, 1 u8, 2 gun angles u16, 3 health i16`, then 4 u16, 5 public info (nickname, compact descriptor, ...), more not read | sure: health equals the results' max HP for every ally at the start (11.20) |
-| property 2 | gun angles u16: turret yaw relative to the hull in the top 10 bits, `(v >> 6) / 1023 · 2π − π`, same sense as the hull yaw; gun pitch in the low 6 bits (not used). Sent about 10 times a second | sure: hull yaw + turret yaw points along the tracer of the shot: median error 0.25°, 0.7° at the 90th percentile, over 919 shots in 13 battles |
+| property 2 | gun angles u16: turret yaw relative to the hull in the top 10 bits, `(v >> 6) / 1023 · 2π − π`, same sense as the hull yaw; gun pitch in the low 6 bits, `elevation + (v & 63) / 63 · (depression − elevation)` degrees over the gun's `pitchLimits` from the tank's XML (e.g. −20 … 7), down positive, **relative to the hull**. Sent about 10 times a second | sure: hull yaw + turret yaw points along the tracer of the shot: median error 0.25°, 0.7° at the 90th percentile, over 919 shots in 13 battles. The pitch matches the gun pitch of the recorder's camera packets to 0.0–0.05° (median, five tanks); against the camera's own pitch it fits only once the slope of the ground under the tank is added (median 1.8–2.7° off on hilly maps without, 0.2–1.0° with) |
 | property 3 | health i16 | sure. Always followed by method 1 with the same value, so only creates and method 1 are read |
 | method 0 | shooting: burst size u8 (1, or 3 for burst guns) | sure: for every tank of the recorder's team the sizes add up to its shots |
 | method 1 | health changed: `new health i16 (negative = overkill), attacker u32, reason u8`. Reasons: 0 shell, 1 fire (ticks every 0.5 s, falling: 60, 55, 50), 2 ramming (both tanks hurt in the same instant), 3 a fall -- the attacker is the vehicle itself; all five in our battles came after the tank dropped 5–8 m within a second | sure: the drops on a tank of the recorder's team add up to its damage received; reasons 1 and 2 likely, 3 sure |
@@ -251,6 +253,35 @@ Panzer 58's damage in the results is exactly its seen damage plus those 249. Ove
 all recordings that run to the end of the battle, the results' damage minus
 the damage seen equals the unseen health drops, to the point.
 
+### The recorder's camera: packets 23, 31 and 39
+
+The client records its own camera so the game can play the battle back
+through the player's eyes. `camera.py` reads it; the same in 11.7.1 and
+11.20.0, in all 13 replays.
+
+| type | layout | meaning |
+|---|---|---|
+| 23 | u32 | `0`: into the sniper sight, `1`: back to the arcade camera. When the recorder dies the camera leaves the sight and orbits the wreck |
+| 31 | f32 | horizontal field of view in degrees, every frame while in the sight and only then: from 54 (the arcade view, `optionsDesktop.yaml` "Default fov") down to 27 (×2), 6.76 (×8) or anything between (the "smart zoom" wheel) |
+| 39 | 7 × f32 | camera yaw and pitch in degrees (yaw like the hull's, pitch below the horizon), the aim point x y z where the crosshair rests, the turret's yaw relative to the hull (radians), the gun's pitch (radians, down positive) |
+
+Checks (pinned in `tests/test_wotb_camera.py`):
+- **sure**: the camera yaw points from the recorder's tank to the aim point (median 0.1–0.7°).
+- **sure**: in the sight, the line of sight passes over the tank at the height of its gun: the hull's turret position plus the turret's gun position plus the chassis' hull position in the tank's XML. T77 measured 2.22 m against 2.23 m in the XML; FV215b (183) 2.35 against 2.35. The sight sits on the gun.
+- **sure**: in the arcade camera it passes about 4.8 m over the tank (4.75–4.86 on every tank). That is the point the camera orbits. How far behind it the camera stays is not recorded.
+- **likely**: the field of view is horizontal, which is the DAVA engine's camera convention.
+
+The 3D view's "Глазами" mode replays this camera:
+- the sight on the gun, with the recorded zoom;
+- the arcade camera 19 m behind the 4.8 m point (19 is `optionsDesktop.yaml` "Camera fixed positions: Arcade"; a guess at its meaning).
+
+The battle dict keeps it thinned (camera.py):
+- the direction where straight lines stay within 0.25°, about 6–14 KB a battle;
+- the sight's visits;
+- its zoom keyframes.
+
+Other players' cameras are not in the replay. For them the view looks along the gun: hull yaw plus turret yaw, and the gun's pitch plus the slope of the ground.
+
 ## Tank ids
 
 ```
@@ -278,6 +309,7 @@ payload | original u32 | packed u32 | crc32(payload) u32 | kind u32 | "DVPL"
 | source | output |
 |---|---|
 | `XML/item_defs/vehicles/*/list.xml` + `Strings/{ru,en}.yaml` | `vehicles.json`: tier, class from tags, ru/en names |
+| `XML/item_defs/vehicles/<nation>/<tank>.xml` (+ `components/guns.xml` for shared guns) | `vehicles.json`: `eye`, the top gun's height above the ground; `pitch`, its limits [elevation, depression] in degrees |
 | `maps.yaml` | `maps.json`: id, scene name, modes, variant `tag`, assault respawn points |
 | `3d/Maps/<scene>.sc2` (see below) | `maps.json`: `world` (terrain square), `border` (playable area), `base` (Encounter: x, z, radius), `points` (Supremacy: id, x, z, radius) |
 | `Gfx/UI/BattleScreenHUD/minimap/<key>/MiniMapSmall@2x.packed.webp` | `minimaps/<key>.webp`, 512×512; `maps.json`: `minimap_crop` |
@@ -353,10 +385,11 @@ replays of, a tank's height in the position packets is the terrain's under it
 to a few centimetres (median 1–6 cm, 90 % within 15 cm; the rest stand on
 bridges and rocks). Read row by row without untiling, nothing correlates.
 
-`tools/wotb_extract_assets.py` resamples each scene's heightmap to 160 × 160
-(3.8 m apart) and writes `assets/terrain/<scene>.bin`: decimetres as i16le,
-row by row from the south, each row's first value as is and the rest as steps,
-zlib-compressed -- about 17 KB a map. `*_colormap.dx11.dds` (2048² DXT3) is
+`tools/wotb_extract_assets.py` resamples each scene's heightmap to 256 × 256
+(2.4 m apart, the most one WebGL mesh with 16-bit indices takes) and writes
+`assets/terrain/<scene>.bin`: decimetres as i16le, row by row from the south,
+each row's first value as is and the rest as steps, zlib-compressed -- about
+36 KB a map. `*_colormap.dx11.dds` (2048² DXT3) is
 the bare ground's colour; the 3D view drapes the minimap over the relief
 instead, because it shows the buildings and roads.
 
@@ -368,5 +401,7 @@ Not done yet:
 
 - Which hits the results count as penetrations (kinds 0 and 2 sometimes do), and what the hit's effects byte, "damage factor" and the last two bytes mean.
 - Avatar methods 19, 13, 35, 38, 46 (guesses above) and vehicle properties 0, 1, 4, 7, 8, 9.
+- Packet types 26 (u32 0, within 0.3 s of the recorder's own shots), 28 (u32 0/1/2), 33 (8 bytes, an entity id; as many as the creates), 4 (an entity id) and 35 (a byte counting up 10 times a second).
+- How far behind the tank the arcade camera stays (the player can zoom it).
 - Assist kinds A and B: which one is spotting and which is tracking.
 - Point state fields 5 and 6 (seen while a capture stalls and while it runs faster, maybe the crew skill "Стремительный захват"), and kill field 4.

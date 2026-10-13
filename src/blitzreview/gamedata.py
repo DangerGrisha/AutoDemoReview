@@ -32,6 +32,11 @@ ROMAN = ("", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X")
 # точку A" ... "F").
 POINT_LETTERS = "ABCDEF"
 
+# A gun the tables do not know: about where most sit (1.8-2.4 m up) and how
+# far most tilt (20 degrees up, 6 down).
+DEFAULT_EYE = 2.0
+DEFAULT_PITCH = (-20.0, 6.0)
+
 
 @lru_cache(maxsize=None)
 def _table(name, section):
@@ -56,6 +61,17 @@ def vehicle(tank_id, lang="ru"):
             "tier": entry.get("tier"), "type": entry.get("type"),
             "nation": entry.get("nation"), "premium": bool(entry.get("premium")),
             "known": True}
+
+
+def gun(tank_id):
+    """(eye, (elevation, depression)) of a tank's top gun: its height above
+    the ground in metres -- where the sniper sight sits -- and its pitch
+    limits in degrees, up negative (tools/wotb_extract_assets.py). Defaults
+    for a tank the tables lack."""
+    entry = _table("vehicles.json", "vehicles").get(str(tank_id)) or {}
+    limits = entry.get("pitch")
+    return (float(entry.get("eye") or DEFAULT_EYE),
+            (float(limits[0]), float(limits[1])) if limits else DEFAULT_PITCH)
 
 
 def map_info(key=None, map_id=None, lang="ru"):

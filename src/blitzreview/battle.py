@@ -9,10 +9,12 @@ Joins three sources that overlap on purpose:
     final numbers of all 14 players (damage, shots, hp left, xp ...).
 
 The stream also gives every visible vehicle's position, which becomes the
-`replay` block -- the tracks of the 2D minimap replay (see replay.py) -- the
-capture updates, which become `objectives`: who captured what and when, and
-the Supremacy score (see arena.py) -- and the fight itself, which becomes
-`events`: health, shots, hits and damage (see events.py).
+`replay` block -- the tracks of the 2D minimap replay (see replay.py), and the
+recorder's own camera for the 3D view's "through the player's eyes" (see
+camera.py) -- the capture updates, which become `objectives`: who captured
+what and when, and the Supremacy score (see arena.py) -- and the fight
+itself, which becomes `events`: health, shots, hits and damage (see
+events.py).
 
 Vehicles are keyed by entity id: a battle result's id IS the vehicle's entity
 id in the stream, so the sources join exactly, with no name matching. A broken
@@ -20,7 +22,7 @@ or missing results file degrades the report (no final numbers) instead of
 rejecting the replay; the reason goes into `warnings`.
 """
 
-from . import arena, battle_results, events, gamedata, replay
+from . import arena, battle_results, camera, events, gamedata, replay
 from .container import open_replay
 from .packets import positions, read_stream
 
@@ -29,9 +31,11 @@ from .packets import positions, read_stream
 #    the mode of a battle without results from the stream.
 # 4: adds `events` (health, shots, hits, damage) and the turret's yaw to the
 #    tracks (replay.FORMAT 2).
+# 5: adds the gun's pitch to the tracks (replay.FORMAT 3) and the recorder's
+#    camera, `replay.camera` (camera.py).
 # Battles stored in an older format are re-parsed when their replay is
 # uploaded again (web/blitz.py).
-FORMAT = 4
+FORMAT = 5
 
 _STAT_FIELDS = ("damage", "kills", "shots", "hits", "penetrations", "assist",
                 "damage_received", "hits_received", "nonpen_received",
@@ -197,6 +201,15 @@ def _events(fight, start, vehicles):
     }
 
 
+def _pitches(fight, vehicles):
+    """{entity: [(clock, degrees)]}: each gun's pitch bits read over that
+    tank's own pitch limits."""
+    limits = {v["entity_id"]: gamedata.gun(v["tank"]["tank_id"])[1] for v in vehicles}
+    return {eid: [(clock, round(events.gun_pitch(code, limits.get(eid, gamedata.DEFAULT_PITCH)), 2))
+                  for clock, code in codes]
+            for eid, codes in ((fight or {}).get("pitch") or {}).items()}
+
+
 def build(meta, stream, arena_info, results, warnings=(), lang="ru", fight=None):
     rows = _vehicles(meta, arena_info, results)
     start = arena_info["battle_start"]
@@ -264,7 +277,10 @@ def build(meta, stream, arena_info, results, warnings=(), lang="ru", fight=None)
     if stream is not None and start is not None:
         tracks = replay.build(positions(stream), start,
                               [(v["entity_id"], v["death_time"]) for v in vehicles],
-                              end_clock - start, turrets=(fight or {}).get("turret"))
+                              end_clock - start, turrets=(fight or {}).get("turret"),
+                              pitches=_pitches(fight, vehicles))
+        if tracks is not None:
+            tracks["camera"] = camera.build(stream, start, end_clock - start)
     return {
         "format": FORMAT,
         "client_version": meta["version"],

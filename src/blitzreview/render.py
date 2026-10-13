@@ -559,11 +559,12 @@ def _advantage(battle, end):
 
 
 def _replay_vehicle(v):
-    """What the replay script knows about one vehicle; `r` only with results."""
+    """What the replay script knows about one vehicle; `r` only with results.
+    `eye` is the gun's height (gamedata.gun): where a view from the tank sits."""
     out = {"id": v["entity_id"], "n": v["nickname"], "k": v["tank"]["short"],
            "s": _side_class(v), "d": v["death_time"], "c": v["tank"].get("type"),
            "tn": v["tank"]["name"], "tk": _tank_kind(v["tank"]), "cl": v.get("clan_tag"),
-           "kid": v.get("killer_id")}
+           "kid": v.get("killer_id"), "eye": gamedata.gun(v["tank"].get("tank_id") or 0)[0]}
     stats = v.get("stats")
     if stats:
         out["r"] = {"dmg": stats["damage"], "fr": stats["kills"], "as": stats["assist"],
@@ -653,6 +654,7 @@ def _replay_data(battle, geo):
         "obj": _replay_objectives(battle),
         "ev": _replay_events(battle),
         "terrain": _replay_terrain(battle),
+        "cam": rp.get("camera"),  # the recorder's own camera (camera.py), from format 5
     }
 
 
@@ -751,7 +753,8 @@ def _replay(battle):
         + '<span class="rp-opt">подписи'
         + _seg("label", [("tank", "танки"), ("nick", "ники"), ("none", "нет")], "tank")
         + '</span>'
-        + ('<span class="rp-opt">вид' + _seg("view", [("2d", "2D"), ("3d", "3D")], "2d") + '</span>'
+        + ('<span class="rp-opt">вид' + _seg("view", [("2d", "2D"), ("3d", "3D"), ("pov", "Глазами")],
+                                              "2d") + '</span>'
            if data["terrain"] else ""))
     return (
         '<section class="card replay" id="replay">'
@@ -876,7 +879,13 @@ border:1px solid var(--line);background:#06080A;outline:none;cursor:pointer}
 .rp-stage:focus-visible{border-color:var(--me)}
 .rp-stage canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
 .rp-stage.is3d{touch-action:none}
+.rp-stage.pov{aspect-ratio:16/9;cursor:crosshair}
+.replay.pov .rp-grid{grid-template-columns:minmax(0,1fr)}
+.replay.pov .rp-main{max-width:none}
+.replay.pov .rp-side .feed{max-height:260px}
+@media(max-width:640px){.replay.pov .rp-hud,.replay.pov .rp-recent{display:none}}
 .rp-3dnote{margin:6px 0 0}
+.rc-eyes{margin-top:8px;font-size:12px}
 .rp-recent{position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:3px;
 align-items:flex-end;pointer-events:none}
 .rp-recent div{font-size:12px;font-weight:600;background:rgba(11,14,17,.8);
@@ -1067,21 +1076,25 @@ _REPLAY_SCRIPT = r"""
   var cur = 0, playing = false, lastTs = 0, W = 1, H = 1, dpr = 1, recentSig = '', focus = null;
 
   var byId = {}, V = [];
-  var STRIDE = R.fmt >= 2 ? 5 : 4;  // format 1 tracks (older battles) have no turret
+  var STRIDE = R.fmt >= 3 ? 6 : R.fmt >= 2 ? 5 : 4;  // older battles: no gun pitch (2), no turret either (1)
   R.vehicles.forEach(function (v) { byId[v.id] = v; });
   R.tracks.forEach(function (tr) {
     var v = byId[tr.id];
     if (!v) return;
     var p = tr.p, n = Math.floor(p.length / STRIDE);
-    var T = new Float64Array(n), X = new Float64Array(n), Z = new Float64Array(n),
-        Y = new Float64Array(n), G = new Float64Array(n), t = 0, x = 0, z = 0, y = 0, g = 0;
+    var T = new Float64Array(n), X = new Float64Array(n), Z = new Float64Array(n), Y = new Float64Array(n),
+        G = new Float64Array(n), P = new Float64Array(n), t = 0, x = 0, z = 0, y = 0, g = 0, q = 0;
     for (var i = 0; i < n; i++) {
       var k = STRIDE * i;
-      if (i === 0) { t = p[0]; x = p[1]; z = p[2]; y = p[3]; g = STRIDE > 4 ? p[4] : 0; }
-      else { t += p[k]; x += p[k + 1]; z += p[k + 2]; y += p[k + 3]; if (STRIDE > 4) g += p[k + 4]; }
-      T[i] = t / 10; X[i] = x / 10; Z[i] = z / 10; Y[i] = y; G[i] = g;  // yaws unwrapped: lerp-safe
+      if (i === 0) { t = p[0]; x = p[1]; z = p[2]; y = p[3]; g = STRIDE > 4 ? p[4] : 0; q = STRIDE > 5 ? p[5] : 0; }
+      else {
+        t += p[k]; x += p[k + 1]; z += p[k + 2]; y += p[k + 3];
+        if (STRIDE > 4) g += p[k + 4];
+        if (STRIDE > 5) q += p[k + 5];
+      }
+      T[i] = t / 10; X[i] = x / 10; Z[i] = z / 10; Y[i] = y; G[i] = g; P[i] = q / 10;  // yaws unwrapped: lerp-safe
     }
-    v.T = T; v.X = X; v.Z = Z; v.Y = Y; v.G = STRIDE > 4 ? G : null;
+    v.T = T; v.X = X; v.Z = Z; v.Y = Y; v.G = STRIDE > 4 ? G : null; v.P = STRIDE > 5 ? P : null;
     v.spotted = [];  // when an enemy came into view: its first sample and each one after a silence
     if (v.s === 'e') for (var j = 0; j < n; j++) if (!j || T[j] - T[j - 1] > GAP) v.spotted.push(T[j]);
     V.push(v);
@@ -1144,11 +1157,11 @@ _REPLAY_SCRIPT = r"""
     var i = at(v.hpT, t);
     return i < 0 ? null : v.hpV[i];
   }
-  function state(v, t) {  // g: where the turret points relative to the hull (null: unknown)
-    var T = v.T, n = T.length, G = v.G;
+  function state(v, t) {  // g: where the turret points relative to the hull (null: unknown); p: gun pitch, down +
+    var T = v.T, n = T.length, G = v.G, P = v.P;
     if (v.d !== null && t >= v.d) {
       var j = at(T, v.d + 0.25);
-      return j < 0 ? null : {k: 'dead', x: v.X[j], z: v.Z[j], y: v.Y[j], g: null};
+      return j < 0 ? null : {k: 'dead', x: v.X[j], z: v.Z[j], y: v.Y[j], g: null, p: 0};
     }
     var i = at(T, t);
     if (i < 0) return null;
@@ -1156,11 +1169,14 @@ _REPLAY_SCRIPT = r"""
       var f = (t - T[i]) / (T[i + 1] - T[i]);
       return {k: 'live', x: v.X[i] + (v.X[i + 1] - v.X[i]) * f,
               z: v.Z[i] + (v.Z[i + 1] - v.Z[i]) * f, y: v.Y[i] + (v.Y[i + 1] - v.Y[i]) * f,
-              g: G ? G[i] + (G[i + 1] - G[i]) * f : null};
+              g: G ? G[i] + (G[i + 1] - G[i]) * f : null, p: P ? P[i] + (P[i + 1] - P[i]) * f : 0};
     }
     var age = t - T[i];
-    if (age <= GAP) return {k: 'live', x: v.X[i], z: v.Z[i], y: v.Y[i], g: G ? G[i] : null};
-    return {k: 'ghost', x: v.X[i], z: v.Z[i], y: v.Y[i], g: null, age: age};
+    if (age <= GAP) return {k: 'live', x: v.X[i], z: v.Z[i], y: v.Y[i], g: G ? G[i] : null, p: P ? P[i] : 0};
+    return {k: 'ghost', x: v.X[i], z: v.Z[i], y: v.Y[i], g: null, p: 0, age: age};
+  }
+  function dimmed(v) {  // the rest fade while one tank is picked -- not when the view is through its eyes
+    return MODE !== 'pov' && focus && v !== focus;
   }
 
   function drawMap() {
@@ -1342,7 +1358,7 @@ _REPLAY_SCRIPT = r"""
     if (!q) return;
     ctx.save();
     ctx.translate(q.x, q.y);
-    ctx.globalAlpha = focus && v !== focus ? .3 : 1;
+    ctx.globalAlpha = dimmed(v) ? .3 : 1;
     if (!flat && s.k !== 'ghost') {
       if (s.k === 'live' && v.s === 'm') ring(13 * dpr, 'rgba(255,255,255,.9)', 1.5);
     } else if (s.k === 'dead') {
@@ -1375,7 +1391,7 @@ _REPLAY_SCRIPT = r"""
     if (hp === null || !v.hpMax || !q) return;
     var w = 18 * dpr, h = 3 * dpr, x = q.x - w / 2, y = q.y + (MODE === '2d' ? 9 : -6) * dpr;
     ctx.save();
-    ctx.globalAlpha = focus && v !== focus ? .3 : 1;
+    ctx.globalAlpha = dimmed(v) ? .3 : 1;
     ctx.fillStyle = 'rgba(0,0,0,.75)'; ctx.fillRect(x - dpr, y - dpr, w + 2 * dpr, h + 2 * dpr);
     ctx.fillStyle = COL[v.s]; ctx.fillRect(x, y, w * Math.max(0, Math.min(1, hp / v.hpMax)), h);
     ctx.restore();
@@ -1392,7 +1408,7 @@ _REPLAY_SCRIPT = r"""
     ctx.save();
     ctx.font = '600 ' + Math.round(11 * dpr) + 'px ' + FONT;
     ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.lineJoin = 'round';
-    ctx.globalAlpha = (s.k === 'live' || picked ? 1 : .65) * (focus && !picked ? .3 : 1);
+    ctx.globalAlpha = (s.k === 'live' || picked ? 1 : .65) * (dimmed(v) ? .3 : 1);
     ctx.lineWidth = 3 * dpr; ctx.strokeStyle = 'rgba(0,0,0,.85)';
     ctx.strokeText(text, x, y);
     ctx.fillStyle = s.k === 'dead' && !picked ? '#A2AAB3' : TEXT[v.s];
@@ -1464,7 +1480,7 @@ _REPLAY_SCRIPT = r"""
   // camera at the south edge looks north with east to its right.
   var gl = null, glc = null, G3 = null, TER = null, VP = null;
   var cam = {tx: 0, tz: 0, yaw: 0, pitch: .8, dist: 450};
-  var BIG = 1.8;  // tanks drawn this much larger than life, or a 7 m hull is a dot from 400 m
+  var BIG = 1.8;  // the free camera draws tanks this much larger than life, or a 7 m hull is a dot from 400 m
   var viewBtn = card.querySelector('.seg[data-group="view"]'), note3d = document.getElementById('rp-3dnote');
   function ground(x, z) {  // terrain height at a point, bilinear; 0 before the terrain is loaded
     if (!TER) return 0;
@@ -1518,7 +1534,16 @@ _REPLAY_SCRIPT = r"""
   }
   function tr(x, y, z) { return mat([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1]); }
   function rotY(a) { var c = Math.cos(a), s = Math.sin(a); return mat([c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1]); }
+  function rotX(a) { var c = Math.cos(a), s = Math.sin(a); return mat([1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 0, 0, 1]); }
+  function rotZ(a) { var c = Math.cos(a), s = Math.sin(a); return mat([c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]); }
+  function slope(x, z, yaw) {  // how steeply the ground rises along a heading (rise over run), under a tank's length
+    var sx = Math.sin(yaw) * 3, sz = Math.cos(yaw) * 3;
+    return (ground(x + sx, z + sz) - ground(x - sx, z - sz)) / 6;
+  }
   function sc(x, y, z) { return mat([x, 0, 0, 0, 0, y, 0, 0, 0, 0, z, 0, 0, 0, 0, 1]); }
+  function dirOf(yaw, pitch) {  // world [x, height, z] a camera looks along: yaw clockwise from north, pitch down
+    return [Math.sin(yaw) * Math.cos(pitch), -Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch)];
+  }
   function project(x, y, z) {  // world point -> canvas pixels, null behind the camera or far off screen
     if (!VP) return null;
     var gz = -z, w = VP[3] * x + VP[7] * y + VP[11] * gz + VP[15];
@@ -1527,19 +1552,46 @@ _REPLAY_SCRIPT = r"""
     if (Math.abs(sx) > 3 || Math.abs(sy) > 3) return null;
     return {x: (sx + 1) / 2 * W, y: (1 - sy) / 2 * H};
   }
+  function clip(p) {  // world [x, height, z] -> clip x, y, w
+    var gz = -p[2];
+    return [VP[0] * p[0] + VP[4] * p[1] + VP[8] * gz + VP[12], VP[1] * p[0] + VP[5] * p[1] + VP[9] * gz + VP[13],
+            VP[3] * p[0] + VP[7] * p[1] + VP[11] * gz + VP[15]];
+  }
+  function seg3(a, b) {  // a line between two world points on the canvas, cut where it goes behind the camera
+    if (!VP) return null;
+    var p = clip(a), q = clip(b), near = .3;
+    if (p[2] < near && q[2] < near) return null;
+    if (p[2] < near || q[2] < near) {
+      var f = (near - p[2]) / (q[2] - p[2]), c = [p[0] + (q[0] - p[0]) * f, p[1] + (q[1] - p[1]) * f, near];
+      if (p[2] < near) p = c; else q = c;
+    }
+    return [{x: (p[0] / p[2] + 1) / 2 * W, y: (1 - p[1] / p[2]) / 2 * H},
+            {x: (q[0] / q[2] + 1) / 2 * W, y: (1 - q[1] / q[2]) / 2 * H}];
+  }
 
+  // Fog only at eye level (fog = start and end distance in metres): it melts
+  // the far terrain into the haze of the sky above the horizon.
+  var FOG = 'uniform vec3 eye;uniform vec2 fog;uniform vec3 fogc;' +
+    'vec3 hazed(vec3 c,vec3 w){return mix(c,fogc,.9*clamp((distance(w,eye)-fog.x)/(fog.y-fog.x),0.0,1.0));}';
   var VS_TER = 'attribute vec3 p;attribute vec3 nm;attribute vec2 uv;uniform mat4 mvp;' +
-    'varying vec2 vuv;varying vec3 vn;varying vec2 vw;' +
-    'void main(){vuv=uv;vn=nm;vw=vec2(p.x,-p.z);gl_Position=mvp*vec4(p,1.0);}';
-  var FS_TER = 'precision mediump float;uniform sampler2D tex;uniform vec4 bd;uniform vec3 sun;' +
-    'varying vec2 vuv;varying vec3 vn;varying vec2 vw;' +
+    'varying vec2 vuv;varying vec3 vn;varying vec3 vp;' +
+    'void main(){vuv=uv;vn=nm;vp=p;gl_Position=mvp*vec4(p,1.0);}';
+  var FS_TER = 'precision mediump float;uniform sampler2D tex;uniform vec4 bd;uniform vec3 sun;uniform float od;' + FOG +
+    'varying vec2 vuv;varying vec3 vn;varying vec3 vp;' +
     'void main(){vec3 c=texture2D(tex,vuv).rgb;float l=.55+.6*max(dot(normalize(vn),sun),0.0);' +
-    'float inside=step(bd.x,vw.x)*step(vw.x,bd.z)*step(bd.y,vw.y)*step(vw.y,bd.w);' +
-    'gl_FragColor=vec4(c*l*mix(.5,1.0,inside),1.0);}';
-  var VS_BOX = 'attribute vec3 p;attribute vec3 nm;uniform mat4 mvp;uniform mat4 model;varying vec3 vn;' +
-    'void main(){vn=mat3(model[0].xyz,model[1].xyz,model[2].xyz)*nm;gl_Position=mvp*model*vec4(p,1.0);}';
-  var FS_BOX = 'precision mediump float;uniform vec4 col;uniform vec3 sun;varying vec3 vn;' +
-    'void main(){float l=.5+.65*max(dot(normalize(vn),sun),0.0);gl_FragColor=vec4(col.rgb*l,col.a);}';
+    'float inside=step(bd.x,vp.x)*step(vp.x,bd.z)*step(bd.y,-vp.z)*step(-vp.z,bd.w);' +
+    'gl_FragColor=vec4(hazed(c*l*mix(od,1.0,inside),vp),1.0);}';
+  var VS_BOX = 'attribute vec3 p;attribute vec3 nm;uniform mat4 mvp;uniform mat4 model;varying vec3 vn;varying vec3 vp;' +
+    'void main(){vn=mat3(model[0].xyz,model[1].xyz,model[2].xyz)*nm;vec4 w=model*vec4(p,1.0);vp=w.xyz;' +
+    'gl_Position=mvp*w;}';
+  var FS_BOX = 'precision mediump float;uniform vec4 col;uniform vec3 sun;' + FOG + 'varying vec3 vn;varying vec3 vp;' +
+    'void main(){float l=.5+.65*max(dot(normalize(vn),sun),0.0);gl_FragColor=vec4(hazed(col.rgb*l,vp),col.a);}';
+  // The sky behind everything: haze at the horizon, blue overhead. sk = the
+  // camera's elevation and tan(half the vertical field of view).
+  var VS_SKY = 'attribute vec2 q;varying float vy;void main(){vy=q.y;gl_Position=vec4(q,.9999,1.0);}';
+  var FS_SKY = 'precision mediump float;uniform vec2 sk;uniform vec3 fogc;varying float vy;' +
+    'void main(){float e=sk.x+atan(vy*sk.y);gl_FragColor=vec4(mix(fogc,vec3(.37,.53,.71),smoothstep(0.0,.5,e)),1.0);}';
+  var HAZE = [.70, .76, .81];
   function program(vs, fs) {
     var p = gl.createProgram();
     [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]].forEach(function (pair) {
@@ -1551,8 +1603,10 @@ _REPLAY_SCRIPT = r"""
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
     var info = {p: p, a: {}, u: {}};
-    ['p', 'nm', 'uv'].forEach(function (name) { info.a[name] = gl.getAttribLocation(p, name); });
-    ['mvp', 'model', 'tex', 'bd', 'sun', 'col'].forEach(function (name) { info.u[name] = gl.getUniformLocation(p, name); });
+    ['p', 'nm', 'uv', 'q'].forEach(function (name) { info.a[name] = gl.getAttribLocation(p, name); });
+    ['mvp', 'model', 'tex', 'bd', 'sun', 'col', 'eye', 'fog', 'fogc', 'sk', 'od'].forEach(function (name) {
+      info.u[name] = gl.getUniformLocation(p, name);
+    });
     return info;
   }
   function buffer(data, kind) {
@@ -1603,7 +1657,8 @@ _REPLAY_SCRIPT = r"""
     gl = glc.getContext('webgl', {antialias: true}) || glc.getContext('experimental-webgl');
     if (!gl) return false;
     try {
-      G3 = {ter: program(VS_TER, FS_TER), box: program(VS_BOX, FS_BOX), mesh: terrainMesh(), cube: boxMesh(),
+      G3 = {ter: program(VS_TER, FS_TER), box: program(VS_BOX, FS_BOX), sky: program(VS_SKY, FS_SKY),
+            mesh: terrainMesh(), cube: boxMesh(), tri: buffer(new Float32Array([-1, -1, 3, -1, -1, 3])),
             tex: gl.createTexture()};
     } catch (err) {
       gl = null;
@@ -1613,6 +1668,11 @@ _REPLAY_SCRIPT = r"""
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
     gl.generateMipmap(gl.TEXTURE_2D);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    var aniso = gl.getExtension('EXT_texture_filter_anisotropic');  // the ground seen at a slant from a tank
+    if (aniso) {
+      gl.texParameterf(gl.TEXTURE_2D, aniso.TEXTURE_MAX_ANISOTROPY_EXT,
+                       Math.min(8, gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
+    }
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     var b = R.border || view;
@@ -1639,25 +1699,58 @@ _REPLAY_SCRIPT = r"""
     gl.uniform4fv(G3.box.u.col, color);
     gl.drawElements(gl.TRIANGLES, G3.cube.count, gl.UNSIGNED_SHORT, 0);
   }
-  function drawGL(states) {
+  function shade(c, k) { return [c[0] * k, c[1] * k, c[2] * k, 1]; }
+  function tankModel(v, st, k, col) {  // tracks, hull, turret, and a gun tilted as the tank held it, on the slope
+    var yaw = st.y * Math.PI / 180, tilt = mul(rotX(Math.atan(slope(st.x, st.z, yaw))),
+                                               rotZ(Math.atan(slope(st.x, st.z, yaw + Math.PI / 2))));
+    var base = mul(tr(st.x, ground(st.x, st.z), -st.z), mul(rotY(-yaw), mul(tilt, sc(k, k, k))));
+    box(mul(base, mul(tr(-1.27, 0, 0), sc(.78, .95, 6.6))), shade(col, .55));
+    box(mul(base, mul(tr(1.27, 0, 0), sc(.78, .95, 6.6))), shade(col, .55));
+    box(mul(base, mul(tr(0, .42, .15), sc(2.4, .88, 6.1))), col);
+    var turret = mul(base, mul(tr(0, 1.3, .55), rotY(-(st.g || 0) * Math.PI / 180)));
+    box(mul(turret, sc(2.3, .8, 2.7)), col);
+    var gun = mul(turret, mul(tr(0, .42, -1.25), rotX(-(st.p || 0) * Math.PI / 180)));
+    box(mul(gun, mul(tr(0, -.12, -4.4), sc(.24, .24, 4.4))), shade(col, .8));
+  }
+  function drawGL(states, fp) {  // fp: the view through a tank's eyes (povFrame), else the free orbit
     if (glc.width !== W || glc.height !== H) { glc.width = W; glc.height = H; }
     gl.viewport(0, 0, W, H);
     gl.clearColor(.05, .06, .07, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    gl.enable(gl.DEPTH_TEST);
-    if (focus) {  // the camera follows the picked tank
-      var fs = states[V.indexOf(focus)];
-      if (fs) { cam.tx = fs.x; cam.tz = fs.z; }
+    var eye, fog = [1e5, 2e5];
+    if (fp) {
+      var d = dirOf(fp.yaw, fp.pitch), fy = 2 * Math.atan(Math.tan(fp.fov * Math.PI / 360) * H / W);
+      eye = [fp.eye[0], fp.eye[1], -fp.eye[2]];
+      VP = mul(perspective(fy, W / H, fp.near, 3000), lookAt(eye, [eye[0] + d[0], eye[1] + d[1], eye[2] - d[2]]));
+      fog = [120, 1100];
+      gl.disable(gl.DEPTH_TEST);
+      gl.useProgram(G3.sky.p);
+      gl.bindBuffer(gl.ARRAY_BUFFER, G3.tri);
+      gl.enableVertexAttribArray(G3.sky.a.q);
+      gl.vertexAttribPointer(G3.sky.a.q, 2, gl.FLOAT, false, 0, 0);
+      gl.uniform2f(G3.sky.u.sk, -fp.pitch, Math.tan(fy / 2));
+      gl.uniform3fv(G3.sky.u.fogc, HAZE);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    } else {
+      if (focus) {  // the camera follows the picked tank
+        var fs = states[V.indexOf(focus)];
+        if (fs) { cam.tx = fs.x; cam.tz = fs.z; }
+      }
+      var ty = ground(cam.tx, cam.tz), cp = Math.cos(cam.pitch);
+      eye = [cam.tx - Math.sin(cam.yaw) * cp * cam.dist, ty + Math.sin(cam.pitch) * cam.dist,
+             -cam.tz + Math.cos(cam.yaw) * cp * cam.dist];
+      VP = mul(perspective(.75, W / H, 2, 4000), lookAt(eye, [cam.tx, ty, -cam.tz]));
     }
-    var ty = ground(cam.tx, cam.tz), cp = Math.cos(cam.pitch);
-    var eye = [cam.tx - Math.sin(cam.yaw) * cp * cam.dist, ty + Math.sin(cam.pitch) * cam.dist,
-               -cam.tz + Math.cos(cam.yaw) * cp * cam.dist];
-    VP = mul(perspective(.75, W / H, 2, 4000), lookAt(eye, [cam.tx, ty, -cam.tz]));
+    gl.enable(gl.DEPTH_TEST);
     bind(G3.ter, G3.mesh);
     gl.uniformMatrix4fv(G3.ter.u.mvp, false, VP);
     var b = R.border || R.world;
     gl.uniform4f(G3.ter.u.bd, b[0], b[1], b[2], b[3]);
+    gl.uniform1f(G3.ter.u.od, fp ? .78 : .5);  // outside the border: darker, less so at eye level
     gl.uniform3fv(G3.ter.u.sun, SUN);
+    gl.uniform3fv(G3.ter.u.eye, eye);
+    gl.uniform2fv(G3.ter.u.fog, fog);
+    gl.uniform3fv(G3.ter.u.fogc, HAZE);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, G3.tex);
     gl.uniform1i(G3.ter.u.tex, 0);
@@ -1665,28 +1758,275 @@ _REPLAY_SCRIPT = r"""
     bind(G3.box, G3.cube);
     gl.uniformMatrix4fv(G3.box.u.mvp, false, VP);
     gl.uniform3fv(G3.box.u.sun, SUN);
+    gl.uniform3fv(G3.box.u.eye, eye);
+    gl.uniform2fv(G3.box.u.fog, fog);
+    gl.uniform3fv(G3.box.u.fogc, HAZE);
     V.forEach(function (v, i) {
       var st = states[i];
       if (!st || st.k === 'ghost') return;
-      var k = BIG * (v.c === 'LT' ? .85 : v.c === 'HT' ? 1.12 : 1), base = mul(tr(st.x, ground(st.x, st.z), -st.z),
-          mul(rotY(-st.y * Math.PI / 180), sc(k, k, k)));
-      var dim = focus && v !== focus, col = st.k === 'dead' ? DARK : rgb(v.s);
-      if (dim) col = [col[0] * .55, col[1] * .55, col[2] * .55, 1];
-      box(mul(base, sc(3.3, 1.5, 6.6)), col);
-      if (st.k === 'dead') return;
-      var turret = mul(base, mul(tr(0, 1.5, .4), rotY(-(st.g || 0) * Math.PI / 180)));
-      box(mul(turret, sc(2.5, 1.05, 2.8)), col);
-      box(mul(turret, mul(tr(0, .35, -3.4), sc(.38, .38, 4.6))), [col[0] * .8, col[1] * .8, col[2] * .8, 1]);
+      if (fp && fp.inside && v === fp.v) return;  // the camera sits in this one
+      var k = (fp ? 1 : BIG) * (v.c === 'LT' ? .85 : v.c === 'HT' ? 1.12 : 1);
+      var col = st.k === 'dead' ? DARK : rgb(v.s);
+      if (dimmed(v)) col = shade(col, .55);
+      tankModel(v, st, k, col);
     });
   }
+  // ---- through the player's eyes ----
+  // The recorder's own camera (camera.py): its yaw and pitch, the sniper sight
+  // and the sight's zoom, as the player had them. The sight sits on the gun
+  // (the tank's `eye` height); the arcade camera orbits a point ORBIT_UP over
+  // the tank -- where its line of sight crosses the tank on every replay --
+  // from ORBIT_BACK behind (the replay does not say how far; the game's own
+  // setting reads 19). Fields of view are across the screen (the DAVA engine's
+  // convention). Any other tank: that arcade camera behind its gun, or the
+  // view from its gun (X) -- the camera and the zoom are recorded only for the
+  // replay's author.
+  var ARCADE_FOV = 54, ORBIT_UP = 4.8, ORBIT_BACK = 19, D2R = Math.PI / 180;
+  var CAM = null, ME = null;
+  V.forEach(function (v) { if (v.s === 'm') ME = v; });
+  if (R.cam && R.cam.dir && R.cam.dir.length >= 3) {
+    var cd = R.cam.dir, cn = Math.floor(cd.length / 3), ct = 0, cy = 0, cp = 0;
+    CAM = {T: new Float64Array(cn), Y: new Float64Array(cn), P: new Float64Array(cn),
+           sn: R.cam.sniper || [], fov: R.cam.fov || []};
+    for (var ci = 0; ci < cn; ci++) {  // deltas; the yaw keeps turning past 360, lerp-safe
+      if (ci === 0) { ct = cd[0]; cy = cd[1]; cp = cd[2]; }
+      else { ct += cd[3 * ci]; cy += cd[3 * ci + 1]; cp += cd[3 * ci + 2]; }
+      CAM.T[ci] = ct / 100; CAM.Y[ci] = cy / 10; CAM.P[ci] = cp / 10;
+    }
+  }
+  var pov = {manual: null, look: 0, lookP: 0, zoom: 1};
+  var EYE_NOTE = 'Глазами игрока: нажмите на танк на мини-карте или в кадре — смотреть его глазами. ' +
+    'Колесо или щипок — зум, тяните — осмотреться, C или двойной щелчок — вернуть взгляд, X — из танка / за танком, ' +
+    '[ ] — соседний танк, F или Esc — свободная камера.';
+  function camAt(t) {  // the recorder's camera at t: yaw and pitch in degrees, in the sight or not, field of view
+    var T = CAM.T, i = Math.max(0, at(T, t)), j = Math.min(i + 1, T.length - 1);
+    var f = j > i ? Math.max(0, Math.min(1, (t - T[i]) / (T[j] - T[i]))) : 0;
+    var out = {yaw: CAM.Y[i] + (CAM.Y[j] - CAM.Y[i]) * f, pitch: CAM.P[i] + (CAM.P[j] - CAM.P[i]) * f,
+               sniper: false, fov: ARCADE_FOV};
+    var s = last(CAM.sn, t);
+    if (s && t < s[1]) {
+      out.sniper = true;
+      var k = since(CAM.fov, t) - 1, a = CAM.fov[k], b = CAM.fov[k + 1];
+      if (a && a[0] >= s[0] - .05) {
+        out.fov = b && b[0] <= s[1] + .05 ? a[1] + (b[1] - a[1]) * Math.max(0, Math.min(1, (t - a[0]) / (b[0] - a[0])))
+                                           : a[1];
+      }
+    }
+    return out;
+  }
+  function pose(v, t) {  // a tank's state, but smooth: a cubic through the 4-a-second samples, not straight lines
+    var s = state(v, t), T = v.T, n = T.length, i = at(T, t);
+    if (!s || s.k !== 'live' || i < 0 || i + 1 >= n || T[i + 1] - T[i] > GAP) return s;
+    function tangent(A, k) {  // the curve's slope at sample k, from its neighbours on the same sighting
+      var a = k > 0 && T[k] - T[k - 1] <= GAP ? k - 1 : k, b = k + 1 < n && T[k + 1] - T[k] <= GAP ? k + 1 : k;
+      return b > a ? (A[b] - A[a]) / (T[b] - T[a]) : 0;
+    }
+    var h = T[i + 1] - T[i], u = (t - T[i]) / h, u2 = u * u, u3 = u2 * u;
+    var h00 = 2 * u3 - 3 * u2 + 1, h10 = u3 - 2 * u2 + u, h01 = 3 * u2 - 2 * u3, h11 = u3 - u2;
+    function cubic(A) { return h00 * A[i] + h10 * h * tangent(A, i) + h01 * A[i + 1] + h11 * h * tangent(A, i + 1); }
+    return {k: 'live', x: cubic(v.X), z: cubic(v.Z), y: cubic(v.Y), g: v.G ? cubic(v.G) : null,
+            p: v.P ? cubic(v.P) : 0};
+  }
+  function povKind(v) {  // 'rec' the recorder's own camera, 'first' from the gun, 'third' behind the tank
+    return pov.manual || (v === ME && CAM ? 'rec' : 'third');
+  }
+  function povFrame(t) {  // the camera of the followed tank at t, or null when it has not been seen yet
+    var v = focus;
+    if (!v || !v.T) return null;
+    var s = pose(v, t);
+    if (!s) return null;
+    var kind = povKind(v), gy = ground(s.x, s.z), eyeH = v.eye || 2, yaw, pitch, fov = ARCADE_FOV, sniper = false;
+    if (kind === 'rec') {
+      var c = camAt(t);
+      yaw = c.yaw * D2R; pitch = c.pitch * D2R; fov = c.fov; sniper = c.sniper;
+    } else if (s.k === 'dead') {  // at the wreck, facing the killer when he can be seen
+      var killer = byId[v.kid], ks = killer && killer !== v ? seen(killer, t) : null;
+      yaw = ks ? Math.atan2(ks.x - s.x, ks.z - s.z) : s.y * D2R;
+      pitch = 12 * D2R; kind = 'wreck';
+    } else {  // the gun's pitch is the hull's: on a slope the hull tilts it (checked against the recorder's sight)
+      var gyaw = (s.y + (s.g || 0)) * D2R, gp = (s.p || 0) * D2R - Math.atan(slope(s.x, s.z, gyaw));
+      if (kind === 'first') { yaw = gyaw; pitch = gp; }
+      else {  // the arcade camera aims where the gun does, 120 m out
+        var d0 = dirOf(gyaw, gp), dh = gy + eyeH + d0[1] * 120 - (gy + ORBIT_UP);
+        yaw = gyaw; pitch = -Math.atan2(dh, 120 * Math.cos(gp));
+      }
+    }
+    yaw += pov.look;
+    pitch = Math.max(-1.3, Math.min(1.3, pitch + pov.lookP));
+    fov = Math.max(1.5, Math.min(90, fov / pov.zoom));
+    var inside = sniper || kind === 'first', d = dirOf(yaw, pitch), eye;
+    if (inside) eye = [s.x, gy + eyeH, s.z];
+    else {
+      eye = [s.x - d[0] * ORBIT_BACK, gy + ORBIT_UP - d[1] * ORBIT_BACK, s.z - d[2] * ORBIT_BACK];
+      eye[1] = Math.max(eye[1], ground(eye[0], eye[2]) + 1.5);  // the game pulls the camera in; lifting it is close
+    }
+    return {v: v, s: s, kind: kind, sniper: sniper, inside: inside, eye: eye, yaw: yaw, pitch: pitch, fov: fov,
+            near: inside ? .5 : 1};
+  }
+  function resetLook() { pov.look = 0; pov.lookP = 0; pov.zoom = 1; }
+  function nextKind() {  // X: the recorder's camera -> from the gun -> behind the tank -> ...
+    var k = povKind(focus), rec = focus === ME && CAM;
+    pov.manual = k === 'rec' ? 'first' : k === 'first' ? 'third' : (rec ? null : 'first');
+    draw();
+  }
+  function cycle(step) {  // [ and ]: the next tank, in the order of the tables (allies first)
+    var list = R.vehicles.filter(function (v) { return v.T; });
+    if (!list.length) return;
+    var i = list.indexOf(focus);
+    pick(list[(i < 0 ? 0 : i + step + list.length) % list.length]);
+  }
+  function hudText(text, x, y, size, color, align, weight) {
+    ctx.font = (weight || 600) + ' ' + Math.round(size * dpr) + 'px ' + FONT;
+    ctx.textAlign = align || 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+    ctx.lineWidth = 3 * dpr; ctx.strokeStyle = 'rgba(0,0,0,.8)'; ctx.strokeText(text, x, y);
+    ctx.fillStyle = color; ctx.fillText(text, x, y);
+  }
+  function sight(fp, cx, cy) {
+    var u = dpr, L = Math.min(W, H) * .11, g = 12 * u;
+    ctx.save();
+    ctx.lineCap = 'round';
+    [['rgba(0,0,0,.65)', 3.2], ['rgba(255,255,255,.92)', 1.3]].forEach(function (pen) {
+      ctx.strokeStyle = pen[0]; ctx.lineWidth = pen[1] * u;
+      ctx.beginPath();
+      if (fp.inside) {  // the sniper sight: a cross with a gap, a ring
+        ctx.moveTo(cx - L, cy); ctx.lineTo(cx - g, cy); ctx.moveTo(cx + g, cy); ctx.lineTo(cx + L, cy);
+        ctx.moveTo(cx, cy + g); ctx.lineTo(cx, cy + L);
+        ctx.moveTo(cx + g * .55, cy); ctx.arc(cx, cy, g * .55, 0, TAU);
+      } else {  // the arcade marker
+        ctx.moveTo(cx + 9 * u, cy); ctx.arc(cx, cy, 9 * u, 0, TAU);
+        ctx.moveTo(cx - 15 * u, cy); ctx.lineTo(cx - 11 * u, cy); ctx.moveTo(cx + 11 * u, cy); ctx.lineTo(cx + 15 * u, cy);
+      }
+      ctx.stroke();
+    });
+    ctx.fillStyle = '#FFFFFF'; ctx.fillRect(cx - u, cy - u, 2 * u, 2 * u);
+    var zoom = ARCADE_FOV / fp.fov;
+    if (zoom > 1.05) hudText('×' + (zoom < 9.95 ? zoom.toFixed(1) : Math.round(zoom)), cx + L * .6, cy + L * .55, 13, '#FFE9A8', 'left', 700);
+    ctx.restore();
+  }
+  function hitMarks(fp, cx, cy) {  // red arcs round the sight: where the shells that hit this tank came from
+    var r = Math.min(W, H) * .2, span = lasting(1.5);
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (var i = since(SHOTS, cur - span); i < SHOTS.length && SHOTS[i][0] <= cur; i++) {
+      var s = SHOTS[i];
+      if (s[6] !== fp.v.id || s[9]) continue;
+      var a = Math.atan2(s[2] - fp.s.x, s[3] - fp.s.z) - fp.yaw - Math.PI / 2;
+      ctx.globalAlpha = 1 - (cur - s[0]) / span;
+      ctx.beginPath(); ctx.arc(cx, cy, r, a - .3, a + .3);
+      ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 8 * dpr; ctx.stroke();
+      ctx.strokeStyle = s[8] > 0 ? '#FF5B4A' : '#E8E8E8'; ctx.lineWidth = 5 * dpr; ctx.stroke();
+    }
+    ctx.restore();
+  }
+  var mini = null;  // where the minimap sits on the canvas, for clicks
+  function drawMini(fp, states) {  // the minimap in the corner; a click on a tank there looks through its eyes
+    var s = Math.round(Math.min(W, H) * .36), x = Math.round(10 * dpr), y = H - s - Math.round(10 * dpr);
+    mini = {x: x, y: y, s: s};
+    function mx(wx) { return x + (wx - view[0]) / (view[2] - view[0]) * s; }
+    function my(wz) { return y + (view[3] - wz) / (view[3] - view[1]) * s; }
+    ctx.save();
+    ctx.fillStyle = 'rgba(6,8,10,.85)';
+    ctx.fillRect(x - 2 * dpr, y - 2 * dpr, s + 4 * dpr, s + 4 * dpr);
+    if (img.complete && img.naturalWidth) {
+      var sx = ix(view[0]), sy = iy(view[3]);
+      ctx.drawImage(img, sx, sy, ix(view[2]) - sx, iy(view[1]) - sy, x, y, s, s);
+    }
+    ctx.beginPath(); ctx.rect(x, y, s, s); ctx.clip();
+    if (R.border) {
+      var b = R.border;
+      ctx.fillStyle = 'rgba(6,8,10,.5)';
+      ctx.beginPath(); ctx.rect(x, y, s, s); ctx.rect(mx(b[0]), my(b[3]), mx(b[2]) - mx(b[0]), my(b[1]) - my(b[3]));
+      ctx.fill('evenodd');
+    }
+    if (fp) {  // what the camera sees: a wedge as wide as the field of view
+      var cx0 = mx(fp.s.x), cy0 = my(fp.s.z), half = Math.min(1.4, fp.fov * D2R / 2), len = s * .3;
+      ctx.beginPath(); ctx.moveTo(cx0, cy0);
+      ctx.arc(cx0, cy0, len, fp.yaw - Math.PI / 2 - half, fp.yaw - Math.PI / 2 + half);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(255,255,255,.18)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = dpr; ctx.stroke();
+    }
+    var r = 3.3 * dpr;
+    ['dead', 'ghost', 'live'].forEach(function (kind) {
+      V.forEach(function (v, i) {
+        var st = states[i];
+        if (!st || st.k !== kind) return;
+        ctx.save();
+        ctx.translate(mx(st.x), my(st.z));
+        if (kind === 'dead') {
+          ctx.lineCap = 'round'; ctx.strokeStyle = COL[v.s]; ctx.lineWidth = 1.6 * dpr; ctx.globalAlpha = .8; cross(r * .8);
+        } else if (kind === 'ghost') {
+          ctx.globalAlpha = .7; ctx.setLineDash([2 * dpr, 1.5 * dpr]);
+          shape(v.c, r); ctx.strokeStyle = COL[v.s]; ctx.lineWidth = 1.2 * dpr; ctx.stroke();
+        } else {
+          shape(v.c, r); ctx.fillStyle = COL[v.s]; ctx.fill();
+          ctx.strokeStyle = INK; ctx.lineWidth = dpr; ctx.stroke();
+        }
+        if (v === focus) { ctx.globalAlpha = 1; ctx.setLineDash([]); ring(r + 4 * dpr, '#FFFFFF', 1.6); }
+        ctx.restore();
+      });
+    });
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = dpr;
+    ctx.strokeRect(x - .5, y - .5, s + 1, s + 1);
+  }
+  function hitMini(e) {  // {v} when the pointer is over the minimap (v: the tank under it, or null)
+    var box = cv.getBoundingClientRect();
+    if (!mini || !box.width) return null;
+    var x = (e.clientX - box.left) * W / box.width, y = (e.clientY - box.top) * H / box.height;
+    if (x < mini.x || y < mini.y || x > mini.x + mini.s || y > mini.y + mini.s) return null;
+    var best = null, bestD = 10 * dpr;
+    V.forEach(function (v) {
+      var s = state(v, cur);
+      if (!s) return;
+      var qx = mini.x + (s.x - view[0]) / (view[2] - view[0]) * mini.s, qy = mini.y + (view[3] - s.z) / (view[3] - view[1]) * mini.s;
+      var d = Math.hypot(qx - x, qy - y) + (s.k === 'live' ? 0 : 4 * dpr);
+      if (d < bestD) { best = v; bestD = d; }
+    });
+    return {v: best};
+  }
+  var KIND_LABEL = {rec: 'камера игрока', first: 'из танка, по стволу', third: 'за танком', wreck: 'у обломков'};
+  function drawPov(fp, states) {  // the frame round the view: the sight, the tank's plate, hits taken, the minimap
+    var v = focus, cx = W / 2, cy = H / 2, small = W / dpr < 600;  // a phone: fewer words
+    if (!v) return;
+    if (fp) {
+      if (fp.s.k !== 'dead') sight(fp, cx, cy);
+      hitMarks(fp, cx, cy);
+      var head = (small ? '' : v.n + ' · ') + KIND_LABEL[fp.kind] +
+        (fp.kind === 'rec' ? (fp.sniper ? ', снайперский прицел' : ', аркада') : '');
+      hudText(head, cx, (small ? 11 : 16) * dpr, small ? 11 : 13, TEXT[v.s]);
+      var sub = v === ME ? (CAM ? '' : 'в этой записи боя нет камеры игрока — загрузите реплей заново')
+              : v.s === 'e' ? 'камера и зум записаны только у автора реплея; видно то, что видела его команда'
+              : 'камера и зум записаны только у автора реплея — здесь вид по стволу';
+      if (sub && !small) hudText(sub, cx, 34 * dpr, 11, '#C9CED3', 'center', 500);
+      if (fp.s.k === 'dead') {
+        var killer = byId[v.kid];
+        hudText('Уничтожен' + (killer && killer !== v ? ' — ' + killer.n : ''), cx, cy - 30 * dpr, 20, '#FF8A7A', 'center', 700);
+      } else if (fp.s.k === 'ghost') {
+        hudText('Не в засвете — стоит там, где его видели в последний раз', cx, cy - 44 * dpr, 13, '#F4AEA2');
+      }
+    } else {
+      hudText(v.T ? 'Ещё не засвечен — появится на ' + fmt(v.T[0]) : 'Его ни разу не засветили — смотреть его глазами нельзя',
+              cx, cy, 15, TEXT[v.s]);
+    }
+    var hp = hpAt(v, cur), pw = Math.min(W * .3, 260 * dpr), y = H - 22 * dpr;
+    hudText(v.n + '  ·  ' + v.k, cx, y - 16 * dpr, 13, TEXT[v.s], 'center', 700);
+    ctx.fillStyle = 'rgba(0,0,0,.7)'; ctx.fillRect(cx - pw / 2 - dpr, y - 4 * dpr, pw + 2 * dpr, 8 * dpr);
+    if (hp !== null && v.hpMax) {
+      ctx.fillStyle = COL[v.s]; ctx.fillRect(cx - pw / 2, y - 3 * dpr, pw * Math.max(0, Math.min(1, hp / v.hpMax)), 6 * dpr);
+      hudText(num(hp) + ' / ' + num(v.hpMax), cx + pw / 2 + 8 * dpr, y, 11, '#E4E7EA', 'left', 600);
+    }
+    drawMini(fp, states);
+  }
+
   function setView(mode) {
     Array.prototype.forEach.call(viewBtn.querySelectorAll('button'), function (x) {
       x.classList.toggle('on', x.getAttribute('data-v') === mode);
     });
     if (mode === '2d') {
-      MODE = '2d'; stage.classList.remove('is3d');
+      MODE = '2d'; stage.classList.remove('is3d', 'pov'); card.classList.remove('pov');
       if (glc) glc.hidden = true;
-      note3d.hidden = true; draw(); return;
+      note3d.hidden = true; showCard(); fit(); return;
     }
     note3d.hidden = false;
     note3d.textContent = 'Загружаю рельеф…';
@@ -1697,8 +2037,17 @@ _REPLAY_SCRIPT = r"""
         setView('2d'); note3d.hidden = false;
         return;
       }
-      note3d.textContent = 'Тяните — поворот, колесо или щипок — ближе/дальше, правая кнопка или Shift — сдвиг.';
-      MODE = '3d'; glc.hidden = false; stage.classList.add('is3d'); draw();
+      MODE = mode; glc.hidden = false; stage.classList.add('is3d');
+      stage.classList.toggle('pov', mode === 'pov'); card.classList.toggle('pov', mode === 'pov');
+      if (mode === 'pov') {
+        if (!focus || !focus.T) focus = ME && ME.T ? ME : R.vehicles.filter(function (v) { return v.T; })[0] || null;
+        resetLook();
+        note3d.textContent = EYE_NOTE;
+      } else {
+        note3d.textContent = 'Тяните — поворот, колесо или щипок — ближе/дальше, правая кнопка или Shift — сдвиг. ' +
+          'Вид «Глазами» — бой глазами любого игрока.';
+      }
+      showCard(); fit();
     });
   }
   var drag = null, dragged = false, touches = {};
@@ -1706,19 +2055,32 @@ _REPLAY_SCRIPT = r"""
     var ids = Object.keys(touches);
     return ids.length === 2 ? Math.hypot(touches[ids[0]].x - touches[ids[1]].x, touches[ids[0]].y - touches[ids[1]].y) : 0;
   }
+  var lastFov = ARCADE_FOV;  // of the frame on screen: a drag turns the view as far as the pointer moved
   stage.addEventListener('pointerdown', function (e) {
-    if (MODE !== '3d') return;
+    if (MODE === '2d') return;
     touches[e.pointerId] = {x: e.clientX, y: e.clientY};
     drag = {x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey, span: pinch()};
     dragged = false;
     if (stage.setPointerCapture) stage.setPointerCapture(e.pointerId);
   });
   stage.addEventListener('pointermove', function (e) {
-    if (MODE !== '3d' || !drag || !touches[e.pointerId]) return;
+    if (MODE === '2d' || !drag || !touches[e.pointerId]) return;
     touches[e.pointerId] = {x: e.clientX, y: e.clientY};
     var dx = e.clientX - drag.x, dy = e.clientY - drag.y, span = pinch();
     if (Math.abs(dx) + Math.abs(dy) > 3 || span) dragged = true;
     if (!dragged) return;
+    if (MODE === 'pov') {  // the scene follows the pointer
+      if (span && drag.span) {
+        pov.zoom = Math.max(1, Math.min(12, pov.zoom * span / drag.span));
+        drag.span = span;
+      } else {
+        var k = lastFov * D2R / (stage.clientWidth || 600);
+        pov.look -= dx * k; pov.lookP -= dy * k;
+      }
+      drag.x = e.clientX; drag.y = e.clientY;
+      draw();
+      return;
+    }
     if (span && drag.span) {
       cam.dist = Math.max(40, Math.min(900, cam.dist * drag.span / span));
       drag.span = span;
@@ -1740,12 +2102,17 @@ _REPLAY_SCRIPT = r"""
   stage.addEventListener('pointerup', release);
   stage.addEventListener('pointercancel', release);
   stage.addEventListener('wheel', function (e) {
-    if (MODE !== '3d') return;
+    if (MODE === '2d') return;
     e.preventDefault();
-    cam.dist = Math.max(40, Math.min(900, cam.dist * Math.exp(e.deltaY * .0012)));
+    if (MODE === 'pov') pov.zoom = Math.max(1, Math.min(12, pov.zoom * Math.exp(-e.deltaY * .0015)));
+    else cam.dist = Math.max(40, Math.min(900, cam.dist * Math.exp(e.deltaY * .0012)));
     draw();
   }, {passive: false});
-  stage.addEventListener('contextmenu', function (e) { if (MODE === '3d') e.preventDefault(); });
+  stage.addEventListener('contextmenu', function (e) { if (MODE !== '2d') e.preventDefault(); });
+  stage.addEventListener('dblclick', function (e) {
+    if (MODE !== 'pov') return;
+    e.preventDefault(); resetLook(); draw();
+  });
 
   function lasting(base) { return Math.max(base, .3 * speed); }  // battle seconds an effect stays on screen
   function drawSpotted(v, s, t) {  // a ring that shrinks onto an enemy as it is spotted
@@ -1753,7 +2120,7 @@ _REPLAY_SCRIPT = r"""
     if (i < 0 || t - v.spotted[i] > span || t < 0) return;
     var age = (t - v.spotted[i]) / span;
     ctx.save();
-    ctx.globalAlpha = (1 - age) * (focus && v !== focus ? .35 : 1);
+    ctx.globalAlpha = (1 - age) * (dimmed(v) ? .35 : 1);
     var q = pt(s.x, s.z, MODE === '2d' ? 0 : 2);
     if (!q) { ctx.restore(); return; }
     ctx.beginPath(); ctx.arc(q.x, q.y, (24 - 12 * age) * dpr, 0, TAU);
@@ -1766,10 +2133,16 @@ _REPLAY_SCRIPT = r"""
     for (var i = since(SHOTS, t - span); i < SHOTS.length && SHOTS[i][0] <= t; i++) {
       var s = SHOTS[i], shooter = byId[s[1]], target = byId[s[6]];
       if (s[4] === null) continue;
-      var a = pt(s[2], s[3], 1.8), b = pt(s[4], s[5], s[6] ? 1.5 : 0.3);
+      var a, b;
+      if (MODE === '2d') { a = pt(s[2], s[3]); b = pt(s[4], s[5]); }
+      else {  // in 3D the line may pass the camera: one's own shot starts at the eye
+        var ab = seg3([s[2], ground(s[2], s[3]) + 1.8, s[3]], [s[4], ground(s[4], s[5]) + (s[6] ? 1.5 : 0.3), s[5]]);
+        if (ab) { a = ab[0]; b = ab[1]; }
+      }
       if (!a || !b) continue;
       ctx.save();
-      ctx.globalAlpha = (1 - (t - s[0]) / span) * (focus && shooter !== focus && target !== focus ? .2 : 1);
+      ctx.globalAlpha = (1 - (t - s[0]) / span) *
+        (MODE !== 'pov' && focus && shooter !== focus && target !== focus ? .2 : 1);
       ctx.lineCap = 'round';
       if (s[9]) ctx.setLineDash([3 * dpr, 3 * dpr]);
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
@@ -1785,7 +2158,7 @@ _REPLAY_SCRIPT = r"""
     if (!q) return;
     var age = (t - t0) / span, x = q.x, y = q.y - ((MODE === '2d' ? 15 : 34) + 14 * age + 13 * stack) * dpr;
     ctx.save();
-    ctx.globalAlpha = (1 - age) * (focus && v !== focus ? .35 : 1);
+    ctx.globalAlpha = (1 - age) * (dimmed(v) ? .35 : 1);
     ctx.font = '700 ' + Math.round(12 * dpr) + 'px ' + FONT;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
     ctx.lineWidth = 3 * dpr; ctx.strokeStyle = 'rgba(0,0,0,.85)'; ctx.strokeText(text, x, y);
@@ -1807,10 +2180,31 @@ _REPLAY_SCRIPT = r"""
     }
   }
 
+  function renderPov(states, fp) {  // through a tank's eyes: no trails or map marks, the game's markers over tanks
+    drawZones(cur);
+    V.forEach(function (v, i) { if (v !== focus && states[i] && states[i].k === 'ghost') drawTank(v, states[i]); });
+    V.forEach(function (v, i) {
+      if (v === focus || !states[i] || states[i].k !== 'live') return;
+      drawHp(v, states[i], cur);
+      if (v.spotted.length) drawSpotted(v, states[i], cur);
+    });
+    drawShots(cur);
+    V.forEach(function (v, i) { if (v !== focus && states[i]) drawLabel(v, states[i]); });
+    drawKills(cur);
+    drawHits(cur);
+    drawPov(fp, states);
+  }
   function render() {
     ctx.clearRect(0, 0, W, H);
     var states = V.map(function (v) { return state(v, cur); });
-    if (MODE === '3d') drawGL(states); else drawMap();
+    if (MODE === 'pov') {
+      var fp = povFrame(cur);
+      if (fp) lastFov = fp.fov;
+      drawGL(states, fp);
+      renderPov(states, fp);
+      return;
+    }
+    if (MODE === '3d') drawGL(states, null); else drawMap();
     drawZones(cur);
     V.forEach(function (v, i) { drawTrail(v, states[i], cur); });
     ['dead', 'ghost', 'live'].forEach(function (kind) {
@@ -1966,6 +2360,12 @@ _REPLAY_SCRIPT = r"""
     }
     cardEl.appendChild(fate);
     if (!v.T) cardEl.appendChild(el('p', 'note', 'Его ни разу не засветили — пути на карте нет.'));
+    else if (viewBtn && MODE !== 'pov') {
+      var eyes = el('button', 'rbtn rc-eyes', v === ME ? 'Смотреть глазами (камера игрока)' : 'Смотреть его глазами');
+      eyes.type = 'button';
+      eyes.addEventListener('click', function () { setView('pov'); });
+      cardEl.appendChild(eyes);
+    }
   }
   function draw() {
     render();
@@ -1983,6 +2383,8 @@ _REPLAY_SCRIPT = r"""
   }
 
   function pick(v) {
+    if (MODE === 'pov' && !v) return;  // the eyes view always follows someone
+    if (v !== focus) { pov.manual = null; resetLook(); }
     focus = v || null;
     showCard();
     draw();
@@ -1991,10 +2393,10 @@ _REPLAY_SCRIPT = r"""
     var box = cv.getBoundingClientRect();
     if (!box.width) return null;
     var x = (e.clientX - box.left) * W / box.width, y = (e.clientY - box.top) * H / box.height;
-    var best = null, bestD = 16 * dpr;
+    var best = null, bestD = (MODE === 'pov' ? 28 : 16) * dpr;
     V.forEach(function (v) {
       var s = state(v, cur);
-      if (!s) return;
+      if (!s || (MODE === 'pov' && v === focus)) return;
       var q = pt(s.x, s.z, MODE === '2d' ? 0 : 1.5);
       if (!q) return;
       var d = Math.hypot(q.x - x, q.y - y) + (s.k === 'live' ? 0 : 6 * dpr);
@@ -2025,12 +2427,16 @@ _REPLAY_SCRIPT = r"""
   playBtn.addEventListener('click', function () { play(!playing); });
   stage.addEventListener('click', function (e) {  // a tank picks it, anywhere else plays / pauses
     if (dragged) { dragged = false; return; }  // that was the 3D camera
+    if (MODE === 'pov') {  // a tank in the frame or on the minimap: look through its eyes
+      var m = hitMini(e);
+      if (m) { if (m.v) pick(m.v); return; }
+    }
     var v = hit(e);
-    if (v) pick(v === focus ? null : v); else play(!playing);
+    if (v) pick(v === focus && MODE !== 'pov' ? null : v); else play(!playing);
   });
   stage.addEventListener('mousemove', function (e) {
-    var v = hit(e);
-    stage.title = v ? v.n + ' · ' + v.k : '';
+    var m = MODE === 'pov' ? hitMini(e) : null, v = m ? m.v : hit(e);
+    stage.title = v ? v.n + ' · ' + v.k + (MODE === 'pov' ? ' — смотреть его глазами' : '') : '';
   });
   if (bestBtn) bestBtn.addEventListener('click', function () { pick(byId[+bestBtn.getAttribute('data-id')]); });
   scrub.addEventListener('input', function () { seek(+scrub.value); });
@@ -2053,7 +2459,17 @@ _REPLAY_SCRIPT = r"""
     if (e.key === ' ') { e.preventDefault(); play(!playing); }
     else if (e.key === 'ArrowLeft') { e.preventDefault(); seek(cur - 5); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); seek(cur + 5); }
+    else if (e.key === 'Escape' && MODE === 'pov') { setView('3d'); }
     else if (e.key === 'Escape' && focus) { pick(null); }
+    else if (e.ctrlKey || e.metaKey || e.altKey || MODE === '2d') { return; }
+    // by the key's place, not its letter: the same keys on a Russian layout
+    else if (e.code === 'KeyF') { e.preventDefault(); setView(MODE === 'pov' ? '3d' : 'pov'); }
+    else if (MODE !== 'pov') { return; }
+    else if (e.code === 'KeyX') { e.preventDefault(); nextKind(); }
+    else if (e.code === 'KeyC') { e.preventDefault(); resetLook(); draw(); }
+    else if (e.code === 'BracketLeft' || e.code === 'BracketRight') {
+      e.preventDefault(); cycle(e.code === 'BracketRight' ? 1 : -1);
+    }
   });
 
   function fromHash(scroll) {
@@ -2073,10 +2489,10 @@ _REPLAY_SCRIPT = r"""
   });
   window.addEventListener('hashchange', function () { fromHash(true); });
 
-  function fit() {
+  function fit() {  // the map is square, the eyes view 16:9
     dpr = window.devicePixelRatio || 1;
-    var w = Math.max(1, Math.round(stage.clientWidth * dpr));
-    if (cv.width !== w) { cv.width = w; cv.height = w; }
+    var w = Math.max(1, Math.round(stage.clientWidth * dpr)), h = MODE === 'pov' ? Math.round(w * 9 / 16) : w;
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
     W = cv.width; H = cv.height;
     draw();
   }

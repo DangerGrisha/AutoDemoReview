@@ -6,7 +6,11 @@
 Writes into src/blitzreview/assets/ (all committed, so the analyzer itself never
 needs the game installed and never calls the Wargaming API):
 
-    vehicles.json       tank_id -> internal key, nation, tier, class, ru/en names
+    vehicles.json       tank_id -> internal key, nation, tier, class, ru/en names;
+                        for the first-person view `eye` (the gun's height
+                        above the ground, metres) and `pitch` [elevation,
+                        depression] (the gun's limits in degrees, up
+                        negative), both of the top turret's top gun
     maps.json           map key -> id, scene name, modes, ru/en names,
                         assault-mode respawn points (world x/z), and for the
                         2D replay: `world` (the square the minimap shows),
@@ -63,9 +67,10 @@ BASE_RADIUS = 25.0
 POINT_RADIUS = 15.0
 
 # The client's heightmaps are 512 x 512 over the 600 m terrain square; the
-# 3D view resamples them to this many points a side (3.8 m apart), which
-# keeps a map at about 30 KB compressed and every hill in place.
-TERRAIN_N = 160
+# 3D view resamples them to this many points a side (2.4 m apart) -- fine
+# enough for a camera at a gun's height, about 45 KB a map compressed, and
+# the most one WebGL mesh with 16-bit indices holds (256 x 256 = 65536).
+TERRAIN_N = 256
 
 # First matching tag wins; Blitz has no artillery in random battles but the
 # client still knows the class, so it stays in the table.
@@ -103,6 +108,60 @@ def vehicle_class(tags):
     return None
 
 
+def _numbers(text):
+    try:
+        return [float(v) for v in (text or "").split()]
+    except ValueError:
+        return []
+
+
+def vehicle_geometry(data_dir, nation, key, shared_guns):
+    """{"eye", "pitch"} of a tank from its XML, or {} when the file does not
+    say. The top turret's top gun, as most players drive it: `eye` is the
+    gun's height above the ground (the top chassis' hull position, the hull's
+    turret position and the turret's gun position, added up) -- where the
+    sniper camera sits, which the replays confirm to a few centimetres (T77
+    2.23 m, FV215b (183) 2.35 m); `pitch` the gun's [elevation, depression]
+    in degrees, up negative, from the gun or its shared definition in
+    components/guns.xml. The replays send the gun's pitch as 6 bits over
+    exactly this range (events.py)."""
+    path = data_dir / "XML" / "item_defs" / "vehicles" / nation / f"{key}.xml.dvpl"
+    try:
+        root = ET.fromstring(dvpl.read(path))
+    except (OSError, ET.ParseError, dvpl.DvplError):
+        return {}
+    turret_at = root.find("hull/turretPositions")
+    turrets = root.find("turrets0")
+    if turret_at is None or len(turret_at) == 0 or turrets is None or len(turrets) == 0:
+        return {}
+    top = turrets[-1]
+    out = {}
+    chassis = root.find("chassis")
+    hull_at = _numbers(chassis[-1].findtext("hullPosition")) if chassis is not None and len(chassis) else []
+    base, gun_at = _numbers(turret_at[0].text), _numbers(top.findtext("gunPosition"))
+    if len(base) == 3:
+        out["eye"] = round(sum(p[1] for p in (hull_at, base, gun_at) if len(p) == 3), 2)
+    guns = top.find("guns")
+    if guns is not None and len(guns):
+        gun = guns[-1]
+        limits = _numbers(gun.findtext("pitchLimits"))
+        if len(limits) != 2 and gun.tag in shared_guns:
+            limits = _numbers(shared_guns[gun.tag].findtext("pitchLimits"))
+        if len(limits) == 2 and limits[0] < limits[1]:
+            out["pitch"] = limits
+    return out
+
+
+def load_shared_guns(data_dir, nation):
+    """The nation's shared gun definitions by tag (components/guns.xml)."""
+    path = data_dir / "XML" / "item_defs" / "vehicles" / nation / "components" / "guns.xml.dvpl"
+    try:
+        shared = ET.fromstring(dvpl.read(path)).find("shared")
+    except (OSError, ET.ParseError, dvpl.DvplError):
+        return {}
+    return {child.tag: child for child in shared} if shared is not None else {}
+
+
 def extract_vehicles(data_dir, strings):
     vehicles = {}
     for nation, nation_id in sorted(load_nations(data_dir).items(), key=lambda kv: kv[1]):
@@ -110,6 +169,7 @@ def extract_vehicles(data_dir, strings):
         if not path.is_file():
             continue
         root = ET.fromstring(dvpl.read(path))
+        shared_guns = load_shared_guns(data_dir, nation)
         for node in root:
             index = node.findtext("id")
             if index is None:
@@ -130,6 +190,7 @@ def extract_vehicles(data_dir, strings):
                 name = table.get(user, node.tag)
                 entry[f"name_{lang}"] = name
                 entry[f"short_{lang}"] = table.get(short, name) if short else name
+            entry.update(vehicle_geometry(data_dir, nation, node.tag, shared_guns))
             vehicles[str(tank_id)] = entry
     return vehicles
 
@@ -381,6 +442,9 @@ def main():
             json.dumps(payload, ensure_ascii=False, indent=1, sort_keys=True) + "\n",
             encoding="utf-8")
     print(f"client {version}: {len(vehicles)} vehicles, {len(maps)} maps -> {args.out}")
+    bare = sorted(v["key"] for v in vehicles.values() if "pitch" not in v or "eye" not in v)
+    if bare:
+        problems.append(f"{len(bare)} vehicles without gun geometry: {bare[:8]}")
     for problem in problems:
         print(f"  ! {problem}")
 

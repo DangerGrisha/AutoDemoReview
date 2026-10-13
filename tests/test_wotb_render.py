@@ -224,12 +224,41 @@ def test_the_fight_chart_marks_every_shot_and_links_it():
     assert chart.count('<a href="#t=') == len(ticks) + 1
 
 
-def test_the_replay_ships_the_fight_and_the_turret():
+def test_the_replay_ships_the_fight_and_the_gun():
     b = _battle()
     data = _replay_json(render_battle_html(b))
-    assert data["fmt"] == 2 and data["ev"] is not None
+    assert data["fmt"] == 3 and data["ev"] is not None
     assert data["ev"]["shots"] == b["events"]["shots"]
     assert {h["id"] for h in data["ev"]["hp"]} <= {v["entity_id"] for v in b["vehicles"]}
+    assert all(len(t["p"]) % 6 == 0 for t in data["tracks"])  # t x z yaw turret pitch
+
+
+def test_the_replay_ships_the_recorders_camera_and_each_guns_height():
+    b = _battle()
+    data = _replay_json(render_battle_html(b))
+    assert data["cam"] == b["replay"]["camera"] and data["cam"]["sniper"] and data["cam"]["fov"]
+    eyes = {v["id"]: v["eye"] for v in data["vehicles"]}
+    me = b["author"]["entity_id"]
+    assert eyes[me] == 1.66  # Object 704, from the client's XML; the replay's sight agrees
+    assert all(0.8 < e < 3.6 for e in eyes.values()), eyes
+
+
+def test_the_eyes_view_comes_with_the_terrain():
+    page = render_battle_html(_battle())
+    assert ('<div class="seg" data-group="view"><button type="button" data-v="2d" class="on">2D</button>'
+            '<button type="button" data-v="3d">3D</button><button type="button" data-v="pov">Глазами</button>'
+            '</div>') in page
+
+
+def test_a_battle_stored_before_format_5_has_no_camera_but_still_renders():
+    b = copy.deepcopy(_battle())
+    b["format"] = 4
+    del b["replay"]["camera"]
+    b["replay"]["format"] = 2
+    for track in b["replay"]["tracks"]:  # format 2: no pitch column
+        track["p"] = [n for i, n in enumerate(track["p"]) if i % 6 != 5]
+    data = _replay_json(render_battle_html(b))
+    assert data["cam"] is None and data["fmt"] == 2
 
 
 def test_a_battle_stored_before_format_4_keeps_its_replay_without_the_fight():
@@ -256,13 +285,14 @@ def test_the_replay_ships_the_terrain_for_the_3d_view():
     page = render_battle_html(b)
     data = _replay_json(page)
     terrain = data["terrain"]
-    assert terrain["n"] == 160 and '<div class="seg" data-group="view">' in page
+    n = terrain["n"]
+    assert n == 256 and '<div class="seg" data-group="view">' in page
     assert 'id="rp-3dnote"' in page
-    steps = struct.unpack(f"<{160 * 160}h", zlib.decompress(base64.b64decode(terrain["dz"])))
-    first_row = [sum(steps[:i + 1]) / 10 for i in range(160)]  # row 0 decoded the browser's way
-    n, heights = gamedata.terrain_heights(b["map"]["key"])
-    assert first_row == heights[:160]
-    assert len(page) < 700_000, len(page)  # minimap + terrain + tracks + events stay embeddable
+    steps = struct.unpack(f"<{n * n}h", zlib.decompress(base64.b64decode(terrain["dz"])))
+    first_row = [sum(steps[:i + 1]) / 10 for i in range(n)]  # row 0 decoded the browser's way
+    _, heights = gamedata.terrain_heights(b["map"]["key"])
+    assert first_row == heights[:n]
+    assert len(page) < 700_000, len(page)  # minimap + terrain + tracks + events + camera stay embeddable
 
 
 def test_without_terrain_there_is_no_3d_switch():

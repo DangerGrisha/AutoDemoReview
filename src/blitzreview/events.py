@@ -13,8 +13,9 @@ Vehicle entity (entity type 2)
                      read
   property 2         gun angles u16: the turret's yaw relative to the hull in
                      the top 10 bits, yaw = (v >> 6) / 1023 * 2pi - pi, same
-                     sense as the hull yaw; the gun's pitch in the low 6 bits
-                     (not used)
+                     sense as the hull yaw; the gun's pitch in the low 6 bits,
+                     0..63 spread evenly over the gun's limits -- from its
+                     highest elevation to its lowest depression (gun_pitch)
   property 3         health i16 -- always followed by method 1 with the same
                      value, which also names the cause, so only creates and
                      method 1 are read
@@ -47,7 +48,9 @@ exactly, when the recording runs to the end of the battle. Health drops
 credited to a tank add up to its damage dealt, except for drops nobody saw:
 an enemy hit or burning out of view shows up with less health when it is
 spotted again (`unseen`). Hull yaw plus turret yaw points along the tracer of
-every shot within a degree.
+every shot within a degree. The pitch bits, read over the gun's limits from
+the client's XML, match the gun pitch of the recorder's own camera packets
+(camera.py) to 0.05 degrees (median, five tanks).
 
 A vehicle the recorder never saw has no events at all; an enemy's health is
 the last value seen.
@@ -92,6 +95,20 @@ def turret_yaw(gun_angles):
     return (gun_angles >> 6) / 1023 * 2 * math.pi - math.pi
 
 
+def pitch_code(gun_angles):
+    """The gun's pitch bits of property 2, 0 (highest) .. 63 (lowest)."""
+    return gun_angles & 63
+
+
+def gun_pitch(code, limits):
+    """Degrees the gun points below the hull's level (up negative) for a
+    pitch code, given the gun's (elevation, depression) limits, e.g. (-20,
+    7). On a slope the hull tilts it: against the recorder's camera the
+    level of the hull, not the horizon, is what fits (camera.py)."""
+    elevation, depression = limits
+    return elevation + code / 63 * (depression - elevation)
+
+
 def vehicle_create(payload):
     """(entity id, position (x, y, z), health, gun angles) of a vehicle create
     packet, or None for any other entity or a layout we do not know."""
@@ -110,8 +127,8 @@ def vehicle_create(payload):
 
 
 def parse_empty():
-    return {"health": {}, "turret": {}, "damage": [], "unseen": [], "hits": [],
-            "bursts": [], "tracers": []}
+    return {"health": {}, "turret": {}, "pitch": {}, "damage": [], "unseen": [],
+            "hits": [], "bursts": [], "tracers": []}
 
 
 def parse(stream, vehicle_ids):
@@ -119,6 +136,7 @@ def parse(stream, vehicle_ids):
 
     health   {entity: [(clock, health)]} -- each value once, as it changes
     turret   {entity: [(clock, yaw)]} -- turret yaw relative to the hull
+    pitch    {entity: [(clock, code)]} -- the gun's pitch bits (gun_pitch)
     damage   [{clock, victim, attacker, amount, reason, health}]
     unseen   [{clock, victim, amount}] -- health lost out of view
     hits     [{clock, attacker, victim, kind, damage}]
@@ -131,7 +149,7 @@ def parse(stream, vehicle_ids):
     vehicle_ids = set(vehicle_ids)
     avatar = avatar_id(stream)
     out = parse_empty()
-    health, turret = defaultdict(list), defaultdict(list)
+    health, turret, pitch = defaultdict(list), defaultdict(list), defaultdict(list)
     known = {}       # entity -> health as last seen
     open_shots = {}  # shot id -> tracer
     stops = []       # (clock, shooter, tracer) of tracers that came to a stop
@@ -154,6 +172,7 @@ def parse(stream, vehicle_ids):
             known[entity] = value
             note_health(entity, clock, value)
             turret[entity].append((clock, turret_yaw(gun)))
+            pitch[entity].append((clock, pitch_code(gun)))
             continue
         if ptype not in (PT_ENTITY_PROPERTY, PT_ENTITY_METHOD) or len(payload) < _CALL.size:
             continue
@@ -163,7 +182,9 @@ def parse(stream, vehicle_ids):
             continue
         if ptype == PT_ENTITY_PROPERTY:
             if entity in vehicle_ids and index == VP_GUN_ANGLES and size == 2:
-                turret[entity].append((clock, turret_yaw(_U16.unpack(args)[0])))
+                gun = _U16.unpack(args)[0]
+                turret[entity].append((clock, turret_yaw(gun)))
+                pitch[entity].append((clock, pitch_code(gun)))
         elif entity == avatar:
             if index == AM_TRACER and size == _TRACER.size:
                 shooter, shot, _fx, x, _y, z, *_rest = _TRACER.unpack(args)
@@ -204,6 +225,7 @@ def parse(stream, vehicle_ids):
     _join_stops(stops, out["hits"])
     out["health"] = dict(health)
     out["turret"] = dict(turret)
+    out["pitch"] = dict(pitch)
     return out
 
 

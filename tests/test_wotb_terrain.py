@@ -99,7 +99,8 @@ def test_every_map_with_a_minimap_has_terrain():
         if gamedata.minimap(key) is None:
             continue
         n, heights = gamedata.terrain_heights(key)
-        assert n == 160 and len(heights) == n * n, key
+        assert n == _tool().TERRAIN_N and len(heights) == n * n, key
+        assert n * n <= 65536, key  # the 3D view's mesh has 16-bit indices
         assert 0 <= min(heights) < max(heights) <= 200, (key, min(heights), max(heights))
     assert gamedata.terrain("no_such_map") is None and gamedata.terrain_heights(None) is None
 
@@ -112,6 +113,6 @@ def test_the_reader_agrees_with_the_shipped_terrain():
     from blitzreview import dvpl
     size, values = dava.read_heightmap(dvpl.read(path))
     tool = _tool()
-    expected = [v / 65535 * 100 for v in tool.resample(size, values, 160)]  # canyon's z: 0..100 m
+    expected = [v / 65535 * 100 for v in tool.resample(size, values, tool.TERRAIN_N)]  # canyon's z: 0..100 m
     n, heights = gamedata.terrain_heights("canyon")
     assert max(abs(a - b) for a, b in zip(expected, heights)) <= 0.051
