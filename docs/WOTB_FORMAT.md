@@ -440,7 +440,6 @@ The files run 45–370 KB a map. **sure**: the objects stand on the terrain. The
 
 Not done yet:
 - `blitz/<scene>.mkm` (`kkm` header, a 1024² 2-bit grid) and `.lka`: probably terrain kinds and the ground-sound map; not needed so far.
-- Heights in the tracks: a tank on a bridge is drawn on the ground under it.
 
 ## Open questions
 

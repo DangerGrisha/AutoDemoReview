@@ -33,9 +33,10 @@ from .packets import positions, read_stream
 #    tracks (replay.FORMAT 2).
 # 5: adds the gun's pitch to the tracks (replay.FORMAT 3) and the recorder's
 #    camera, `replay.camera` (camera.py).
+# 6: adds the height to the tracks (replay.FORMAT 4): tanks on bridges.
 # Battles stored in an older format are re-parsed when their replay is
 # uploaded again (web/blitz.py).
-FORMAT = 5
+FORMAT = 6
 
 _STAT_FIELDS = ("damage", "kills", "shots", "hits", "penetrations", "assist",
                 "damage_received", "hits_received", "nonpen_received",

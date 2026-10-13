@@ -227,10 +227,10 @@ def test_the_fight_chart_marks_every_shot_and_links_it():
 def test_the_replay_ships_the_fight_and_the_gun():
     b = _battle()
     data = _replay_json(render_battle_html(b))
-    assert data["fmt"] == 3 and data["ev"] is not None
+    assert data["fmt"] == 4 and data["ev"] is not None
     assert data["ev"]["shots"] == b["events"]["shots"]
     assert {h["id"] for h in data["ev"]["hp"]} <= {v["entity_id"] for v in b["vehicles"]}
-    assert all(len(t["p"]) % 6 == 0 for t in data["tracks"])  # t x z yaw turret pitch
+    assert all(len(t["p"]) % 7 == 0 for t in data["tracks"])  # t x z yaw turret pitch height
 
 
 def test_the_replay_ships_the_recorders_camera_and_each_guns_height():
@@ -255,8 +255,8 @@ def test_a_battle_stored_before_format_5_has_no_camera_but_still_renders():
     b["format"] = 4
     del b["replay"]["camera"]
     b["replay"]["format"] = 2
-    for track in b["replay"]["tracks"]:  # format 2: no pitch column
-        track["p"] = [n for i, n in enumerate(track["p"]) if i % 6 != 5]
+    for track in b["replay"]["tracks"]:  # format 2: no pitch or height columns
+        track["p"] = [n for i, n in enumerate(track["p"]) if i % 7 < 5]
     data = _replay_json(render_battle_html(b))
     assert data["cam"] is None and data["fmt"] == 2
 

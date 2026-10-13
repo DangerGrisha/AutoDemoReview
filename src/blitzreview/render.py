@@ -1090,25 +1090,30 @@ _REPLAY_SCRIPT = r"""
   var cur = 0, playing = false, lastTs = 0, W = 1, H = 1, dpr = 1, recentSig = '', focus = null;
 
   var byId = {}, V = [];
-  var STRIDE = R.fmt >= 3 ? 6 : R.fmt >= 2 ? 5 : 4;  // older battles: no gun pitch (2), no turret either (1)
+  var STRIDE = [4, 4, 5, 6, 7][Math.min(R.fmt || 1, 4)];  // older battles lack the height (3), the gun pitch (2), the turret (1)
   R.vehicles.forEach(function (v) { byId[v.id] = v; });
   R.tracks.forEach(function (tr) {
     var v = byId[tr.id];
     if (!v) return;
     var p = tr.p, n = Math.floor(p.length / STRIDE);
     var T = new Float64Array(n), X = new Float64Array(n), Z = new Float64Array(n), Y = new Float64Array(n),
-        G = new Float64Array(n), P = new Float64Array(n), t = 0, x = 0, z = 0, y = 0, g = 0, q = 0;
+        G = new Float64Array(n), P = new Float64Array(n), E = new Float64Array(n),
+        t = 0, x = 0, z = 0, y = 0, g = 0, q = 0, e = 0;
     for (var i = 0; i < n; i++) {
       var k = STRIDE * i;
-      if (i === 0) { t = p[0]; x = p[1]; z = p[2]; y = p[3]; g = STRIDE > 4 ? p[4] : 0; q = STRIDE > 5 ? p[5] : 0; }
-      else {
+      if (i === 0) {
+        t = p[0]; x = p[1]; z = p[2]; y = p[3];
+        g = STRIDE > 4 ? p[4] : 0; q = STRIDE > 5 ? p[5] : 0; e = STRIDE > 6 ? p[6] : 0;
+      } else {
         t += p[k]; x += p[k + 1]; z += p[k + 2]; y += p[k + 3];
         if (STRIDE > 4) g += p[k + 4];
         if (STRIDE > 5) q += p[k + 5];
+        if (STRIDE > 6) e += p[k + 6];
       }
-      T[i] = t / 10; X[i] = x / 10; Z[i] = z / 10; Y[i] = y; G[i] = g; P[i] = q / 10;  // yaws unwrapped: lerp-safe
+      T[i] = t / 10; X[i] = x / 10; Z[i] = z / 10; Y[i] = y; G[i] = g; P[i] = q / 10; E[i] = e / 10;  // yaws unwrapped
     }
     v.T = T; v.X = X; v.Z = Z; v.Y = Y; v.G = STRIDE > 4 ? G : null; v.P = STRIDE > 5 ? P : null;
+    v.E = STRIDE > 6 ? E : null;  // heights; without them the tank stands on the terrain
     v.spotted = [];  // when an enemy came into view: its first sample and each one after a silence
     if (v.s === 'e') for (var j = 0; j < n; j++) if (!j || T[j] - T[j - 1] > GAP) v.spotted.push(T[j]);
     V.push(v);
@@ -1171,11 +1176,11 @@ _REPLAY_SCRIPT = r"""
     var i = at(v.hpT, t);
     return i < 0 ? null : v.hpV[i];
   }
-  function state(v, t) {  // g: where the turret points relative to the hull (null: unknown); p: gun pitch, down +
-    var T = v.T, n = T.length, G = v.G, P = v.P;
+  function state(v, t) {  // g: turret yaw from the hull (null: unknown); p: gun pitch, down +; h: height or null
+    var T = v.T, n = T.length, G = v.G, P = v.P, E = v.E;
     if (v.d !== null && t >= v.d) {
       var j = at(T, v.d + 0.25);
-      return j < 0 ? null : {k: 'dead', x: v.X[j], z: v.Z[j], y: v.Y[j], g: null, p: 0};
+      return j < 0 ? null : {k: 'dead', x: v.X[j], z: v.Z[j], y: v.Y[j], g: null, p: 0, h: E ? E[j] : null};
     }
     var i = at(T, t);
     if (i < 0) return null;
@@ -1183,11 +1188,20 @@ _REPLAY_SCRIPT = r"""
       var f = (t - T[i]) / (T[i + 1] - T[i]);
       return {k: 'live', x: v.X[i] + (v.X[i + 1] - v.X[i]) * f,
               z: v.Z[i] + (v.Z[i + 1] - v.Z[i]) * f, y: v.Y[i] + (v.Y[i + 1] - v.Y[i]) * f,
-              g: G ? G[i] + (G[i + 1] - G[i]) * f : null, p: P ? P[i] + (P[i + 1] - P[i]) * f : 0};
+              g: G ? G[i] + (G[i + 1] - G[i]) * f : null, p: P ? P[i] + (P[i + 1] - P[i]) * f : 0,
+              h: E ? E[i] + (E[i + 1] - E[i]) * f : null};
     }
     var age = t - T[i];
-    if (age <= GAP) return {k: 'live', x: v.X[i], z: v.Z[i], y: v.Y[i], g: G ? G[i] : null, p: P ? P[i] : 0};
-    return {k: 'ghost', x: v.X[i], z: v.Z[i], y: v.Y[i], g: null, p: 0, age: age};
+    if (age <= GAP) return {k: 'live', x: v.X[i], z: v.Z[i], y: v.Y[i], g: G ? G[i] : null, p: P ? P[i] : 0,
+                            h: E ? E[i] : null};
+    return {k: 'ghost', x: v.X[i], z: v.Z[i], y: v.Y[i], g: null, p: 0, h: E ? E[i] : null, age: age};
+  }
+  function base(s) {  // where a tank stands: its own height (bridges, rocks), else the terrain under it
+    return s.h !== null && s.h !== undefined ? s.h : ground(s.x, s.z);
+  }
+  function spt(s, lift) {  // a tank's state on the screen, `lift` metres above where it stands
+    if (MODE === '2d') return {x: px(s.x), y: py(s.z)};
+    return project(s.x, base(s) + (lift || 0), s.z);
   }
   function dimmed(v) {  // the rest fade while one tank is picked -- not when the view is through its eyes
     return MODE !== 'pov' && focus && v !== focus;
@@ -1282,7 +1296,7 @@ _REPLAY_SCRIPT = r"""
     ctx.beginPath();
     for (var k = from; k <= to; k++) {
       if (k > from && T[k] - T[k - 1] > GAP) pen = false;
-      var q = pt(v.X[k], v.Z[k], 0.6);
+      var q = MODE !== '2d' && v.E ? project(v.X[k], v.E[k] + 0.6, v.Z[k]) : pt(v.X[k], v.Z[k], 0.6);
       if (!q) { pen = false; continue; }
       if (pen) ctx.lineTo(q.x, q.y);
       else { ctx.moveTo(q.x, q.y); pen = true; }
@@ -1303,7 +1317,7 @@ _REPLAY_SCRIPT = r"""
       ctx.setLineDash([]);
     }
     if (stop >= 0 && (stop > from || (s && s.k === 'live'))) {
-      var pen = path(v, from, stop), here = s && s.k === 'live' ? pt(s.x, s.z, 0.6) : null;
+      var pen = path(v, from, stop), here = s && s.k === 'live' ? spt(s, 0.6) : null;
       if (pen && here) ctx.lineTo(here.x, here.y);
       ctx.globalAlpha = picked ? 1 : (v.s === 'm' ? .9 : .55) * (focus ? .3 : 1);
       ctx.lineWidth = (picked ? 3 : v.s === 'm' ? 2.2 : 1.5) * dpr;
@@ -1368,7 +1382,7 @@ _REPLAY_SCRIPT = r"""
   }
   function drawTank(v, s) {
     var r = (v.s === 'm' ? 6 : 5) * dpr, c = COL[v.s], flat = MODE === '2d';
-    var q = pt(s.x, s.z, flat ? 0 : 2);
+    var q = spt(s, flat ? 0 : 2);
     if (!q) return;
     ctx.save();
     ctx.translate(q.x, q.y);
@@ -1401,7 +1415,7 @@ _REPLAY_SCRIPT = r"""
     ctx.restore();
   }
   function drawHp(v, s, t) {  // a health bar under a live tank (over it in 3D), as much of it as was left
-    var hp = hpAt(v, t), q = pt(s.x, s.z, MODE === '2d' ? 0 : 4.5);
+    var hp = hpAt(v, t), q = spt(s, 4.5);
     if (hp === null || !v.hpMax || !q) return;
     var w = 18 * dpr, h = 3 * dpr, x = q.x - w / 2, y = q.y + (MODE === '2d' ? 9 : -6) * dpr;
     ctx.save();
@@ -1415,7 +1429,7 @@ _REPLAY_SCRIPT = r"""
     if (labels === 'none' && !picked) return;
     var text = picked || labels === 'nick' ? v.n : v.k;
     if (s.k === 'ghost') text += ' · ' + Math.round(s.age) + ' с';
-    var bar = s.k === 'live' && hpAt(v, cur) !== null ? 5 : 0, q = pt(s.x, s.z, MODE === '2d' ? 0 : 4.5);
+    var bar = s.k === 'live' && hpAt(v, cur) !== null ? 5 : 0, q = spt(s, 4.5);
     if (!q) return;
     var x = q.x, y = MODE === '2d' ? q.y + ((picked ? 16 : s.k === 'dead' ? 7 : 10) + bar) * dpr
                                   : q.y - (bar ? 21 : 15) * dpr;
@@ -1473,13 +1487,13 @@ _REPLAY_SCRIPT = r"""
       if (age < 0 || age > 2 || !victim || !victim.T) return;
       var vs = state(victim, k.t + 0.05);
       if (!vs) return;
-      var vq = pt(vs.x, vs.z, 1.5);
+      var vq = spt(vs, 1.5);
       if (!vq) return;
       var x = vq.x, y = vq.y, killer = k.k !== k.v ? byId[k.k] : null, ks = seen(killer, k.t);
       ctx.save();
       ctx.globalAlpha = 1 - age / 2;
       var shot = !ks && killer ? killingShot(killer.id, k.v, k.t) : null;
-      var kq = ks ? pt(ks.x, ks.z, 1.5) : shot ? pt(shot[2], shot[3], 1.8) : null;
+      var kq = ks ? spt(ks, 1.5) : shot ? pt(shot[2], shot[3], 1.8) : null;
       if (kq) arrow(kq.x, kq.y, x, y, COL[killer.s], !ks);  // dashed: from the start of the shell
       else if (killer && killer.s === 'e') caption('стрелок не в засвете', x, y - 12 * dpr);
       ctx.globalAlpha = Math.max(0, 1 - age / 1.5);
@@ -1789,13 +1803,14 @@ _REPLAY_SCRIPT = r"""
   }
   function shade(c, k) { return [c[0] * k, c[1] * k, c[2] * k, 1]; }
   function tankModel(v, st, k, col) {  // tracks, hull, turret, and a gun tilted as the tank held it, on the slope
-    var yaw = st.y * Math.PI / 180, tilt = mul(rotX(Math.atan(slope(st.x, st.z, yaw))),
-                                               rotZ(Math.atan(slope(st.x, st.z, yaw + Math.PI / 2))));
-    var base = mul(tr(st.x, ground(st.x, st.z), -st.z), mul(rotY(-yaw), mul(tilt, sc(k, k, k))));
-    box(mul(base, mul(tr(-1.27, 0, 0), sc(.78, .95, 6.6))), shade(col, .55));
-    box(mul(base, mul(tr(1.27, 0, 0), sc(.78, .95, 6.6))), shade(col, .55));
-    box(mul(base, mul(tr(0, .42, .15), sc(2.4, .88, 6.1))), col);
-    var turret = mul(base, mul(tr(0, 1.3, .55), rotY(-(st.g || 0) * Math.PI / 180)));
+    var yaw = st.y * Math.PI / 180, h = base(st), onGround = Math.abs(h - ground(st.x, st.z)) < 1;
+    var tilt = onGround ? mul(rotX(Math.atan(slope(st.x, st.z, yaw))), rotZ(Math.atan(slope(st.x, st.z, yaw + Math.PI / 2))))
+                        : sc(1, 1, 1);  // a bridge is level
+    var hull = mul(tr(st.x, h, -st.z), mul(rotY(-yaw), mul(tilt, sc(k, k, k))));
+    box(mul(hull, mul(tr(-1.27, 0, 0), sc(.78, .95, 6.6))), shade(col, .55));
+    box(mul(hull, mul(tr(1.27, 0, 0), sc(.78, .95, 6.6))), shade(col, .55));
+    box(mul(hull, mul(tr(0, .42, .15), sc(2.4, .88, 6.1))), col);
+    var turret = mul(hull, mul(tr(0, 1.3, .55), rotY(-(st.g || 0) * Math.PI / 180)));
     box(mul(turret, sc(2.3, .8, 2.7)), col);
     var gun = mul(turret, mul(tr(0, .42, -1.25), rotX(-(st.p || 0) * Math.PI / 180)));
     box(mul(gun, mul(tr(0, -.12, -4.4), sc(.24, .24, 4.4))), shade(col, .8));
@@ -1928,7 +1943,7 @@ _REPLAY_SCRIPT = r"""
     var h00 = 2 * u3 - 3 * u2 + 1, h10 = u3 - 2 * u2 + u, h01 = 3 * u2 - 2 * u3, h11 = u3 - u2;
     function cubic(A) { return h00 * A[i] + h10 * h * tangent(A, i) + h01 * A[i + 1] + h11 * h * tangent(A, i + 1); }
     return {k: 'live', x: cubic(v.X), z: cubic(v.Z), y: cubic(v.Y), g: v.G ? cubic(v.G) : null,
-            p: v.P ? cubic(v.P) : 0};
+            p: v.P ? cubic(v.P) : 0, h: v.E ? cubic(v.E) : null};
   }
   function povKind(v) {  // 'rec' the recorder's own camera, 'first' from the gun, 'third' behind the tank
     return pov.manual || (v === ME && CAM ? 'rec' : 'third');
@@ -1938,7 +1953,7 @@ _REPLAY_SCRIPT = r"""
     if (!v || !v.T) return null;
     var s = pose(v, t);
     if (!s) return null;
-    var kind = povKind(v), gy = ground(s.x, s.z), eyeH = v.eye || 2, yaw, pitch, fov = ARCADE_FOV, sniper = false;
+    var kind = povKind(v), gy = base(s), eyeH = v.eye || 2, yaw, pitch, fov = ARCADE_FOV, sniper = false;
     if (kind === 'rec') {
       var c = camAt(t);
       yaw = c.yaw * D2R; pitch = c.pitch * D2R; fov = c.fov; sniper = c.sniper;
@@ -1947,7 +1962,8 @@ _REPLAY_SCRIPT = r"""
       yaw = ks ? Math.atan2(ks.x - s.x, ks.z - s.z) : s.y * D2R;
       pitch = 12 * D2R; kind = 'wreck';
     } else {  // the gun's pitch is the hull's: on a slope the hull tilts it (checked against the recorder's sight)
-      var gyaw = (s.y + (s.g || 0)) * D2R, gp = (s.p || 0) * D2R - Math.atan(slope(s.x, s.z, gyaw));
+      var level = Math.abs(gy - ground(s.x, s.z)) < 1 ? Math.atan(slope(s.x, s.z, (s.y + (s.g || 0)) * D2R)) : 0;
+      var gyaw = (s.y + (s.g || 0)) * D2R, gp = (s.p || 0) * D2R - level;
       if (kind === 'first') { yaw = gyaw; pitch = gp; }
       else {  // the arcade camera aims where the gun does, 120 m out
         var d0 = dirOf(gyaw, gp), dh = gy + eyeH + d0[1] * 120 - (gy + ORBIT_UP);
@@ -2225,7 +2241,7 @@ _REPLAY_SCRIPT = r"""
     var age = (t - v.spotted[i]) / span;
     ctx.save();
     ctx.globalAlpha = (1 - age) * (dimmed(v) ? .35 : 1);
-    var q = pt(s.x, s.z, MODE === '2d' ? 0 : 2);
+    var q = spt(s, 2);
     if (!q) { ctx.restore(); return; }
     ctx.beginPath(); ctx.arc(q.x, q.y, (24 - 12 * age) * dpr, 0, TAU);
     ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 4 * dpr; ctx.stroke();
@@ -2258,7 +2274,7 @@ _REPLAY_SCRIPT = r"""
   var WORD = {0: 'рикошет', 1: 'рикошет', 2: 'не пробил', 4: 'крит'};  // a hit without damage
   var REASON = {1: 'пожар', 2: 'таран', 3: 'падение'};
   function floater(v, t0, t, span, text, color, stack) {  // rises over the tank and fades
-    var s = seen(v, t) || seen(v, t0), q = s && pt(s.x, s.z, MODE === '2d' ? 0 : 5);
+    var s = seen(v, t) || seen(v, t0), q = s && spt(s, 5);
     if (!q) return;
     var age = (t - t0) / span, x = q.x, y = q.y - ((MODE === '2d' ? 15 : 34) + 14 * age + 13 * stack) * dpr;
     ctx.save();
@@ -2501,7 +2517,7 @@ _REPLAY_SCRIPT = r"""
     V.forEach(function (v) {
       var s = state(v, cur);
       if (!s || (MODE === 'pov' && v === focus)) return;
-      var q = pt(s.x, s.z, MODE === '2d' ? 0 : 1.5);
+      var q = spt(s, 1.5);
       if (!q) return;
       var d = Math.hypot(q.x - x, q.y - y) + (s.k === 'live' ? 0 : 6 * dpr);
       if (d < bestD) { best = v; bestD = d; }

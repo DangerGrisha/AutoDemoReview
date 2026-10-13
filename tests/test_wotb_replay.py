@@ -34,27 +34,32 @@ def _same_yaw(a, b, tolerance=0.51):
 # --------------------------------------------------------------------------- #
 
 def test_the_delta_coding_round_trips_across_the_yaw_seam():
-    samples = [(-3.0, -250.04, 260.0, 179.4, -179.7, 6.98), (-2.7, -249.0, 259.5, -179.6, 179.2, 7.0),
-               (-2.4, -248.2, 259.0, -170.0, 90.0, -19.97), (12.3, 100.06, -5.0, 0.0, 0.0, 0.0),
-               (12.6, 100.5, -4.0, 359.0, -45.4, 2.24)]
+    samples = [(-3.0, -250.04, 260.0, 179.4, -179.7, 6.98, 21.37), (-2.7, -249.0, 259.5, -179.6, 179.2, 7.0, 21.4),
+               (-2.4, -248.2, 259.0, -170.0, 90.0, -19.97, 27.21), (12.3, 100.06, -5.0, 0.0, 0.0, 0.0, 0.0),
+               (12.6, 100.5, -4.0, 359.0, -45.4, 2.24, 33.96)]
     decoded = replay.decode(replay.encode(samples))
     assert len(decoded) == len(samples)
-    for (t, x, z, yaw, turret, pitch), (dt, dx, dz, dyaw, dturret, dpitch) in zip(samples, decoded):
+    for (t, x, z, yaw, turret, pitch, h), (dt, dx, dz, dyaw, dturret, dpitch, dh) in zip(samples, decoded):
         assert abs(t - dt) < 0.051 and abs(x - dx) < 0.051 and abs(z - dz) < 0.051
         assert _same_yaw(yaw, dyaw) and -180 <= dyaw < 180
         assert _same_yaw(turret, dturret) and -180 <= dturret < 180
         assert abs(pitch - dpitch) < 0.051  # tenths: a zoomed view shows a whole degree
+        assert abs(h - dh) < 0.051
 
 
 def test_tracks_stored_in_older_formats_still_decode():
     # Format 1 (battles stored before format 4): four numbers a sample, no turret.
     old = [-30, 1000, -2000, 90, 3, 5, 4, -10]
-    assert replay.decode(old, track_format=1) == [(-3.0, 100.0, -200.0, 90, 0, 0.0),
-                                                  (-2.7, 100.5, -199.6, 80, 0, 0.0)]
+    assert replay.decode(old, track_format=1) == [(-3.0, 100.0, -200.0, 90, 0, 0.0, None),
+                                                  (-2.7, 100.5, -199.6, 80, 0, 0.0, None)]
     # Format 2 (format 4 battles): five, the gun level.
     old = [-30, 1000, -2000, 90, -45, 3, 5, 4, -10, 5]
-    assert replay.decode(old, track_format=2) == [(-3.0, 100.0, -200.0, 90, -45, 0.0),
-                                                  (-2.7, 100.5, -199.6, 80, -40, 0.0)]
+    assert replay.decode(old, track_format=2) == [(-3.0, 100.0, -200.0, 90, -45, 0.0, None),
+                                                  (-2.7, 100.5, -199.6, 80, -40, 0.0, None)]
+    # Format 3 (format 5 battles): six, no height -- the tank stands on the terrain.
+    old = [-30, 1000, -2000, 90, -45, 70, 3, 5, 4, -10, 5, -2]
+    assert replay.decode(old, track_format=3) == [(-3.0, 100.0, -200.0, 90, -45, 7.0, None),
+                                                  (-2.7, 100.5, -199.6, 80, -40, 6.8, None)]
 
 
 def test_decimation_takes_the_gun_angles_last_sent_before_each_sample():
@@ -62,7 +67,7 @@ def test_decimation_takes_the_gun_angles_last_sent_before_each_sample():
     turret = [(0.0, 0.0), (1.05, math.pi / 2), (3.0, -math.pi / 4)]
     pitch = [(0.5, -3.5), (2.0, 6.0)]
     kept = replay.decimate(raw, 0.0, end=10.0, turret=turret, pitch=pitch)
-    for t, _x, _z, _yaw, yaw_turret, gun_pitch in kept:
+    for t, _x, _z, _yaw, yaw_turret, gun_pitch, _h in kept:
         want = 0 if t < 1.05 else 90 if t < 3.0 else -45
         assert _same_yaw(yaw_turret, want), (t, yaw_turret)
         assert gun_pitch == (0.0 if t < 0.5 else -3.5 if t < 2.0 else 6.0), (t, gun_pitch)
@@ -211,3 +216,28 @@ def test_the_replay_view_is_a_square_around_the_border_inside_the_world():
 def test_unknown_maps_have_no_geometry():
     assert gamedata.minimap("no_such_map") is None
     assert gamedata.minimap(None) is None
+
+
+def test_the_tracks_carry_each_tanks_height():
+    # On the ground a tank's height is the terrain's under it; where it drives
+    # over a bridge or a rock it is metres above -- the 3D view needs both.
+    def height(n, heights, world, x, z):
+        x0, z0, x1, z1 = world
+        u, v = (x - x0) / (x1 - x0) * (n - 1), (z - z0) / (z1 - z0) * (n - 1)
+        i, j = min(max(int(u), 0), n - 2), min(max(int(v), 0), n - 2)
+        fu, fv = min(max(u - i, 0), 1), min(max(v - j, 0), 1)
+        a = heights[j * n + i] * (1 - fu) + heights[j * n + i + 1] * fu
+        b = heights[(j + 1) * n + i] * (1 - fu) + heights[(j + 1) * n + i + 1] * fu
+        return a * (1 - fv) + b * fv
+
+    above = {}
+    for name, b in _battles():
+        key = b["map"]["key"]
+        n, heights = gamedata.terrain_heights(key)
+        world = gamedata.minimap(key)["world"]
+        gaps = [s[6] - height(n, heights, world, s[1], s[2])
+                for track in b["replay"]["tracks"] for s in replay.decode(track["p"])]
+        assert sorted(abs(g) for g in gaps)[len(gaps) // 2] < 0.15, name
+        above[name] = sum(1 for g in gaps if g > 2)
+    assert above["v11_20_rift_base_capture.wotbreplay"] > 20, above  # the dam's bridges
+
