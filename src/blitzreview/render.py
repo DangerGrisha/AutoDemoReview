@@ -641,7 +641,20 @@ def _replay_terrain(battle):
     return {"n": found["n"], "dz": base64.b64encode(found["data"]).decode("ascii")}
 
 
-def _replay_data(battle, geo):
+def _replay_objects(battle, objects_base):
+    """The map's buildings and rocks for the 3D view (gamedata.objects): from
+    the site, a URL the page fetches when the 3D view opens (it is the same
+    for every battle on the map, so the browser caches it); otherwise inside
+    the page, like the terrain. None without objects."""
+    found = gamedata.objects(battle["map"].get("key"))
+    if found is None:
+        return None
+    if objects_base:
+        return {"url": f"{objects_base}{found['file']}.bin", "tris": found["tris"]}
+    return {"dz": base64.b64encode(found["data"]).decode("ascii"), "tris": found["tris"]}
+
+
+def _replay_data(battle, geo, objects_base=None):
     rp = battle["replay"]
     return {
         "end": rp["end"], "gap": rp["gap"], "fmt": rp.get("format", 1),
@@ -655,6 +668,7 @@ def _replay_data(battle, geo):
         "ev": _replay_events(battle),
         "terrain": _replay_terrain(battle),
         "cam": rp.get("camera"),  # the recorder's own camera (camera.py), from format 5
+        "objects": _replay_objects(battle, objects_base),
     }
 
 
@@ -730,7 +744,7 @@ def _seg(group, options, active):
     return f'<div class="seg" data-group="{group}">{"".join(buttons)}</div>'
 
 
-def _replay(battle):
+def _replay(battle, objects_base=None):
     """The 2D minimap replay card with the kill feed beside it; "" when the map
     has no minimap, a short note when the battle has no tracks."""
     if gamedata.minimap(battle["map"].get("key")) is None:
@@ -743,7 +757,7 @@ def _replay(battle):
                else "В реплее нет позиций танков — 2D-повтор недоступен.")
         return f'<section class="card"><h2>2D-повтор</h2><p class="note">{why}</p></section>'
     end = battle["replay"]["end"]
-    data = _replay_data(battle, geo)
+    data = _replay_data(battle, geo, objects_base)
     controls = (
         '<button type="button" class="rbtn play" id="rp-play" title="Смотреть (пробел)">▶</button>'
         f'<span class="rtime" id="rp-time">0:00 / {clock(end)}</span>'
@@ -1491,13 +1505,18 @@ _REPLAY_SCRIPT = r"""
     var a = h[j * n + i] * (1 - fu) + h[j * n + i + 1] * fu;
     return a * (1 - fv) + (h[(j + 1) * n + i] * (1 - fu) + h[(j + 1) * n + i + 1] * fu) * fv;
   }
+  function unb64(text) {
+    var bin = atob(text), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+  function inflate(bytes) {  // zlib -> ArrayBuffer, in the browser
+    return new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer();
+  }
   function loadTerrain(done) {  // the heights ship zlib-compressed: inflate once, in the browser
     if (TER) { done(true); return; }
     if (!R.terrain || typeof DecompressionStream === 'undefined') { done(false); return; }
-    var bin = atob(R.terrain.dz), bytes = new Uint8Array(bin.length);
-    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'));
-    new Response(stream).arrayBuffer().then(function (buf) {
+    inflate(unb64(R.terrain.dz)).then(function (buf) {
       var n = R.terrain.n, steps = new Int16Array(buf), h = new Float32Array(n * n);
       for (var j = 0; j < n; j++) {
         var value = 0;  // each row: its first height, then steps; decimetres
@@ -1509,6 +1528,61 @@ _REPLAY_SCRIPT = r"""
       TER = {n: n, h: h};
       done(true);
     }, function () { done(false); });
+  }
+  // The map's buildings, rocks, bridges and far mountains (tools/wotb_extract_assets.py
+  // write_objects): in the page, or fetched from the site once -- the same file
+  // for every battle on the map. Flat-shaded triangles; false when there are none.
+  var OBJ3 = null;
+  function loadObjects(done) {
+    if (OBJ3 !== null) { done(); return; }
+    var src = R.objects;
+    if (!src || typeof DecompressionStream === 'undefined') { OBJ3 = false; done(); return; }
+    var bytes = src.dz ? Promise.resolve(unb64(src.dz)) : fetch(src.url, {credentials: 'same-origin'}).then(function (r) {
+      if (!r.ok) throw new Error('objects: ' + r.status);
+      return r.arrayBuffer();
+    });
+    bytes.then(inflate).then(function (buf) { OBJ3 = parseObjects(buf); done(); },
+                             function () { OBJ3 = false; done(); });
+  }
+  function parseObjects(buf) {  // "BOB1", each object's sizes, the vertices (decimetre steps), the corners
+    var dv = new DataView(buf), bytes = new Uint8Array(buf);
+    if (buf.byteLength < 8 || dv.getUint32(0, true) !== 0x31424F42) return false;
+    var n = dv.getUint32(4, true), head = 8, nv = 0, nt = 0, i, j;
+    if (head + 4 * n > buf.byteLength) return false;
+    for (i = 0; i < n; i++) { nv += dv.getUint16(head + 4 * i, true); nt += dv.getUint16(head + 4 * i + 2, true); }
+    var va = head + 4 * n, ta = va + 6 * nv;
+    if (ta > buf.byteLength) return false;
+    var pos = new Float32Array(nt * 9), nrm = new Float32Array(nt * 9), xyz = new Float32Array(3 * 65536), k = 0;
+    var fresh = 0, cv = 0;
+    function corner() {  // a varint counted down from the next new vertex: 0 = that one
+      var value = 0, shift = 0, b;
+      do { b = bytes[ta++]; value += (b & 127) * Math.pow(2, shift); shift += 7; } while (b & 128 && ta < bytes.length);
+      var at = fresh - value;
+      if (!value) fresh++;
+      return 3 * Math.max(0, Math.min(cv - 1, at));
+    }
+    for (i = 0; i < n; i++) {
+      var ct = dv.getUint16(head + 4 * i + 2, true), x = 0, y = 0, z = 0;
+      cv = dv.getUint16(head + 4 * i, true);
+      for (j = 0; j < cv; j++, va += 6) {  // x east, y north, z up -> GL x, height, -north
+        x += dv.getInt16(va, true); y += dv.getInt16(va + 2, true); z += dv.getInt16(va + 4, true);
+        xyz[3 * j] = x / 10; xyz[3 * j + 1] = z / 10; xyz[3 * j + 2] = -y / 10;
+      }
+      fresh = 0;
+      for (j = 0; j < ct; j++) {
+        if (ta >= bytes.length) return false;
+        var a = corner(), b = corner(), c = corner();
+        var ux = xyz[b] - xyz[a], uy = xyz[b + 1] - xyz[a + 1], uz = xyz[b + 2] - xyz[a + 2];
+        var wx = xyz[c] - xyz[a], wy = xyz[c + 1] - xyz[a + 1], wz = xyz[c + 2] - xyz[a + 2];
+        var nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx, nl = Math.hypot(nx, ny, nz) || 1;
+        [a, b, c].forEach(function (q) {
+          pos[k] = xyz[q]; pos[k + 1] = xyz[q + 1]; pos[k + 2] = xyz[q + 2];
+          nrm[k] = nx / nl; nrm[k + 1] = ny / nl; nrm[k + 2] = nz / nl;
+          k += 3;
+        });
+      }
+    }
+    return {pos: pos, nrm: nrm, count: nt * 3};
   }
 
   function mat(m) { return new Float32Array(m); }  // column-major 4x4
@@ -1586,6 +1660,19 @@ _REPLAY_SCRIPT = r"""
     'gl_Position=mvp*w;}';
   var FS_BOX = 'precision mediump float;uniform vec4 col;uniform vec3 sun;' + FOG + 'varying vec3 vn;varying vec3 vp;' +
     'void main(){float l=.5+.65*max(dot(normalize(vn),sun),0.0);gl_FragColor=vec4(hazed(col.rgb*l,vp),col.a);}';
+  // Buildings and rocks: coloured by the minimap straight above them (a roof is
+  // what the minimap shows), walls darker and greyer; outside the minimap's
+  // square (the far mountains) a plain rock colour. Lit from both sides: the
+  // scenes do not agree on which way their triangles face.
+  var VS_OBJ = 'attribute vec3 p;attribute vec3 nm;uniform mat4 mvp;uniform vec4 uvm;' +
+    'varying vec3 vn;varying vec3 vp;varying vec2 vuv;' +
+    'void main(){vn=nm;vp=p;vuv=vec2(uvm.x*p.x+uvm.y,uvm.z*p.z+uvm.w);gl_Position=mvp*vec4(p,1.0);}';
+  var FS_OBJ = 'precision mediump float;uniform sampler2D tex;uniform vec3 sun;uniform vec4 wr;' + FOG +
+    'varying vec3 vn;varying vec3 vp;varying vec2 vuv;' +
+    'void main(){vec3 n=normalize(vn);if(dot(n,eye-vp)<0.0)n=-n;' +
+    'float inside=step(wr.x,vp.x)*step(vp.x,wr.z)*step(wr.y,-vp.z)*step(-vp.z,wr.w);' +
+    'vec3 c=mix(vec3(.52,.49,.44),texture2D(tex,vuv).rgb,inside);c=mix(c*.7+.07,c,abs(n.y));' +
+    'float l=.48+.62*max(dot(n,sun),0.0);gl_FragColor=vec4(hazed(c*l,vp),1.0);}';
   // The sky behind everything: haze at the horizon, blue overhead. sk = the
   // camera's elevation and tan(half the vertical field of view).
   var VS_SKY = 'attribute vec2 q;varying float vy;void main(){vy=q.y;gl_Position=vec4(q,.9999,1.0);}';
@@ -1604,7 +1691,7 @@ _REPLAY_SCRIPT = r"""
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
     var info = {p: p, a: {}, u: {}};
     ['p', 'nm', 'uv', 'q'].forEach(function (name) { info.a[name] = gl.getAttribLocation(p, name); });
-    ['mvp', 'model', 'tex', 'bd', 'sun', 'col', 'eye', 'fog', 'fogc', 'sk', 'od'].forEach(function (name) {
+    ['mvp', 'model', 'tex', 'bd', 'sun', 'col', 'eye', 'fog', 'fogc', 'sk', 'od', 'uvm', 'wr'].forEach(function (name) {
       info.u[name] = gl.getUniformLocation(p, name);
     });
     return info;
@@ -1658,6 +1745,7 @@ _REPLAY_SCRIPT = r"""
     if (!gl) return false;
     try {
       G3 = {ter: program(VS_TER, FS_TER), box: program(VS_BOX, FS_BOX), sky: program(VS_SKY, FS_SKY),
+            obj: program(VS_OBJ, FS_OBJ),
             mesh: terrainMesh(), cube: boxMesh(), tri: buffer(new Float32Array([-1, -1, 3, -1, -1, 3])),
             tex: gl.createTexture()};
     } catch (err) {
@@ -1755,6 +1843,21 @@ _REPLAY_SCRIPT = r"""
     gl.bindTexture(gl.TEXTURE_2D, G3.tex);
     gl.uniform1i(G3.ter.u.tex, 0);
     gl.drawElements(gl.TRIANGLES, G3.mesh.count, gl.UNSIGNED_SHORT, 0);
+    if (OBJ3 && !G3.things) G3.things = {pos: buffer(OBJ3.pos), nrm: buffer(OBJ3.nrm), idx: null, count: OBJ3.count};
+    if (G3.things) {
+      var w = R.world, c = R.crop, iw = img.naturalWidth || 512, ih = img.naturalHeight || 512;
+      var ku = (c[2] - c[0]) / (w[2] - w[0]) / iw, kv = (c[3] - c[1]) / (w[3] - w[1]) / ih;
+      bind(G3.obj, G3.things);
+      gl.uniformMatrix4fv(G3.obj.u.mvp, false, VP);
+      gl.uniform4f(G3.obj.u.uvm, ku, c[0] / iw - w[0] * ku, kv, c[1] / ih + w[3] * kv);
+      gl.uniform4f(G3.obj.u.wr, w[0], w[1], w[2], w[3]);
+      gl.uniform3fv(G3.obj.u.sun, SUN);
+      gl.uniform3fv(G3.obj.u.eye, eye);
+      gl.uniform2fv(G3.obj.u.fog, fog);
+      gl.uniform3fv(G3.obj.u.fogc, HAZE);
+      gl.uniform1i(G3.obj.u.tex, 0);
+      gl.drawArrays(gl.TRIANGLES, 0, G3.things.count);
+    }
     bind(G3.box, G3.cube);
     gl.uniformMatrix4fv(G3.box.u.mvp, false, VP);
     gl.uniform3fv(G3.box.u.sun, SUN);
@@ -2039,6 +2142,7 @@ _REPLAY_SCRIPT = r"""
       }
       MODE = mode; glc.hidden = false; stage.classList.add('is3d');
       stage.classList.toggle('pov', mode === 'pov'); card.classList.toggle('pov', mode === 'pov');
+      loadObjects(draw);  // the buildings come a moment later
       if (mode === 'pov') {
         if (!focus || !focus.T) focus = ME && ME.T ? ME : R.vehicles.filter(function (v) { return v.T; })[0] || null;
         resetLook();
@@ -2506,13 +2610,15 @@ _REPLAY_SCRIPT = r"""
 """
 
 
-def render_battle_html(battle, site_nav=""):
-    """The full report page for one battle dict (see battle.load)."""
+def render_battle_html(battle, site_nav="", objects_base=None):
+    """The full report page for one battle dict (see battle.load).
+    `objects_base`: where the site serves the 3D view's objects (a URL prefix
+    for "<file>.bin"); without it the page carries them itself."""
     label, _ = OUTCOME.get(battle["outcome"], OUTCOME["unknown"])
     title = f'{battle["map"]["name"]} — {label} · Blitz · demoReview'
     leaders = analysis.leaders(battle)
     has_replay = _replay_geo(battle) is not None  # the replay card carries the kill feed
-    body = (_hero(battle) + _me(battle) + _coach(battle) + _fight(battle) + _replay(battle)
+    body = (_hero(battle) + _me(battle) + _coach(battle) + _fight(battle) + _replay(battle, objects_base)
             + f'<div class="teams">{_team(battle, True, leaders)}{_team(battle, False, leaders)}</div>'
             + ("" if has_replay else _feed(battle)) + _footer(battle))
     script = _SCRIPT + (_REPLAY_SCRIPT if has_replay else "")

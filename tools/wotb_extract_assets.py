@@ -23,8 +23,11 @@ needs the game installed and never calls the Wargaming API):
                         points, row by row from the south edge, each row
                         west to east, in decimetres as i16le -- each row's
                         first value as is, the rest as the step from the
-                        previous one; zlib-compressed (about 17 KB a map).
+                        previous one; zlib-compressed (about 36 KB a map).
                         Map variants of one scene share the file
+    objects/<scene>.bin the scene's buildings, rocks, bridges and far
+                        mountains for the 3D view, simplified (write_objects;
+                        60-450 KB a map); maps.json `objects` {file, tris}
 
 The tank id is the number replays carry: (index << 8) | (nation << 4) | 1,
 where `index` is the vehicle's <id> in its nation's list.xml and `nation` the
@@ -71,6 +74,25 @@ POINT_RADIUS = 15.0
 # enough for a camera at a gun's height, about 45 KB a map compressed, and
 # the most one WebGL mesh with 16-bit indices holds (256 x 256 = 65536).
 TERRAIN_N = 256
+
+# Scene objects for the 3D view: what a tank hides behind, and the skyline.
+# Skipped by name: invisible walls, decals, grass and leaves, the sky dome,
+# border posts. Kept only from OBJECT_MIN_SIDE metres across and
+# OBJECT_MIN_HEIGHT tall (no barrels or fences). Simplified by vertex
+# clustering: built things on a OBJECT_CELL grid with at most
+# OBJECT_MAX_TRIS triangles -- walls and roofs stay straight -- rocks and
+# mountains (OBJECT_NATURAL) down to OBJECT_TRIS_PER_M triangles per metre
+# of their size, and anything outside the playable area to
+# OBJECT_FAR_TRIS_PER_M: it is only ever seen from afar.
+OBJECT_SKIP = ("invisible", "dec_", "decal", "concrete", "env_border", "grass", "shadow",
+               "sky", "bush", "grape", "tree", "leaf", "foliage", "flower", "cloud", "water")
+OBJECT_NATURAL = ("stone", "rock", "stn_", "mount", "cliff", "land")
+OBJECT_MIN_SIDE = 4.0
+OBJECT_MIN_HEIGHT = 1.5
+OBJECT_CELL = 0.75
+OBJECT_MAX_TRIS = 350
+OBJECT_TRIS_PER_M = 5
+OBJECT_FAR_TRIS_PER_M = 3
 
 # First matching tag wins; Blitz has no artillery in random battles but the
 # client still knows the class, so it stays in the table.
@@ -322,9 +344,126 @@ def write_terrain(data_dir, scene_name, land, out_dir):
     return {"file": folder, "n": TERRAIN_N}
 
 
-def add_geometry(data_dir, maps, terrain_dir=None):
-    """Add `world`, `border`, the capture zones and (with `terrain_dir`) the
-    terrain to every map from its scene. Returns problems."""
+def _cluster(world, cell):
+    """Vertex clustering: snap every corner to a grid of `cell` metres,
+    merge what lands together, drop triangles that collapse."""
+    index, points, tris = {}, [], []
+    for tri in world:
+        ids = []
+        for p in tri:
+            key = (round(p[0] / cell), round(p[1] / cell), round(p[2] / cell))
+            if key not in index:
+                index[key] = len(points)
+                points.append(p)
+            ids.append(index[key])
+        if ids[0] != ids[1] and ids[1] != ids[2] and ids[0] != ids[2]:
+            tris.append(tuple(ids))
+    return points, list(dict.fromkeys(tris))
+
+
+def _first_use(points, tris):
+    """Renumber the vertices in the order the triangles first use them, and
+    drop the unused: then every index is either the next new vertex or one
+    seen shortly before -- what the index coding below counts on."""
+    order, kept, out = {}, [], []
+    for tri in tris:
+        face = []
+        for i in tri:
+            if i not in order:
+                order[i] = len(kept)
+                kept.append(points[i])
+            face.append(order[i])
+        out.append(tuple(face))
+    return kept, out
+
+
+def simplify(world, natural=False, far=False):
+    """(points, triangles) of one object's triangles [(p, p, p)] in metres,
+    or None when it is too small to hide a tank. `natural`: a rock or a
+    mountain; `far`: outside the playable area."""
+    xs, ys, zs = ([p[k] for tri in world for p in tri] for k in range(3))
+    size = max(max(xs) - min(xs), max(ys) - min(ys))
+    if size < OBJECT_MIN_SIDE or max(zs) - min(zs) < OBJECT_MIN_HEIGHT:
+        return None
+    longest = max(size, max(zs) - min(zs))
+    if natural or far:
+        per_m = OBJECT_FAR_TRIS_PER_M if far else OBJECT_TRIS_PER_M
+        budget, cell = max(24, min(2000, int(longest * per_m))), min(15.0, max(0.35, longest / 12))
+    else:
+        budget, cell = OBJECT_MAX_TRIS, OBJECT_CELL
+    points, tris = _cluster(world, cell)
+    while len(tris) > budget and cell < 40:
+        cell *= 1.35
+        points, tris = _cluster(world, cell)
+    return _first_use(points, tris) if tris else None
+
+
+def _varint(value, out):
+    while value >= 0x80:
+        out.append(value & 0x7F | 0x80)
+        value >>= 7
+    out.append(value)
+
+
+def write_objects(data_dir, scene_name, scene, out_dir):
+    """Write objects/<scene folder>.bin; returns the maps.json `objects` entry.
+
+    zlib of: "BOB1" | object count u32 | count x (vertices u16, triangles
+    u16) | every object's vertices as i16 x 3 -- x east, z north, height, in
+    decimetres, the first absolute and the rest steps -- | every object's
+    triangle corners as varints (7 bits a byte, low first) counted down from
+    the object's next new vertex: 0 is a new vertex, k the one k before it."""
+    folder = scene_name.split("/")[0]
+    groups = dava.read_geometry(dvpl.read(data_dir / "3d" / "Maps" / folder / f"{folder}.scg.dvpl"))
+    rects = [b["rect"] for b in dava.map_borders(scene)] or [(-300, -300, 300, 300)]
+    x0, y0 = min(r[0] for r in rects) - 25, min(r[1] for r in rects) - 25
+    x1, y1 = max(r[2] for r in rects) + 25, max(r[3] for r in rects) + 25
+    objects = []
+    for mesh in dava.meshes(scene):
+        name = mesh["name"].lower()
+        if any(word in name for word in OBJECT_SKIP):
+            continue
+        world = []
+        for gid in mesh["groups"]:
+            found = dava.triangles(groups[gid])
+            if found is None:
+                continue
+            points, indices = found
+            placed = [dava.place(mesh, p) for p in points]
+            world.extend((placed[indices[i]], placed[indices[i + 1]], placed[indices[i + 2]])
+                         for i in range(0, len(indices) - 2, 3))
+        if not world:
+            continue
+        cx = (min(p[0] for tri in world for p in tri) + max(p[0] for tri in world for p in tri)) / 2
+        cy = (min(p[1] for tri in world for p in tri) + max(p[1] for tri in world for p in tri)) / 2
+        kept = simplify(world, natural=any(word in name for word in OBJECT_NATURAL),
+                        far=not (x0 <= cx <= x1 and y0 <= cy <= y1))
+        if (kept and len(kept[0]) < 65536 and len(kept[1]) < 65536
+                and all(abs(c) < 3200 for p in kept[0] for c in p)):
+            objects.append(kept)
+    heads, verts, tris = bytearray(), bytearray(), bytearray()
+    for points, faces in objects:
+        heads += struct.pack("<HH", len(points), len(faces))
+        last = (0, 0, 0)
+        for x, y, z in points:  # scene y is north: the replay's z
+            q = (round(x * 10), round(y * 10), round(z * 10))
+            verts += struct.pack("<3h", *(max(-32768, min(32767, a - b)) for a, b in zip(q, last)))
+            last = q
+        fresh = 0
+        for face in faces:
+            for i in face:
+                _varint(fresh - i, tris)
+                fresh = max(fresh, i + 1)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    blob = b"BOB1" + struct.pack("<I", len(objects)) + heads + verts + tris
+    (out_dir / f"{folder}.bin").write_bytes(zlib.compress(blob, 9))
+    return {"file": folder, "tris": sum(len(f) for _, f in objects)}
+
+
+def add_geometry(data_dir, maps, terrain_dir=None, objects_dir=None):
+    """Add `world`, `border`, the capture zones and (with `terrain_dir` and
+    `objects_dir`) the terrain and the objects to every map from its scene.
+    Returns problems."""
     problems, scenes = [], {}
     for key, entry in sorted(maps.items()):
         scene_name = entry.get("scene")
@@ -332,22 +471,26 @@ def add_geometry(data_dir, maps, terrain_dir=None):
             problems.append(f"{key}: no scene in maps.yaml")
             continue
         if scene_name not in scenes:
-            terrain = None
+            terrain = objects = None
             try:
                 scene = dava.read_scene(dvpl.read(data_dir / "3d" / "Maps" / f"{scene_name}.dvpl"))
                 land = dava.landscape(scene)
                 if terrain_dir is not None and land and land["hmap"]:
                     terrain = write_terrain(data_dir, scene_name, land, terrain_dir)
+                if objects_dir is not None:
+                    objects = write_objects(data_dir, scene_name, scene, objects_dir)
                 scenes[scene_name] = (dava.landscape_bbox(scene), dava.map_borders(scene),
-                                      dava.capture_zones(scene), terrain)
+                                      dava.capture_zones(scene), terrain, objects)
             except (OSError, dava.DavaError, dvpl.DvplError) as exc:
-                scenes[scene_name] = (None, [], [], None)
+                scenes[scene_name] = (None, [], [], None, None)
                 problems.append(f"{key}: {scene_name}: {exc}")
-        world, borders, zones, terrain = scenes[scene_name]
+        world, borders, zones, terrain, objects = scenes[scene_name]
         if world:
             entry["world"] = _rounded(world)
         if terrain:
             entry["terrain"] = terrain
+        if objects:
+            entry["objects"] = objects
         border = pick_border(borders, entry.get("tag"))
         if border is None:
             problems.append(f"{key}: no border for tag {entry.get('tag')!r} "
@@ -405,7 +548,7 @@ def main():
     ap.add_argument("--out", type=Path, default=OUT_DIR)
     ap.add_argument("--no-minimaps", action="store_true")
     ap.add_argument("--no-terrain", action="store_true",
-                    help="keep the terrain files and maps.json `terrain` as they are")
+                    help="keep the terrain and object files and their maps.json entries as they are")
     args = ap.parse_args()
 
     data_dir = args.client / "Data"
@@ -418,15 +561,17 @@ def main():
     vehicles = extract_vehicles(data_dir, strings)
     maps = extract_maps(data_dir, strings)
     terrain_dir = None if args.no_terrain else args.out / "terrain"
-    problems = add_geometry(data_dir, maps, terrain_dir)
+    objects_dir = None if args.no_terrain else args.out / "objects"
+    problems = add_geometry(data_dir, maps, terrain_dir, objects_dir)
     if args.no_terrain:  # carry the existing entries over
         try:
             old = json.loads((args.out / "maps.json").read_text(encoding="utf-8"))["maps"]
         except (OSError, ValueError, KeyError):
             old = {}
         for key, entry in maps.items():
-            if "terrain" in old.get(key, {}):
-                entry["terrain"] = old[key]["terrain"]
+            for part in ("terrain", "objects"):
+                if part in old.get(key, {}):
+                    entry[part] = old[key][part]
 
     args.out.mkdir(parents=True, exist_ok=True)
     if not args.no_minimaps:

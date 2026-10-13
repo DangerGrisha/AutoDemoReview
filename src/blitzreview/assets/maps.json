@@ -26,6 +26,10 @@
    ],
    "name_en": "Falls Creek",
    "name_ru": "Протока",
+   "objects": {
+    "file": "05_amigosville_am",
+    "tris": 41471
+   },
    "points": [
     [
      0,
@@ -202,6 +206,10 @@
    ],
    "name_en": "Falls Creek - Bridge",
    "name_ru": "Протока. Мост",
+   "objects": {
+    "file": "05_amigosville_am",
+    "tris": 41471
+   },
    "respawn": {
     "allies": [
      [
@@ -302,6 +310,10 @@
    ],
    "name_en": "Falls Creek - Factory",
    "name_ru": "Протока. Завод",
+   "objects": {
+    "file": "05_amigosville_am",
+    "tris": 41471
+   },
    "respawn": {
     "allies": [
      [
@@ -402,6 +414,10 @@
    ],
    "name_en": "Falls Creek mod. 2014",
    "name_ru": "Протоки обр. 2014",
+   "objects": {
+    "file": "amigosville_old",
+    "tris": 23531
+   },
    "respawn": {
     "allies": [
      [
@@ -558,6 +574,10 @@
    ],
    "name_en": "Canal",
    "name_ru": "Канал",
+   "objects": {
+    "file": "18_canal_cn",
+    "tris": 18569
+   },
    "points": [
     [
      0,
@@ -740,6 +760,10 @@
    ],
    "name_en": "Canal - Factory",
    "name_ru": "Канал. Завод",
+   "objects": {
+    "file": "18_canal_cn",
+    "tris": 18569
+   },
    "respawn": {
     "allies": [
      [
@@ -841,6 +865,10 @@
    ],
    "name_en": "Canyon",
    "name_ru": "Каньон",
+   "objects": {
+    "file": "25_canyon_ca",
+    "tris": 41848
+   },
    "points": [
     [
      0,
@@ -1017,6 +1045,10 @@
    ],
    "name_en": "Desert Sands",
    "name_ru": "Эль-Аламейн",
+   "objects": {
+    "file": "02_desert_train_dt",
+    "tris": 33310
+   },
    "points": [
     [
      0,
@@ -1193,6 +1225,10 @@
    ],
    "name_en": "Desert Sands - Town",
    "name_ru": "Эль-Аламейн. Город",
+   "objects": {
+    "file": "02_desert_train_dt",
+    "tris": 33310
+   },
    "respawn": {
     "allies": [
      [
@@ -1293,6 +1329,10 @@
    ],
    "name_en": "Desert Sands - Dunes",
    "name_ru": "Эль-Аламейн. Пустыня",
+   "objects": {
+    "file": "02_desert_train_dt",
+    "tris": 33310
+   },
    "respawn": {
     "allies": [
      [
@@ -1394,6 +1434,10 @@
    ],
    "name_en": "Middleburg",
    "name_ru": "Миддлбург",
+   "objects": {
+    "file": "03_erlenberg_er",
+    "tris": 37089
+   },
    "points": [
     [
      0,
@@ -1570,6 +1614,10 @@
    ],
    "name_en": "Middleburg - Town",
    "name_ru": "Миддлбург. Город",
+   "objects": {
+    "file": "03_erlenberg_er",
+    "tris": 37089
+   },
    "respawn": {
     "allies": [
      [
@@ -1670,6 +1718,10 @@
    ],
    "name_en": "Middleburg - Hill",
    "name_ru": "Миддлбург. Гора",
+   "objects": {
+    "file": "03_erlenberg_er",
+    "tris": 37089
+   },
    "respawn": {
     "allies": [
      [
@@ -1770,6 +1822,10 @@
    ],
    "name_en": "Middleburg mod. 2014",
    "name_ru": "Миддлбург обр. 2014",
+   "objects": {
+    "file": "erlenberg_old",
+    "tris": 13965
+   },
    "respawn": {
     "allies": [
      [
@@ -1926,6 +1982,10 @@
    ],
    "name_en": "Faust",
    "name_ru": "Фауст",
+   "objects": {
+    "file": "32_faust_fa_night",
+    "tris": 32397
+   },
    "points": [
     [
      0,
@@ -2108,6 +2168,10 @@
    ],
    "name_en": "New Bay",
    "name_ru": "Нью-Бэй",
+   "objects": {
+    "file": "34_forgecity_fc",
+    "tris": 81290
+   },
    "points": [
     [
      0,
@@ -2284,6 +2348,10 @@
    ],
    "name_en": "Fort Despair",
    "name_ru": "Форт",
+   "objects": {
+    "file": "07_fort_ft",
+    "tris": 38637
+   },
    "points": [
     [
      0,
@@ -2460,6 +2528,10 @@
    ],
    "name_en": "Dynasty's Pearl",
    "name_ru": "Жемчужный город",
+   "objects": {
+    "file": "30_grossberg_sh",
+    "tris": 102939
+   },
    "points": [
     [
      0,
@@ -2636,6 +2708,10 @@
    ],
    "name_en": "Himmelsdorf",
    "name_ru": "Химмельсдорф",
+   "objects": {
+    "file": "19_himmelsdorf_hm",
+    "tris": 104172
+   },
    "points": [
     [
      0,
@@ -2818,6 +2894,10 @@
    ],
    "name_en": "Molendijk",
    "name_ru": "Молендейк",
+   "objects": {
+    "file": "16_holland_hl",
+    "tris": 49981
+   },
    "points": [
     [
      0,
@@ -2994,6 +3074,10 @@
    ],
    "name_en": "Wasteland",
    "name_ru": "Пустошь",
+   "objects": {
+    "file": "26_holmeisk_hk",
+    "tris": 47843
+   },
    "points": [
     [
      0,
@@ -3169,6 +3253,10 @@
    ],
    "name_en": "Everfrost",
    "name_ru": "Эверфрост",
+   "objects": {
+    "file": "41_iceworld_ic",
+    "tris": 33343
+   },
    "respawn": {
     "allies": [
      [
@@ -3325,6 +3413,10 @@
    ],
    "name_en": "Yukon",
    "name_ru": "Юкон",
+   "objects": {
+    "file": "08_idle_id",
+    "tris": 70556
+   },
    "points": [
     [
      0,
@@ -3507,6 +3599,10 @@
    ],
    "name_en": "Vineyards",
    "name_ru": "Виноградники",
+   "objects": {
+    "file": "22_italy_it",
+    "tris": 52359
+   },
    "points": [
     [
      0,
@@ -3683,6 +3779,10 @@
    ],
    "name_en": "Rockfield",
    "name_ru": "Балтийский щит",
+   "objects": {
+    "file": "17_karelia_ka",
+    "tris": 17965
+   },
    "points": [
     [
      0,
@@ -3859,6 +3959,10 @@
    ],
    "name_en": "Copperfield",
    "name_ru": "Карьеры",
+   "objects": {
+    "file": "23_karieri_kr",
+    "tris": 10819
+   },
    "points": [
     [
      0,
@@ -4035,6 +4139,10 @@
    ],
    "name_en": "lagoon",
    "name_ru": "lagoon",
+   "objects": {
+    "file": "15_lagoon_ln",
+    "tris": 62565
+   },
    "points": [
     [
      0,
@@ -4211,6 +4319,10 @@
    ],
    "name_en": "Alpenstadt",
    "name_ru": "Альпенштадт",
+   "objects": {
+    "file": "31_lumber_lm",
+    "tris": 47706
+   },
    "points": [
     [
      0,
@@ -4387,6 +4499,10 @@
    ],
    "name_en": "Alpenstadt - Town",
    "name_ru": "Альпенштадт. Город",
+   "objects": {
+    "file": "31_lumber_lm",
+    "tris": 47706
+   },
    "respawn": {
     "allies": [
      [
@@ -4488,6 +4604,10 @@
    ],
    "name_en": "Winter Malinovka",
    "name_ru": "Зимняя Малиновка",
+   "objects": {
+    "file": "12_malinovka_ma",
+    "tris": 17549
+   },
    "points": [
     [
      0,
@@ -4664,6 +4784,10 @@
    ],
    "name_en": "Dead Rail",
    "name_ru": "Эшелон",
+   "objects": {
+    "file": "04_medvedkovo_md",
+    "tris": 20298
+   },
    "points": [
     [
      0,
@@ -4840,6 +4964,10 @@
    ],
    "name_en": "Dead Rail - Valley",
    "name_ru": "Эшелон. Поле",
+   "objects": {
+    "file": "04_medvedkovo_md",
+    "tris": 20298
+   },
    "respawn": {
     "allies": [
      [
@@ -4940,6 +5068,10 @@
    ],
    "name_en": "Dead Rail - Railroad",
    "name_ru": "Эшелон. Станция",
+   "objects": {
+    "file": "04_medvedkovo_md",
+    "tris": 20298
+   },
    "respawn": {
     "allies": [
      [
@@ -5041,6 +5173,10 @@
    ],
    "name_en": "Yamato Harbor",
    "name_ru": "Восточная гавань",
+   "objects": {
+    "file": "24_milibase_mlb",
+    "tris": 35813
+   },
    "points": [
     [
      0,
@@ -5217,6 +5353,10 @@
    ],
    "name_en": "Yamato Harbor - Battleship",
    "name_ru": "Восточная гавань. Ямато",
+   "objects": {
+    "file": "24_milibase_mlb",
+    "tris": 35813
+   },
    "respawn": {
     "allies": [
      [
@@ -5317,6 +5457,10 @@
    ],
    "name_en": "Yamato Harbor - Hills",
    "name_ru": "Восточная гавань. Поле",
+   "objects": {
+    "file": "24_milibase_mlb",
+    "tris": 35813
+   },
    "respawn": {
     "allies": [
      [
@@ -5417,6 +5561,10 @@
    ],
    "name_en": "Yamato Harbor - Center",
    "name_ru": "Восточная гавань. Центр",
+   "objects": {
+    "file": "24_milibase_mlb",
+    "tris": 35813
+   },
    "respawn": {
     "allies": [
      [
@@ -5517,6 +5665,10 @@
    ],
    "name_en": "Yamato Harbor - Dock",
    "name_ru": "Восточная гавань. Док",
+   "objects": {
+    "file": "24_milibase_mlb",
+    "tris": 35813
+   },
    "respawn": {
     "allies": [
      [
@@ -5617,6 +5769,10 @@
    ],
    "name_en": "Sea of Tranquility",
    "name_ru": "Море Спокойствия",
+   "objects": {
+    "file": "40_moon_mn",
+    "tris": 12375
+   },
    "respawn": {
     "allies": [
      [
@@ -5773,6 +5929,10 @@
    ],
    "name_en": "Black Goldville",
    "name_ru": "Золотая долина",
+   "objects": {
+    "file": "21_mountain_mnt",
+    "tris": 39878
+   },
    "points": [
     [
      0,
@@ -5949,6 +6109,10 @@
    ],
    "name_en": "Normandy",
    "name_ru": "Нормандия",
+   "objects": {
+    "file": "33_neptune_nt",
+    "tris": 40977
+   },
    "points": [
     [
      0,
@@ -6131,6 +6295,10 @@
    ],
    "name_en": "Normandy - Hills",
    "name_ru": "Нормандия. Холмы",
+   "objects": {
+    "file": "33_neptune_nt",
+    "tris": 40977
+   },
    "respawn": {
     "allies": [
      [
@@ -6231,6 +6399,10 @@
    ],
    "name_en": "Normandy - Beach",
    "name_ru": "Нормандия. Побережье",
+   "objects": {
+    "file": "33_neptune_nt",
+    "tris": 40977
+   },
    "respawn": {
     "allies": [
      [
@@ -6332,6 +6504,10 @@
    ],
    "name_en": "Ghost Factory",
    "name_ru": "Промзона",
+   "objects": {
+    "file": "11_plant_pn",
+    "tris": 76545
+   },
    "points": [
     [
      0,
@@ -6514,6 +6690,10 @@
    ],
    "name_en": "Castilla",
    "name_ru": "Кастилья",
+   "objects": {
+    "file": "13_pliego_pl",
+    "tris": 31043
+   },
    "points": [
     [
      0,
@@ -6690,6 +6870,10 @@
    ],
    "name_en": "Port Bay",
    "name_ru": "Порт",
+   "objects": {
+    "file": "14_port_pt",
+    "tris": 34705
+   },
    "points": [
     [
      0,
@@ -6866,6 +7050,10 @@
    ],
    "name_en": "Hellas",
    "name_ru": "Эллада",
+   "objects": {
+    "file": "35_rift_rt",
+    "tris": 57264
+   },
    "points": [
     [
      0,
@@ -7042,6 +7230,10 @@
    ],
    "name_en": "Mayan Ruins",
    "name_ru": "Древние пирамиды",
+   "objects": {
+    "file": "28_rock_rc",
+    "tris": 54121
+   },
    "points": [
     [
      0,
@@ -7217,6 +7409,10 @@
    ],
    "name_en": "Mines",
    "name_ru": "Рудники",
+   "objects": {
+    "file": "06_rudniki_rd",
+    "tris": 20524
+   },
    "respawn": {
     "allies": [
      [
@@ -7373,6 +7569,10 @@
    ],
    "name_en": "Mines - Hill",
    "name_ru": "Рудники. Гора",
+   "objects": {
+    "file": "06_rudniki_rd",
+    "tris": 20524
+   },
    "respawn": {
     "allies": [
      [
@@ -7457,6 +7657,10 @@
    ],
    "name_en": "Mines - Village",
    "name_ru": "Рудники. Деревня",
+   "objects": {
+    "file": "06_rudniki_rd",
+    "tris": 20524
+   },
    "respawn": {
     "allies": [
      [
@@ -7541,6 +7745,10 @@
    ],
    "name_en": "Mines - Center",
    "name_ru": "Рудники. Центр",
+   "objects": {
+    "file": "06_rudniki_rd",
+    "tris": 20524
+   },
    "respawn": {
     "allies": [
      [
@@ -7698,6 +7906,10 @@
    ],
    "name_en": "Oasis Palms",
    "name_ru": "Горящие пески",
+   "objects": {
+    "file": "09_savanna_sv",
+    "tris": 18607
+   },
    "points": [
     [
      0,
@@ -7873,6 +8085,10 @@
    ],
    "name_en": "Oasis Palms mod. 2014",
    "name_ru": "Горящие пески обр. 2014",
+   "objects": {
+    "file": "savanna_old",
+    "tris": 15893
+   },
    "respawn": {
     "allies": [
      [
@@ -8029,6 +8245,10 @@
    ],
    "name_en": "Naval Frontier",
    "name_ru": "Морской рубеж",
+   "objects": {
+    "file": "29_skit_sk",
+    "tris": 31224
+   },
    "points": [
     [
      0,

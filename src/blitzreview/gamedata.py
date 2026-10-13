@@ -135,6 +135,30 @@ def terrain(key):
     return {"n": int(info["n"]), "data": path.read_bytes()}
 
 
+def objects(key):
+    """A map's buildings, rocks and far mountains for the 3D view: {"file",
+    "tris", "data"} -- `data` the zlib-compressed file as
+    tools/wotb_extract_assets.py wrote it (write_objects). None when the
+    assets have none for the map."""
+    entry = _table("maps.json", "maps").get(key) if key else None
+    info = (entry or {}).get("objects")
+    if not info:
+        return None
+    path = ASSETS / "objects" / f"{info['file']}.bin"
+    if not path.is_file():
+        return None
+    return {"file": info["file"], "tris": int(info["tris"]), "data": path.read_bytes()}
+
+
+def objects_file(name):
+    """The bytes of assets/objects/<name>.bin for the site to serve, None for
+    anything else (the name must be a plain file stem)."""
+    if not name or not all(c.isascii() and (c.isalnum() or c == "_") for c in name):
+        return None
+    path = ASSETS / "objects" / f"{name}.bin"
+    return path.read_bytes() if path.is_file() else None
+
+
 def terrain_heights(key):
     """(n, heights in metres, row by row from the south edge) or None."""
     found = terrain(key)

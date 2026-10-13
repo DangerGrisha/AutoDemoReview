@@ -393,9 +393,54 @@ each row's first value as is and the rest as steps, zlib-compressed -- about
 the bare ground's colour; the 3D view drapes the minimap over the relief
 instead, because it shows the buildings and roads.
 
+**Geometry** (the 3D view's buildings, rocks, bridges and far mountains).
+The scene's meshes keep their vertices in `<scene>.scg` next to it, as polygon groups:
+
+```
+"SCPG" | version u32 (1) | count u32 | count u32 (again)
+count × keyed archive, OLD format: "KA" 0x0001 | count u32 |
+        (key variant, value variant) pairs with strings inline (u32 length + utf-8)
+```
+
+A group has:
+- `#id` (8 bytes, u64);
+- `vertexFormat`, `vertexCount`, `vertices`;
+- `indexFormat` (0 = u16), `indexCount`, `indices`;
+- `rhi_primitiveType` (1 = triangle list).
+
+The attributes of a vertex follow the format's bits in order. The position (bit 0, 3 floats) always comes first, then normal (bit 1), colour (2), texture coordinates (3, 4), tangent (7), binormal (8). On Canyon:
+- 411 = position, normal, uv0, uv1, tangent, binormal: 64 bytes;
+- 27 = position, normal, uv0, uv1: 40 bytes;
+- trees use bits 9–13.
+
+How the scene points at them:
+- A `Mesh` render object's batches name a group by `rb.datasource`, and every batch of all 36 scenes resolves.
+- `rb<i>.lodIndex` is the level of detail (−1: every level, 0 the finest).
+- `rb<i>.switchIndex` is the state of a breakable object (−1: every state, 0 intact).
+- The entity's TransformComponent places it: world = translation + rotation (quaternion x, y, z, w) of (scale × local), in scene axes x east, y north, z up.
+
+`tools/wotb_extract_assets.py` (`write_objects`) builds `assets/objects/<scene>.bin` from this.
+
+What it keeps:
+- every plain mesh at its coarsest level of detail, intact;
+- only objects at least 4 m across and 1.5 m tall;
+- nothing named like invisible walls, decals, grass, leaves, the sky dome or border posts.
+
+How it simplifies (vertex clustering):
+- built things on a 0.75 m grid, at most 350 triangles each;
+- rocks and mountains to 5 triangles per metre of their size;
+- anything outside the playable area to 3.
+
+The file is zlib of:
+- `"BOB1"`, object count u32, then per object (vertices u16, triangles u16);
+- the vertices as i16 × 3 decimetre steps (x east, z north, height);
+- the triangle corners as varints counted down from the object's next new vertex (0 = a new one; vertices come in first-use order).
+
+The files run 45–370 KB a map. **sure**: the objects stand on the terrain. The lowest point of each sits near the ground under it (median 0.2–3 m), far nearer than under the same objects mirrored (`tests/test_wotb_objects.py`). The page colours them by the minimap straight above (a roof is what the minimap shows), so no textures are needed.
+
 Not done yet:
-- Buildings and objects for 3D: the `.scg` geometry next to each scene.
 - `blitz/<scene>.mkm` (`kkm` header, a 1024² 2-bit grid) and `.lka`: probably terrain kinds and the ground-sound map; not needed so far.
+- Heights in the tracks: a tank on a bridge is drawn on the ground under it.
 
 ## Open questions
 

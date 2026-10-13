@@ -256,3 +256,18 @@ def test_the_career_keeps_each_recorders_battles_apart():
 
         site.login(BOB)  # nobody else's battles
         assert "Пока ни одного боя" in site.client.get("/blitz/career").text
+
+
+def test_the_3d_objects_are_served_to_signed_in_users_only():
+    with _Site() as site:
+        assert site.client.get("/blitz/objects/25_canyon_ca.bin").status_code == 401
+        site.login(ALICE)
+        resp = site.client.get("/blitz/objects/25_canyon_ca.bin")
+        assert resp.status_code == 200 and resp.content[:1] == b"x"  # zlib, as the page inflates it
+        assert "max-age" in resp.headers["cache-control"]
+        for bad in ("nope", "..%2Fmaps", "25_canyon_ca.bin"):
+            assert site.client.get(f"/blitz/objects/{bad}.bin").status_code == 404, bad
+        upload = site.upload((CANYON.name, CANYON.read_bytes())).json()
+        page = site.client.get(f"/blitz/battles/{upload['results'][0]['id']}").text
+        assert '"url":"/blitz/objects/25_canyon_ca.bin"' in page.replace(" ", "")
+

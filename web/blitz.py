@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from . import db
@@ -244,4 +244,18 @@ def blitz_battle_view(request: Request, battle_id: int):
                 '<a href="/blitz/career">Карьера</a>'
                 '<span class="sn-brand">demoReview</span>'
                 f'<span class="sn-user">{avatar}{html.escape(user["persona_name"])}</span></nav>')
-    return HTMLResponse(render_battle_html(battle, site_nav=site_nav))
+    return HTMLResponse(render_battle_html(battle, site_nav=site_nav, objects_base="/blitz/objects/"))
+
+
+@router.get("/objects/{name}.bin")
+def blitz_objects(request: Request, name: str):
+    """A map's buildings and rocks for the 3D view (assets/objects): the same
+    file for every battle on the map, fetched once the 3D view opens, so the
+    browser keeps it."""
+    if not _user(request):
+        raise HTTPException(status_code=401)
+    data = gamedata.objects_file(name)
+    if data is None:
+        raise HTTPException(status_code=404)
+    return Response(data, media_type="application/octet-stream",
+                    headers={"Cache-Control": "private, max-age=86400"})

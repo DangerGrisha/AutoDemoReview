@@ -43,6 +43,26 @@ the bbox's minimum corner: height = z0 + value / 65535 * (z1 - z0) over the
 bbox's z range. Checked against the tanks: on all 11 maps we have replays
 of, a tank's height is the terrain's under it to a few centimetres (median;
 90 % within 15 cm -- the rest stand on bridges and rocks).
+
+Geometry (.scg, next to the scene): the scene's meshes keep their vertices
+there, as polygon groups:
+
+    "SCPG" | version u32 (1) | count u32 | count u32 (again)
+    count x keyed archive in the OLD format: "KA" 0x0001 | count u32 |
+             (key variant, value variant) pairs, strings inline (u32 length,
+             utf-8) instead of string ids
+
+A group has "#id" (8 bytes, u64), "vertexFormat", "vertexCount", "vertices",
+"indexFormat" (0 = u16), "indexCount", "indices", "rhi_primitiveType" (1 =
+triangle list). A vertex packs the format's attributes in bit order --
+position (bit 0, 3 floats) always first, then normal, colour, texture
+coordinates, tangent ... -- so the stride is the buffer's size over the
+count. A mesh's RenderBatch names its group by that id ("rb.datasource");
+"rb<i>.lodIndex" says which level of detail batch i draws (-1: every level,
+0 the finest), "rb<i>.switchIndex" which state of a breakable object (-1:
+every state, 0 intact). The entity's TransformComponent places it:
+world = translation + rotation (a quaternion x, y, z, w) of (scale * local),
+scene axes x east, y north, z up. Every batch of all 36 scenes resolves.
 """
 
 import struct
@@ -55,9 +75,10 @@ class DavaError(ValueError):
 
 
 class _Reader:
-    def __init__(self, raw):
+    def __init__(self, raw, inline=False):
         self.raw = raw
         self.names = {}
+        self.inline = inline  # strings stored in place (geometry files), not as ids
 
     def unpack(self, fmt, pos):
         try:
@@ -82,6 +103,10 @@ class _Reader:
         (kind,), pos = self.unpack("<B", pos)
         if kind == 0:
             return None, pos
+        if kind in (4, 18, 20) and self.inline:  # string, fast name, file path in place
+            (size,), pos = self.unpack("<I", pos)
+            text, pos = self.take(size, pos)
+            return text.decode("utf-8", "replace"), pos
         if kind in (4, 18, 20):  # string, fast name, file path -> string id
             (string_id,), pos = self.unpack("<I", pos)
             return self.name(string_id), pos
@@ -128,6 +153,12 @@ class _Reader:
         (count,), pos = self.unpack("<I", pos)
         if version == 0x0102:
             return self.items(pos, count)
+        if version == 0x0001 and self.inline:  # (key variant, value variant) pairs
+            out = {}
+            for _ in range(count):
+                key, pos = self.value(pos)
+                out[str(key)], pos = self.value(pos)
+            return out, pos
         if version == 0x0001 and count == 0:  # the version tags; never filled in
             return {}, pos
         raise DavaError(f"keyed archive format {version:#06x} at {pos - 8}")
@@ -159,6 +190,83 @@ def read_scene(raw):
     if pos != len(raw):
         raise DavaError(f"{len(raw) - pos} unread bytes after the scene body")
     return {"version": version, "nodes": nodes, "body": body}
+
+
+def read_geometry(raw):
+    """{group id: polygon group} of a .scg geometry file (see the module
+    docstring); the vertex and index buffers stay bytes."""
+    if raw[:4] != b"SCPG":
+        raise DavaError("not a DAVA geometry file (no SCPG signature)")
+    reader = _Reader(raw, inline=True)
+    (version, count, _again), pos = reader.unpack("<III", 4)
+    if version != 1:
+        raise DavaError(f"geometry version {version}")
+    groups = {}
+    for _ in range(count):
+        group, pos = reader.archive(pos)
+        gid = group.get("#id")
+        if not isinstance(gid, bytes) or len(gid) != 8:
+            raise DavaError(f"polygon group without an id at {pos}")
+        groups[struct.unpack("<Q", gid)[0]] = group
+    if pos != len(raw):
+        raise DavaError(f"{len(raw) - pos} unread bytes after the polygon groups")
+    return groups
+
+
+def triangles(group):
+    """(positions [(x, y, z)], indices) of a triangle-list polygon group with
+    16-bit indices, or None for any other kind (lines, 32-bit indices)."""
+    if group.get("rhi_primitiveType") != 1 or group.get("indexFormat") != 0:
+        return None
+    count, data = group.get("vertexCount") or 0, group.get("vertices") or b""
+    if count <= 0 or len(data) % count or len(data) // count < 12:
+        raise DavaError(f"polygon group of {count} vertices in {len(data)} bytes")
+    stride = len(data) // count
+    points = [struct.unpack_from("<3f", data, i * stride) for i in range(count)]
+    n = group.get("indexCount") or 0
+    indices = struct.unpack(f"<{n}H", group["indices"][:2 * n])
+    if indices and max(indices) >= count:
+        raise DavaError("an index past the last vertex")
+    return points, indices
+
+
+def meshes(scene):
+    """[{"name", "translation", "rotation", "scale", "groups"}] for every
+    plain mesh of the scene (no trees, water, grass or borders): its world
+    transform and the polygon group ids of its coarsest level of detail, in
+    its intact state."""
+    out = []
+    for entity in entities(scene):
+        comps = components(entity)
+        obj = (comps.get("RenderComponent") or {}).get("rc.renderObj")
+        where = comps.get("TransformComponent") or {}
+        if not isinstance(obj, dict) or obj.get("##name") != "Mesh":
+            continue
+        batches = []
+        for key, batch in (obj.get("ro.batches") or {}).items():
+            if isinstance(batch, dict) and "rb.datasource" in batch:
+                i = int(key)
+                batches.append((obj.get(f"rb{i}.lodIndex", -1), obj.get(f"rb{i}.switchIndex", -1),
+                                batch["rb.datasource"]))
+        levels = [lod for lod, _, _ in batches if lod >= 0]
+        coarsest = max(levels) if levels else -1
+        groups = [gid for lod, switch, gid in batches
+                  if lod in (-1, coarsest) and switch in (-1, 0)]
+        t, r, s = (where.get(k) for k in ("tc.worldTranslation", "tc.worldRotation", "tc.worldScale"))
+        if groups and all(isinstance(v, tuple) for v in (t, r, s)):
+            out.append({"name": str(entity.get("name")), "translation": t, "rotation": r,
+                        "scale": s, "groups": groups})
+    return out
+
+
+def place(mesh, point):
+    """A mesh's local point in the scene: translation + rotation(scale * p)."""
+    x, y, z, w = mesh["rotation"]
+    vx, vy, vz = (c * s for c, s in zip(point, mesh["scale"]))
+    tx, ty, tz = 2 * (y * vz - z * vy), 2 * (z * vx - x * vz), 2 * (x * vy - y * vx)
+    t = mesh["translation"]
+    return (t[0] + vx + w * tx + (y * tz - z * ty), t[1] + vy + w * ty + (z * tx - x * tz),
+            t[2] + vz + w * tz + (x * ty - y * tx))
 
 
 def entities(scene):
