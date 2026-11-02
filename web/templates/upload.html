@@ -13,7 +13,9 @@
 
 <p class="muted">
   Large demos (300&ndash;500&nbsp;MB) take roughly 30&ndash;60&nbsp;seconds to parse &mdash;
-  keep this tab open. The raw <code>.dem</code> is discarded after parsing; only the
-  match data is stored, and you're spotlighted automatically by your Steam account.
+  keep this tab open. {% if keep_demos %}A compressed copy of the <code>.dem</code> stays
+  on this server so its replay can be rebuilt when the viewer improves; it is never shown
+  to anyone or shared.{% else %}The raw <code>.dem</code> is discarded after parsing; only
+  the match data is stored.{% endif %} You're spotlighted automatically by your Steam account.
 </p>
 {% endblock %}

@@ -59,6 +59,13 @@ EXTRACT3D_BIN = Path(_extract3d) if _extract3d else _extract3d_default
 # A 300-500 MB demo takes ~1 min to extract; leave generous headroom.
 EXTRACT3D_TIMEOUT_S = int(os.environ.get("EXTRACT3D_TIMEOUT_S", "900"))
 
+# Gzipped copies of processed demos, one per match. A stored match can only gain
+# what a newer extractor learns to read if its demo is still around, and Valve
+# prunes its own copies within weeks. KEEP_DEMOS=0 turns this off (the upload and
+# /connect pages then say the demo is discarded, so keep the two in step).
+DEMOS_DIR = DATA_DIR / "demos"
+KEEP_DEMOS = os.environ.get("KEEP_DEMOS", "1").strip() != "0"
+
 # --- Steam bot (auto-import of finished matches) ---
 # The bot's own profile: the /connect page links players at it so THEY send the
 # friend invite (the bot only accepts). Absent -> the page shows the auto-import
@@ -79,7 +86,7 @@ STEAMBOT_AGENT_TOKEN = os.environ.get("STEAMBOT_AGENT_TOKEN", "").strip()
 STEAMBOT_POLL_INTERVAL_S = int(os.environ.get("STEAMBOT_POLL_INTERVAL_S", "120"))
 STEAMBOT_PENDING_INTERVAL_S = int(os.environ.get("STEAMBOT_PENDING_INTERVAL_S", "45"))
 STEAMBOT_BATCH = int(os.environ.get("STEAMBOT_BATCH", "25"))
-# Auto-downloaded demos land here and are deleted right after ingest.
+# Auto-downloaded demos land here and this copy is deleted right after ingest.
 STEAMBOT_DOWNLOAD_DIR = TMP_DIR / "steambot"
 
 # Ensure runtime dirs exist (gitignored).
@@ -87,4 +94,5 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 REPLAY3D_DIR.mkdir(parents=True, exist_ok=True)
+DEMOS_DIR.mkdir(parents=True, exist_ok=True)
 STEAMBOT_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)

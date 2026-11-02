@@ -208,7 +208,7 @@ def process_link(row, *, steps=None):
     finally:
         if dem_path is not None:
             try:
-                Path(dem_path).unlink(missing_ok=True)      # never keep the raw .dem
+                Path(dem_path).unlink(missing_ok=True)      # ingest kept its own gzipped copy
                 Path(str(dem_path) + ".bz2").unlink(missing_ok=True)
             except OSError:
                 pass

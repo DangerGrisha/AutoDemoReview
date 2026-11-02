@@ -8,18 +8,27 @@ order-sensitive and each has a trap:
     already in the DB must not be re-parsed (nor leaked to someone who isn't in
     it);
   * the 3D-replay extract needs the raw .dem, so it has to run before the caller
-    deletes the temp file — the raw demo is deliberately never kept;
+    deletes the temp file; a gzipped copy stays in config.DEMOS_DIR so a newer
+    extractor can re-run later (see keep_demo);
   * a concurrent identical ingest loses a check-then-insert race against the
     global UNIQUE(dem_sha256) index, which is a duplicate, not an error.
 
 The caller owns the file (and deletes it); nothing here removes it.
 """
 
+import gzip
 import hashlib
+import logging
+import os
+import shutil
 import sqlite3
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
-from . import db, participants, pipeline, replay3d
+from . import config, db, participants, pipeline, replay3d
+
+log = logging.getLogger(__name__)
 
 
 class IngestError(RuntimeError):
@@ -58,6 +67,41 @@ def looks_like_cs2_demo(path):
         return False
 
 
+def demo_copy_path(match_id):
+    """Where the gzipped copy of this match's demo lives, whether or not it exists."""
+    return config.DEMOS_DIR / f"{match_id}.dem.gz"
+
+
+def keep_demo(dem_path, match_id):
+    """Store a gzipped copy of the demo, once per match. Returns its path, or None.
+
+    Never raises: losing the copy costs a future re-extract, while failing here
+    would throw away a match that was already parsed and stored. The file appears
+    under its final name only when complete, so a crash cannot leave a truncated
+    demo that looks valid. Gzip because a 224 MB demo takes about 9 s and ends up
+    around 157 MB, while bz2 and xz spend two to four times longer to save 5-12%.
+    """
+    if not config.KEEP_DEMOS:
+        return None
+    target = demo_copy_path(match_id)
+    if target.exists():
+        return target
+    tmp_name = None
+    try:
+        fd, tmp_name = tempfile.mkstemp(suffix=".tmp", dir=str(config.DEMOS_DIR))
+        with os.fdopen(fd, "wb") as raw, gzip.GzipFile(fileobj=raw, mode="wb",
+                                                       compresslevel=6) as out, \
+                open(dem_path, "rb") as src:
+            shutil.copyfileobj(src, out, 1024 * 1024)
+        os.replace(tmp_name, target)
+    except Exception as exc:  # noqa: BLE001 -- see the docstring
+        log.warning("could not keep the demo of match %s: %s", match_id, exc)
+        if tmp_name is not None:
+            Path(tmp_name).unlink(missing_ok=True)
+        return None
+    return target
+
+
 def ingest_demo(dem_path, *, owner_steamid, filename, digest=None):
     """Store the demo at `dem_path` as a match owned by `owner_steamid`.
 
@@ -68,6 +112,9 @@ def ingest_demo(dem_path, *, owner_steamid, filename, digest=None):
 
     existing = db.find_match_by_hash(digest)
     if existing is not None:
+        # Same bytes as the stored match, so this exposes nothing to this uploader,
+        # and a re-upload is the only way a match from before KEEP_DEMOS gets one.
+        keep_demo(dem_path, existing)
         if not db.can_access(existing, owner_steamid):
             return Ingested(match_id=existing, duplicate=True, visible=False)
         # Backfill: matches analyzed before the 3D-replay feature existed gain
@@ -118,4 +165,5 @@ def ingest_demo(dem_path, *, owner_steamid, filename, digest=None):
         replay3d.extract(dem_path, match_id)
     except Exception:  # noqa: BLE001
         pass
+    keep_demo(dem_path, match_id)
     return Ingested(match_id=match_id, duplicate=False)

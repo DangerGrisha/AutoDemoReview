@@ -1394,8 +1394,8 @@ def backfill_kill_sides(map_kills, rounds):
     """Recover each dot's side for matches stored before sides were recorded.
 
     A match analysed before the heatmap had a CT/T split carries no side on its
-    kills, and the raw .dem is deleted right after ingest -- so re-parsing is
-    not an option. It does not have to be: the stored rounds still say which
+    kills, and demos were not kept back then -- so re-parsing is not an
+    option. It does not have to be: the stored rounds still say which
     side the reference player was on, and each kill still says whether the
     attacker was an ally or an enemy. That is enough to reconstruct both sides
     exactly, with no guessing, straight out of the blob already in the database.

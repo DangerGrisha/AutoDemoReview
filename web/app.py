@@ -30,6 +30,8 @@ from . import (autoimport, blitz, career, coaching, config, db, games, ingest, p
 
 WEB_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(WEB_DIR / "templates"))
+# The upload and /connect pages tell players what happens to their demo.
+templates.env.globals["keep_demos"] = config.KEEP_DEMOS
 
 # Windows' registry-backed mimetypes DB often lacks (or mislabels) these. The
 # .wasm one is load-bearing: WebAssembly.instantiateStreaming refuses anything
@@ -308,7 +310,7 @@ def upload_demo(request: Request, demo: UploadFile = File(...)):
     finally:
         if tmp_path is not None and tmp_path.exists():
             try:
-                tmp_path.unlink()          # never keep the raw .dem
+                tmp_path.unlink()          # ingest kept its own gzipped copy
             except OSError:
                 pass
 

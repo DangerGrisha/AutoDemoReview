@@ -90,7 +90,9 @@
     The authentication code only grants read access to your match-sharing history
     &mdash; it is not your Steam password, and you can revoke it any time on the same
     Steam page. We store it to check for new matches and never show it back in full.
-    Demos are deleted right after parsing.
+    {% if keep_demos %}A compressed copy of each demo stays on this server so its replay
+    can be rebuilt when the viewer improves; demos are never shown to anyone or shared.
+    {% else %}Demos are deleted right after parsing.{% endif %}
   </p>
 </div>
 {% endblock %}

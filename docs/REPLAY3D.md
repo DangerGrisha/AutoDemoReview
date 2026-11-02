@@ -38,8 +38,10 @@ match page ── "3D replay" link ──► GET /matches/{id}/3d  (templates/re
   it self-corrects if a future Source2Viewer changes the convention. Verified
   end-to-end on de_mirage: decoded `.3dr` player tracks sit on the exported
   geometry (median ~18 u) and match the radar.
-- Matches analyzed **before** this feature have no artifacts (the raw .dem is
-  never kept). Re-uploading the same demo backfills them.
+- Matches analyzed **before** this feature have no artifacts, since demos were not
+  kept back then. Re-uploading the same demo backfills them. From 2026-11 a gzipped
+  copy of each demo stays in `web/data/demos/<match_id>.dem.gz` (`KEEP_DEMOS=0` turns
+  that off), so new matches can be re-extracted when the extractor learns more.
 - Supported maps (radar calibration in `rust/extract/src/mapscal.rs`, ported
   from `src/demoreview/maps.py`): mirage, inferno, nuke, overpass, ancient,
   anubis, vertigo, train. Other maps: extract3d exits nonzero → no 3D replay,
@@ -628,6 +630,7 @@ agent a player actually wore (`agent_skin` in the parser, never extracted).
 | `EXTRACT3D_BIN` | `rust/target/release/extract3d(.exe)` | extract3d binary; missing → uploads still work, no 3D |
 | `EXTRACT3D_TIMEOUT_S` | `900` | kill a hung extraction |
 | `REPLAY3D_CS2_MODELS` | `1` | `0` shows the fallback soldier instead of the real CS2 player models |
+| `KEEP_DEMOS` | `1` | `0` discards each demo after parsing instead of keeping a gzipped copy in `web/data/demos/` |
 
 Artifacts live in `web/data/replay3d/<match_id>/`; deleting a directory removes
 that match's 3D replay (it comes back on re-upload of the same .dem).
