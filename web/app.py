@@ -451,7 +451,12 @@ def match_replay3d_artifact(request: Request, match_id: int, fname: str):
     if path is None:
         raise HTTPException(status_code=404)
     media = "application/json" if fname.endswith(".json") else "application/octet-stream"
-    return FileResponse(str(path), media_type=media)
+    headers = {"Vary": "Accept-Encoding"}
+    accepted = CompressedStaticFiles._accepted_encodings(request.scope)
+    compressed = replay3d.compressed_artifact(path, accepted)
+    if compressed is not None:
+        path, headers["Content-Encoding"] = compressed
+    return FileResponse(str(path), media_type=media, headers=headers)
 
 
 # ---- errors ----

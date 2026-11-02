@@ -111,7 +111,7 @@ fn build_model() -> RoundModel {
                    "affected": [{"sid": sids[0], "blindDuration": 2.35}]}),
         ],
         tracks: vec![det_track(0, 0, N), det_track(1, 0, 15), det_track(2, 8, N)],
-        shots: Vec::new(),
+        ..Default::default()
     }
 }
 

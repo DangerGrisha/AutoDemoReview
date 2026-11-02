@@ -1,7 +1,7 @@
 //! CLI: extract + encode the tick-level 3D replay (Rust port of build3d.py, with
 //! build3d_app.py's manifest folded in).
 //!
-//!     extract3d <demo.dem> [--selfcheck] [--no-write] [--out-dir DIR]
+//!     extract3d <demo.dem> [--selfcheck] [--no-write] [--out-dir DIR] [--hz N]
 //!
 //! Writes per-round C2R3 sidecars to <out-dir>/rNN.3dr (default output/<stem>/),
 //! plus manifest.json, and prints the size table comparing the codec against a
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use c2r3::{decode_round, encode_round, naive_json_bytes, RoundModel, ANG_SCALE};
 use extract3d::dp2::Dp2Source;
-use extract3d::{build_replay3d, manifest, mapscal, DemoSource};
+use extract3d::{build_replay3d_hz, manifest, mapscal, DemoSource, TARGET_HZ};
 use flate2::{write::GzEncoder, Compression};
 
 fn fmt_thousands(n: usize) -> String {
@@ -74,6 +74,7 @@ fn main() -> Result<()> {
     let mut do_selfcheck = false;
     let mut do_write = true;
     let mut out_dir_arg: Option<PathBuf> = None;
+    let mut hz = TARGET_HZ;
     let mut i = 0;
     while i < argv.len() {
         match argv[i].as_str() {
@@ -82,6 +83,10 @@ fn main() -> Result<()> {
             "--out-dir" => {
                 i += 1;
                 out_dir_arg = Some(PathBuf::from(argv.get(i).context("--out-dir needs a value")?));
+            }
+            "--hz" => {
+                i += 1;
+                hz = argv.get(i).context("--hz needs a value")?.parse().context("--hz needs a number")?;
             }
             a if a.starts_with("--") => bail!("unknown flag {a}"),
             a => args.push(a),
@@ -97,7 +102,7 @@ fn main() -> Result<()> {
 
     println!("Parsing {demo_path} ...");
     let mut source = Dp2Source::new(demo_path)?;
-    let (models, meta) = build_replay3d(&mut source)?;
+    let (models, meta) = build_replay3d_hz(&mut source, hz)?;
 
     println!(
         "map={}  tickRate={} (detected)  stride={}  sampleRate={:.2} Hz  rounds={}  mapSupported={}",

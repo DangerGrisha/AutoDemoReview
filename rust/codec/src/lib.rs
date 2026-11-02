@@ -34,6 +34,10 @@ pub const F_ALIVE: u8 = 0x02;
 pub const F_CROUCH: u8 = 0x04;
 pub const F_SCOPED: u8 = 0x08;
 pub const F_DEFUSING: u8 = 0x10;
+/// Walking quietly. Replays from before data version 2 never set this bit or the next.
+pub const F_WALKING: u8 = 0x20;
+/// Off the ground: jumping or falling.
+pub const F_AIRBORNE: u8 = 0x40;
 
 /// Weapon index meaning "none / empty hands".
 pub const WEAPON_NONE: u8 = 255;
@@ -112,6 +116,13 @@ pub struct RoundModel {
     /// sample, p: shooter slot}`. Emitted into the header ONLY when non-empty, so
     /// shot-less rounds — and the golden fixtures — keep byte-identical headers.
     pub shots: Vec<Value>,
+    /// What happened to each player and when (opaque): each `{k: kind, s: fractional
+    /// sample, p: slot, ...}`, sorted by `s`. Emitted only when non-empty, like `shots`.
+    pub events: Vec<Value>,
+    /// Per-player values that change rarely (opaque), index-aligned with `players`: each
+    /// an object of flat `[sample, value, sample, value, ...]` change lists. Emitted only
+    /// when non-empty, like `shots`.
+    pub state: Vec<Value>,
     pub tracks: Vec<Track>,
 }
 
@@ -516,6 +527,12 @@ pub fn encode_round(model: &RoundModel) -> Result<(Vec<u8>, u32), CodecError> {
     // rounds (and the golden parity fixtures) keep byte-for-byte identical headers.
     if !model.shots.is_empty() {
         header.insert("shots".into(), Value::Array(model.shots.clone()));
+    }
+    if !model.events.is_empty() {
+        header.insert("events".into(), Value::Array(model.events.clone()));
+    }
+    if !model.state.is_empty() {
+        header.insert("state".into(), Value::Array(model.state.clone()));
     }
 
     let header_bytes = serde_json::to_vec(&Value::Object(header))

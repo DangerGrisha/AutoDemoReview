@@ -37,6 +37,8 @@ F_ALIVE = 0x02
 F_CROUCH = 0x04
 F_SCOPED = 0x08
 F_DEFUSING = 0x10
+F_WALKING = 0x20
+F_AIRBORNE = 0x40
 
 # Geometry channels in encode order; yaw is the one wrapped modulo 2^16.
 _GEOM = (("x", False), ("y", False), ("z", False), ("yaw", True), ("pitch", False))

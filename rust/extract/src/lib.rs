@@ -6,8 +6,8 @@
 //! Faithfulness notes (all mirror Python semantics exactly unless flagged):
 //! - tick rate is DETECTED from `game_time` deltas (median), defaulting to 64 on
 //!   any failure — never hardcoded;
-//! - sampling: 16 Hz target, per-round range freeze_end..=round_end+3 s, capped
-//!   before the next round's freeze;
+//! - sampling: 64 Hz target (the Python original used 16), per-round range
+//!   freeze_end..=round_end+3 s, capped before the next round's freeze;
 //! - freeze-on-death: geometry always carries the most recent alive coords, and
 //!   samples before a late joiner's first alive sample back-fill its FIRST alive
 //!   coords (never-alive players carry zeros);
@@ -33,12 +33,22 @@ use anyhow::Result;
 use c2r3::{PlayerMeta, RoundModel, Track};
 use serde_json::{Map, Number, Value};
 
-pub const TARGET_HZ: f64 = 16.0;
+/// One sample per tick on a 64-tick demo.
+pub const TARGET_HZ: f64 = 64.0;
+/// What the replay files hold. Raise it, together with DATA_VERSION in web/replay3d.py,
+/// when extraction starts giving files something older ones lack: a re-upload and
+/// tools/rebuild_replays.py then replace older replays. A manifest without the key is 1.
+pub const DATA_VERSION: i64 = 2;
 pub const PAD_SECONDS: i64 = 3;
 pub const FLASH_FULL_S: f64 = 5.1;
 /// A >1 s gap in an entity's trajectory (raw ticks, NOT tick-rate scaled) = reused id.
 pub const FLIGHT_GAP_TICKS: i64 = 64;
 pub const MAX_FLIGHT_SECONDS: f64 = 5.0;
+/// A smoke, fire or decoy's end event further away than this belongs to a later grenade
+/// that got the same entity id.
+pub const MAX_EFFECT_SECONDS: i64 = 30;
+/// How far a thinned grenade path may stray from the real one, in world units.
+pub const PATH_TOLERANCE: f64 = 1.0;
 
 // flags bitfield (mirrors c2r3 constants; re-exported for convenience)
 pub const F_PRESENT: u8 = 0x01;
@@ -46,6 +56,8 @@ pub const F_ALIVE: u8 = 0x02;
 pub const F_CROUCH: u8 = 0x04;
 pub const F_SCOPED: u8 = 0x08;
 pub const F_DEFUSING: u8 = 0x10;
+pub const F_WALKING: u8 = 0x20;
+pub const F_AIRBORNE: u8 = 0x40;
 
 /// Utility gameplay constants — APPROXIMATE, world units / seconds (radius, duration).
 pub const UTIL_CONSTANTS: &[(&str, i64, f64)] = &[
@@ -89,6 +101,14 @@ pub struct TickRow {
     pub is_scoped: bool,
     pub is_defusing: bool,
     pub team_num: Option<i64>,
+    pub is_walking: bool,
+    pub is_airborne: bool,
+    pub armor: Option<i64>,
+    pub has_helmet: Option<bool>,
+    pub has_defuser: Option<bool>,
+    pub money: Option<i64>,
+    /// Rounds in the held weapon's clip. None for what has no clip, like a knife.
+    pub ammo: Option<i64>,
 }
 
 #[derive(Clone, Debug)]
@@ -98,6 +118,46 @@ pub struct DetEvent {
     pub y: Option<f64>,
     pub z: Option<f64>,
     pub sid: String,
+    /// The grenade's entity id, which ties a smoke, fire or decoy to its end event.
+    pub entity: Option<i64>,
+}
+
+/// The real end of a smoke, fire or decoy.
+#[derive(Clone, Debug)]
+pub struct ExpireEvent {
+    pub tick: i64,
+    /// Normalized type, as in DET_EVENTS.
+    pub gtype: &'static str,
+    pub entity: i64,
+}
+
+/// What a `PlayerEvent` says happened.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlayerEventKind {
+    Hurt {
+        attacker: Option<String>,
+        damage: i64,
+        armor_damage: i64,
+        hitgroup: Option<String>,
+        weapon: Option<String>,
+    },
+    Reload,
+    Zoom,
+    PlantStart,
+    PlantAbort,
+    DefuseStart { kit: bool },
+    DefuseAbort,
+    BombDrop,
+    BombPickup,
+    Pickup { item: String },
+}
+
+/// One moment of one player, for a round's `events` header key.
+#[derive(Clone, Debug)]
+pub struct PlayerEvent {
+    pub tick: i64,
+    pub sid: String,
+    pub kind: PlayerEventKind,
 }
 
 #[derive(Clone, Debug)]
@@ -179,6 +239,8 @@ pub struct BombEvent {
     pub tick: i64,
     pub kind: BombKind,
     pub site: Option<String>,
+    /// Where the player stood when it happened. A planted bomb lies at the planter's feet.
+    pub pos: Option<[f64; 3]>,
 }
 
 /// One round's C4 story in TICKS (the tick -> sample conversion belongs to
@@ -188,6 +250,7 @@ pub struct BombEvent {
 pub struct BombRound {
     pub plant_tick: i64,
     pub site: Option<String>,
+    pub pos: Option<[f64; 3]>,
     pub end_tick: Option<i64>,
     pub end_kind: Option<BombKind>,
 }
@@ -213,6 +276,16 @@ pub trait DemoSource {
     /// C4 plant/defuse/explode events. Default empty so simple / test sources
     /// need not implement it (their manifests then carry no `bomb` key).
     fn bomb_events(&mut self) -> Result<Vec<BombEvent>> {
+        Ok(Vec::new())
+    }
+    /// The real ends of smokes, fires and decoys. Default empty: those then keep their
+    /// usual duration from UTIL_CONSTANTS.
+    fn expire_events(&mut self) -> Result<Vec<ExpireEvent>> {
+        Ok(Vec::new())
+    }
+    /// Damage, reloads, zooms, bomb handling and pickups, in any order. Default empty:
+    /// those rounds carry no `events` key.
+    fn player_events(&mut self) -> Result<Vec<PlayerEvent>> {
         Ok(Vec::new())
     }
     /// Round events with the fields `segment_rounds` pairs on. The default
@@ -425,10 +498,13 @@ pub fn round_sample_ticks(
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Flight {
+    pub entity: i64,
     pub gtype: &'static str,
     pub sid: String,
     pub start: i64,
     pub pos: [f64; 3],
+    /// Every recorded point as `[tick, x, y, z]`, from the throw on.
+    pub path: Vec<[f64; 4]>,
 }
 
 /// Segment projectile trajectories into flights. Entity ids are REUSED across the
@@ -450,17 +526,23 @@ pub fn build_flights(mut rows: Vec<GrenadeRow>) -> Vec<Flight> {
             None => true,
             Some((eid, tick)) => row.entity_id != eid || row.tick - tick > FLIGHT_GAP_TICKS,
         };
+        let pos = [
+            row.x.unwrap(),
+            row.y.unwrap(),
+            row.z.filter(|v| v.is_finite()).unwrap_or(0.0),
+        ];
         if new_flight {
             flights.push(Flight {
+                entity: row.entity_id,
                 gtype,
                 sid: row.sid.clone(),
                 start: row.tick,
-                pos: [
-                    row.x.unwrap(),
-                    row.y.unwrap(),
-                    row.z.filter(|v| v.is_finite()).unwrap_or(0.0),
-                ],
+                pos,
+                path: Vec::new(),
             });
+        }
+        if let Some(flight) = flights.last_mut() {
+            flight.path.push([row.tick as f64, pos[0], pos[1], pos[2]]);
         }
         last = Some((row.entity_id, row.tick));
     }
@@ -494,6 +576,93 @@ pub fn match_throw<'a>(
     best
 }
 
+/// The flight that ended in this detonation, by the grenade's own entity id. `match_throw`
+/// is the fallback: it guesses from the thrower and the time, which picks the wrong
+/// grenade when one player has two in the air.
+pub fn flight_of_entity<'a>(
+    flights: &'a [Flight],
+    entity: i64,
+    gtype: &str,
+    det_tick: i64,
+    round_start: i64,
+) -> Option<&'a Flight> {
+    flights
+        .iter()
+        .filter(|f| {
+            f.entity == entity && f.gtype == gtype && f.start >= round_start && f.start <= det_tick
+        })
+        .max_by_key(|f| f.start)
+}
+
+/// Keep only the `[tick, x, y, z]` points a path needs: each dropped one lies within
+/// `tolerance` of where a straight line between the kept ones puts it at that moment, so
+/// a bounce keeps its corner and a resting grenade collapses to two points.
+pub fn thin_path(points: &[[f64; 4]], tolerance: f64) -> Vec<[f64; 4]> {
+    if points.len() <= 2 {
+        return points.to_vec();
+    }
+    let mut keep = vec![false; points.len()];
+    keep[0] = true;
+    keep[points.len() - 1] = true;
+    let mut spans = vec![(0, points.len() - 1)];
+    while let Some((a, b)) = spans.pop() {
+        let (pa, pb) = (points[a], points[b]);
+        let duration = pb[0] - pa[0];
+        let mut worst = None;
+        let mut worst_d2 = tolerance * tolerance;
+        for (i, p) in points.iter().enumerate().take(b).skip(a + 1) {
+            let t = if duration > 0.0 { (p[0] - pa[0]) / duration } else { 0.0 };
+            let d2: f64 = (1..4).map(|c| (p[c] - (pa[c] + (pb[c] - pa[c]) * t)).powi(2)).sum();
+            if d2 > worst_d2 {
+                worst = Some(i);
+                worst_d2 = d2;
+            }
+        }
+        if let Some(i) = worst {
+            keep[i] = true;
+            spans.push((a, i));
+            spans.push((i, b));
+        }
+    }
+    points.iter().zip(&keep).filter(|(_, &k)| k).map(|(p, _)| *p).collect()
+}
+
+/// A flight up to its detonation for the header: flat `[sample, x, y, z, ...]`, thinned,
+/// at a tenth of a unit. None when under two points are left, which says nothing.
+fn path_json(flight: &Flight, det_tick: i64, freeze: i64, stride: i64) -> Option<Value> {
+    let flown: Vec<[f64; 4]> =
+        flight.path.iter().filter(|p| p[0] <= det_tick as f64).copied().collect();
+    if flown.len() < 2 {
+        return None;
+    }
+    let tenth = |v: f64| jnum_f((v * 10.0).round() / 10.0);
+    let mut flat = Vec::new();
+    for p in thin_path(&flown, PATH_TOLERANCE) {
+        flat.push(jnum_f((p[0] - freeze as f64) / stride as f64));
+        flat.extend([tenth(p[1]), tenth(p[2]), tenth(p[3])]);
+    }
+    Some(Value::Array(flat))
+}
+
+/// How long a smoke, fire or decoy really lasted in seconds, if its end is in the demo.
+/// A round can end first, and then there is no end event inside MAX_EFFECT_SECONDS.
+pub fn real_duration(
+    expires: &[ExpireEvent],
+    gtype: &str,
+    entity: Option<i64>,
+    det_tick: i64,
+    tickrate: i64,
+) -> Option<f64> {
+    let entity = entity?;
+    let latest = det_tick + MAX_EFFECT_SECONDS * tickrate;
+    expires
+        .iter()
+        .filter(|e| e.gtype == gtype && e.entity == entity && e.tick > det_tick && e.tick <= latest)
+        .map(|e| e.tick)
+        .min()
+        .map(|end| (end - det_tick) as f64 / tickrate as f64)
+}
+
 // --------------------------------------------------------------------------- //
 // utility extraction
 // --------------------------------------------------------------------------- //
@@ -516,6 +685,7 @@ pub fn extract_utility(
     let mut per_round: Vec<Vec<Value>> = vec![Vec::new(); n];
     let flights = build_flights(source.grenade_rows().unwrap_or_default());
     let max_flight = (MAX_FLIGHT_SECONDS * tickrate as f64) as i64;
+    let expires = source.expire_events().unwrap_or_default();
 
     // flash victims grouped by detonation tick
     let mut blind_by_tick: HashMap<i64, Vec<Value>> = HashMap::new();
@@ -548,11 +718,14 @@ pub fn extract_utility(
             };
             let z = row.z.filter(|v| v.is_finite()).unwrap_or(0.0);
             let sid = row.sid;
+            let entity = row.entity;
             let (_name, radius, duration) = UTIL_CONSTANTS
                 .iter()
                 .find(|(name, _, _)| name == gtype)
                 .copied()
                 .unwrap_or(("", 0, 0.0));
+            let duration =
+                real_duration(&expires, gtype, entity, tick, tickrate).unwrap_or(duration);
             let det_sample = ((tick - freeze_ticks[ri]).div_euclid(stride)).max(0);
 
             let mut item = Map::new();
@@ -563,9 +736,14 @@ pub fn extract_utility(
             item.insert("pos".into(), Value::Array(vec![jnum_f(x), jnum_f(y), jnum_f(z)]));
             item.insert("radius".into(), Value::from(radius));
             item.insert("duration".into(), jnum_f(duration));
-            if let Some(flight) =
-                match_throw(&flights, gtype, &sid, tick, freeze_ticks[ri], max_flight)
-            {
+            // A fire is a new entity, so only the thrower and the time lead back to its
+            // molotov. Its id can even match an earlier grenade's.
+            let by_entity = entity.filter(|_| *gtype != "molotov").and_then(|id| {
+                flight_of_entity(&flights, id, gtype, tick, freeze_ticks[ri])
+            });
+            let flight = by_entity
+                .or_else(|| match_throw(&flights, gtype, &sid, tick, freeze_ticks[ri], max_flight));
+            if let Some(flight) = flight {
                 item.insert("throwTick".into(), Value::from(flight.start));
                 item.insert(
                     "throwSample".into(),
@@ -575,6 +753,9 @@ pub fn extract_utility(
                     "throwPos".into(),
                     Value::Array(flight.pos.iter().map(|&v| jnum_f(v)).collect()),
                 );
+                if let Some(path) = path_json(flight, tick, freeze_ticks[ri], stride) {
+                    item.insert("path".into(), path);
+                }
             }
             if *gtype == "flash" {
                 if let Some(victims) = blind_by_tick.get(&tick) {
@@ -587,6 +768,85 @@ pub fn extract_utility(
         }
     }
     per_round
+}
+
+// --------------------------------------------------------------------------- //
+// per-player events and state
+// --------------------------------------------------------------------------- //
+
+/// One record of a round's `events` header key. Key order is part of the format.
+fn event_json(ev: &PlayerEvent, s: f64, slot: usize, slot_of: &HashMap<&str, usize>) -> Value {
+    let kind = match &ev.kind {
+        PlayerEventKind::Hurt { .. } => "hurt",
+        PlayerEventKind::Reload => "reload",
+        PlayerEventKind::Zoom => "zoom",
+        PlayerEventKind::PlantStart => "plant",
+        PlayerEventKind::PlantAbort => "plantAbort",
+        PlayerEventKind::DefuseStart { .. } => "defuse",
+        PlayerEventKind::DefuseAbort => "defuseAbort",
+        PlayerEventKind::BombDrop => "bombDrop",
+        PlayerEventKind::BombPickup => "bombPickup",
+        PlayerEventKind::Pickup { .. } => "pickup",
+    };
+    let mut m = Map::new();
+    m.insert("k".into(), Value::from(kind));
+    m.insert("s".into(), jnum_f(s));
+    m.insert("p".into(), Value::from(slot as i64));
+    match &ev.kind {
+        PlayerEventKind::Hurt { attacker, damage, armor_damage, hitgroup, weapon } => {
+            // no attacker in the roster: a fall, the bomb or the world
+            if let Some(&a) = attacker.as_deref().and_then(|sid| slot_of.get(sid)) {
+                m.insert("a".into(), Value::from(a as i64));
+            }
+            m.insert("d".into(), Value::from(*damage));
+            if *armor_damage > 0 {
+                m.insert("da".into(), Value::from(*armor_damage));
+            }
+            if let Some(hg) = hitgroup {
+                m.insert("hg".into(), Value::from(hg.as_str()));
+            }
+            let tag = weapon.as_deref().map(weapons::event_weapon_tag).unwrap_or_default();
+            if !tag.is_empty() {
+                m.insert("w".into(), Value::from(tag));
+            }
+        }
+        PlayerEventKind::DefuseStart { kit } => {
+            m.insert("kit".into(), Value::from(*kit));
+        }
+        PlayerEventKind::Pickup { item } => {
+            m.insert("item".into(), Value::from(item.as_str()));
+        }
+        _ => {}
+    }
+    Value::Object(m)
+}
+
+/// A flat `[sample, value, sample, value, ...]` list of the moments a value changed.
+#[derive(Default)]
+struct ChangeList {
+    flat: Vec<i64>,
+    last: Option<i64>,
+}
+
+impl ChangeList {
+    fn note(&mut self, sample: usize, value: i64) {
+        if self.last != Some(value) {
+            self.flat.push(sample as i64);
+            self.flat.push(value);
+            self.last = Some(value);
+        }
+    }
+
+    /// False when the demo never gave a value: nothing, or only the "no value" -1.
+    fn says_anything(&self) -> bool {
+        self.flat.iter().skip(1).step_by(2).any(|&v| v >= 0)
+    }
+
+    fn insert_into(self, key: &str, out: &mut Map<String, Value>) {
+        if self.says_anything() {
+            out.insert(key.into(), Value::Array(self.flat.into_iter().map(Value::from).collect()));
+        }
+    }
 }
 
 // --------------------------------------------------------------------------- //
@@ -677,6 +937,8 @@ pub fn build_replay3d_hz(
         extract_utility(source, &freeze_ticks, &end_ticks, stride, tickrate);
     // all weapon_fire events (tick + shooter sid); binned into rounds below.
     let fire_events = source.fire_events().unwrap_or_default();
+    let mut player_events = source.player_events().unwrap_or_default();
+    player_events.sort_by_key(|e| e.tick);
 
     let mut models = Vec::with_capacity(n_rounds);
     for i in 0..n_rounds {
@@ -692,6 +954,7 @@ pub fn build_replay3d_hz(
         let mut wi = WeaponIndexer::new();
         let mut tracks = Vec::with_capacity(slots.len());
         let mut players = Vec::with_capacity(slots.len());
+        let mut state = Vec::with_capacity(slots.len());
 
         for (slot, sid) in slots.iter().enumerate() {
             let mut tr = Track {
@@ -718,8 +981,20 @@ pub fn build_replay3d_hz(
             }
 
             let mut last = first_coords.unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0));
+            let (mut armor, mut helmet, mut kit, mut money, mut ammo) = (
+                ChangeList::default(),
+                ChangeList::default(),
+                ChangeList::default(),
+                ChangeList::default(),
+                ChangeList::default(),
+            );
             for (j, &tk) in ts.iter().enumerate() {
-                match cell.get(&(tk, (*sid).clone())) {
+                let row = cell.get(&(tk, (*sid).clone()));
+                // money keeps changing after death: the round's reward arrives then
+                if let Some(v) = row.and_then(|c| c.money) {
+                    money.note(j, v);
+                }
+                match row {
                     Some(c) if row_alive(c) => {
                         last = row_coords(c);
                         let mut fl = F_PRESENT | F_ALIVE;
@@ -732,10 +1007,26 @@ pub fn build_replay3d_hz(
                         if c.is_defusing {
                             fl |= F_DEFUSING;
                         }
+                        if c.is_walking {
+                            fl |= F_WALKING;
+                        }
+                        if c.is_airborne {
+                            fl |= F_AIRBORNE;
+                        }
                         tr.flags[j] = fl;
                         tr.health[j] = c.health.unwrap_or(0).clamp(0, 255) as u8;
                         tr.weapon[j] = wi.windex(c.weapon.as_deref());
                         tr.flash[j] = flash_byte(c.flash_duration);
+                        if let Some(v) = c.armor {
+                            armor.note(j, v);
+                        }
+                        if let Some(v) = c.has_helmet {
+                            helmet.note(j, v as i64);
+                        }
+                        if let Some(v) = c.has_defuser {
+                            kit.note(j, v as i64);
+                        }
+                        ammo.note(j, c.ammo.unwrap_or(-1));
                     }
                     Some(_) => {
                         tr.flags[j] = F_PRESENT; // present but dead
@@ -748,6 +1039,14 @@ pub fn build_replay3d_hz(
                 tr.yaw[j] = last.3;
                 tr.pitch[j] = last.4;
             }
+
+            let mut values = Map::new();
+            armor.insert_into("armor", &mut values);
+            helmet.insert_into("helmet", &mut values);
+            kit.insert_into("kit", &mut values);
+            money.insert_into("money", &mut values);
+            ammo.insert_into("ammo", &mut values);
+            state.push(values);
 
             tracks.push(tr);
             players.push(PlayerMeta {
@@ -789,6 +1088,24 @@ pub fn build_replay3d_hz(
             shots.push(Value::Object(m));
         }
 
+        // Up to the last sample, not to round_end: players still walk, reload and hurt
+        // each other during the aftermath the replay shows.
+        let last_tick = ts.last().copied().unwrap_or(freeze);
+        let events: Vec<Value> = player_events
+            .iter()
+            .filter(|e| e.tick >= freeze && e.tick <= last_tick)
+            .filter_map(|e| {
+                let slot = *sid_to_slot.get(e.sid.as_str())?;
+                let s = (e.tick - freeze) as f64 / stride as f64;
+                Some(event_json(e, s, slot, &sid_to_slot))
+            })
+            .collect();
+        let state: Vec<Value> = if state.iter().any(|values| !values.is_empty()) {
+            state.into_iter().map(Value::Object).collect()
+        } else {
+            Vec::new()
+        };
+
         models.push(RoundModel {
             map: map_name.clone(),
             round: (i + 1) as i64,
@@ -803,6 +1120,8 @@ pub fn build_replay3d_hz(
             utility: utility_by_round[i].clone(),
             tracks,
             shots,
+            events,
+            state,
         });
     }
 
@@ -836,6 +1155,7 @@ pub fn build_replay3d_hz(
             Some(BombRound {
                 plant_tick: plant.tick,
                 site: plant.site.clone(),
+                pos: plant.pos,
                 end_tick: closing.map(|b| b.tick),
                 end_kind: closing.map(|b| b.kind),
             })

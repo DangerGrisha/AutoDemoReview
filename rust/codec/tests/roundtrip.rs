@@ -119,7 +119,7 @@ fn make_model(n: usize, tracks: Vec<Track>) -> RoundModel {
                              "detTick": 1150, "throwSample": 25, "detSample": 37,
                              "pos": [100.0, 200.0, -150.0], "radius": 144, "duration": 18.0})],
         tracks,
-        shots: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -277,4 +277,27 @@ fn size_vs_naive() {
     println!("  size_vs_naive: codec={} B  naive_json={} B  ratio={:.1}x", data.len(), naive.len(), ratio);
     assert!(data.len() < naive.len(), "codec smaller than naive JSON");
     assert!(ratio > 3.0, "ratio >3x (got {ratio:.1}x)");
+}
+
+#[test]
+fn new_flags_and_header_keys_survive_the_file() {
+    let n = 40;
+    let mut track = make_track(n, TrackParams::default());
+    track.flags[10] |= c2r3::F_WALKING;
+    track.flags[11] |= c2r3::F_AIRBORNE;
+    let mut model = make_model(n, vec![track.clone()]);
+    model.events = vec![json!({"k": "reload", "s": 3.0, "p": 0})];
+    model.state = vec![json!({"armor": [0, 100, 9, 73]})];
+
+    let (bytes, _) = encode_round(&model).unwrap();
+    let dec = decode_round(&bytes).unwrap();
+    assert_eq!(dec.tracks[0].flags, track.flags);
+    assert_eq!(dec.header["events"][0]["k"], "reload");
+    assert_eq!(dec.header["state"][0]["armor"][3], 73);
+
+    // without them the keys stay out of the file: the old format, byte for byte
+    let plain = make_model(n, vec![make_track(n, TrackParams::default())]);
+    let dec = decode_round(&encode_round(&plain).unwrap().0).unwrap();
+    assert!(dec.header.get("events").is_none());
+    assert!(dec.header.get("state").is_none());
 }

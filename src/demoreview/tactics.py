@@ -33,8 +33,8 @@ from . import c2r3, zones
 
 SIDE_OF = {2: "T", 3: "CT"}
 
-# Sample rate is 16 Hz; these windows are expressed in seconds and converted
-# per round so a future rate change doesn't silently rescale the analysis.
+# The sample rate differs between replays (16 Hz in old ones, 64 Hz in new ones), so
+# these windows are expressed in seconds and converted per round.
 TRADE_WINDOW_S = 4.0      # a kill this soon after a death counts as the trade
 TRADE_RANGE_U = 800.0     # ...and you had to be this close to have had a chance
 FLASH_CONVERT_S = 3.0     # someone dies this soon after being blinded -> the flash did it

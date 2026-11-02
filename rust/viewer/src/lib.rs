@@ -829,19 +829,6 @@ fn setup_player_anim(
     }
 }
 
-/// Ground velocity around sample `i`, over +-GROUND_MOTION_REACH samples because a
-/// single 16 Hz step is too noisy to steer clips with: (speed in Source units/s, dx, dy).
-fn ground_motion(tr: &c2r3::Track, i: usize, n: usize, rate: f64) -> (f64, f64, f64) {
-    const GROUND_MOTION_REACH: usize = 2;
-    let (lo, hi) = (i.saturating_sub(GROUND_MOTION_REACH), (i + GROUND_MOTION_REACH).min(n - 1));
-    if hi == lo {
-        return (0.0, 0.0, 0.0);
-    }
-    let (dx, dy) = (tr.x[hi] - tr.x[lo], tr.y[hi] - tr.y[lo]);
-    let dt = (hi - lo) as f64 / rate;
-    ((dx * dx + dy * dy).sqrt() / dt, dx, dy)
-}
-
 /// Pick each player's clip from their weapon, crouch and movement relative to where
 /// they face, crossfade to it, and run it on the replay's clock: a paused replay
 /// holds the pose, slow motion slows the legs, and the rate follows the ground speed
@@ -872,7 +859,7 @@ fn drive_player_anim(
             continue;
         };
         let alive = tr.flags[i0] & c2r3::F_ALIVE != 0;
-        let (speed, dx, dy) = if alive { ground_motion(tr, i0, r.n, r.rate) } else { (0.0, 0.0, 0.0) };
+        let (speed, dx, dy) = if alive { player_anim::ground_motion(tr, i0, r.n, r.rate) } else { (0.0, 0.0, 0.0) };
         loco.0.update(speed, player_anim::heading_cw(dx, dy, tr.yaw[i0]));
 
         let crouch = tr.flags[i0] & c2r3::F_CROUCH != 0;

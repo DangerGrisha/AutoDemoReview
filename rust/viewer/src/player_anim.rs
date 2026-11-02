@@ -10,7 +10,7 @@ const SECTOR_WIDTH: f64 = std::f64::consts::TAU / SECTORS as f64;
 /// boundary does not flip clips every frame.
 const SECTOR_MARGIN: f64 = 10.0 * std::f64::consts::PI / 180.0;
 
-/// Ground speed bands in Source units/s, with a gap so the 16 Hz tracks' jitter
+/// Ground speed bands in Source units/s, with a gap so the sampled tracks' jitter
 /// around a threshold does not flicker between clips. Shift-walking tops out near
 /// 130 and running starts well above 200.
 const WALK_ENTER: f64 = 25.0;
@@ -146,9 +146,69 @@ pub fn clip_name(class: WeaponClass, crouch: bool, gait: Gait, sector: usize) ->
     }
 }
 
+/// How far either way `ground_motion` looks, in seconds.
+const GROUND_MOTION_REACH_S: f64 = 0.125;
+
+/// Ground velocity around sample `i`: (speed in Source units/s, dx, dy). Measured over a
+/// stretch of time because a single step between samples is too noisy to steer clips
+/// with, and in seconds because replays come at 16 and at 64 samples a second.
+pub fn ground_motion(tr: &c2r3::Track, i: usize, n: usize, rate: f64) -> (f64, f64, f64) {
+    let reach = ((GROUND_MOTION_REACH_S * rate).round() as usize).max(1);
+    let (lo, hi) = (i.saturating_sub(reach), (i + reach).min(n - 1));
+    if hi == lo {
+        return (0.0, 0.0, 0.0);
+    }
+    let (dx, dy) = (tr.x[hi] - tr.x[lo], tr.y[hi] - tr.y[lo]);
+    let dt = (hi - lo) as f64 / rate;
+    ((dx * dx + dy * dy).sqrt() / dt, dx, dy)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Running along x at `speed` units/s, sampled `rate` times a second for 2 s.
+    fn running(speed: f64, rate: f64) -> c2r3::Track {
+        let n = (2.0 * rate) as usize;
+        c2r3::Track {
+            x: (0..n).map(|i| i as f64 / rate * speed).collect(),
+            y: vec![0.0; n],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn speed_reads_the_same_at_any_sample_rate() {
+        for rate in [16.0, 64.0] {
+            let tr = running(250.0, rate);
+            let n = tr.x.len();
+            let (speed, dx, dy) = ground_motion(&tr, n / 2, n, rate);
+            assert!((speed - 250.0).abs() < 1e-6, "{rate} Hz: {speed}");
+            assert!(dx > 0.0 && dy == 0.0);
+        }
+    }
+
+    #[test]
+    fn the_window_is_the_same_length_in_seconds_at_any_rate() {
+        // one bad sample next to the point in question moves the reading no more at 64 Hz
+        // than one does at 16 Hz, per second of data: the window holds 4x the samples
+        let rate = 64.0;
+        let mut tr = running(250.0, rate);
+        let n = tr.x.len();
+        tr.x[n / 2 + 1] += 40.0;
+        let (speed, _, _) = ground_motion(&tr, n / 2, n, rate);
+        assert!((speed - 250.0).abs() < 1e-6, "a jump inside the window does not count: {speed}");
+    }
+
+    #[test]
+    fn the_ends_of_a_round_do_not_run_off_the_track() {
+        let tr = running(250.0, 64.0);
+        let n = tr.x.len();
+        assert!((ground_motion(&tr, 0, n, 64.0).0 - 250.0).abs() < 1e-6);
+        assert!((ground_motion(&tr, n - 1, n, 64.0).0 - 250.0).abs() < 1e-6);
+        let one = c2r3::Track { x: vec![5.0], y: vec![5.0], ..Default::default() };
+        assert_eq!(ground_motion(&one, 0, 1, 64.0).0, 0.0);
+    }
     use std::collections::HashSet;
     use std::f64::consts::{FRAC_PI_2, PI};
 

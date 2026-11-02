@@ -117,9 +117,9 @@ def ingest_demo(dem_path, *, owner_steamid, filename, digest=None):
         keep_demo(dem_path, existing)
         if not db.can_access(existing, owner_steamid):
             return Ingested(match_id=existing, duplicate=True, visible=False)
-        # Backfill: matches analyzed before the 3D-replay feature existed gain
-        # their artifacts now, since we happen to hold the raw .dem again.
-        if not replay3d.has_replay(existing):
+        # Backfill: a match without a replay, or with one from an older extractor, gains
+        # a current one now, since we happen to hold the raw .dem again.
+        if replay3d.is_stale(existing):
             try:
                 replay3d.extract(dem_path, existing)
             except Exception:  # noqa: BLE001 -- 3D is always best-effort

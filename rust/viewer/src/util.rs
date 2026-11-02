@@ -11,6 +11,9 @@ use serde_json::Value;
 
 use crate::coords::world_to_scene;
 
+/// Points a second on a recorded grenade flight's trail, so a bounce shows as a corner.
+const PATH_POINTS_PER_S: f64 = 32.0;
+
 pub const UTIL_COLORS: &[(&str, &str)] = &[
     ("smoke", "#d6dae1"),
     ("molotov", "#ff6a1a"),
@@ -282,25 +285,39 @@ pub fn build_util_item(
         (u.get("throwPos").and_then(Value::as_array), f(u, "throwSample"), f(u, "detSample"))
     {
         if df > tf && tp.len() >= 2 {
-            let a = Vec3::from_array(world_to_scene(
-                tp[0].as_f64().unwrap_or(0.0),
-                tp[1].as_f64().unwrap_or(0.0),
-                tp.get(2).and_then(Value::as_f64).unwrap_or(0.0),
-                s,
-            ));
-            let b = p;
-            let arc_h = (Vec2::new(b.x - a.x, b.z - a.z).length() * 0.18).clamp(0.8, 7.0);
-            let n = 40;
-            let pts: Vec<Vec3> = (0..=n)
-                .map(|k| {
-                    let t = k as f32 / n as f32;
-                    Vec3::new(
-                        a.x + (b.x - a.x) * t,
-                        a.y + (b.y - a.y) * t + arc_h * 4.0 * t * (1.0 - t),
-                        a.z + (b.z - a.z) * t,
-                    )
-                })
-                .collect();
+            let recorded = u
+                .get("path")
+                .and_then(Value::as_array)
+                .map(|path| path.iter().filter_map(Value::as_f64).collect::<Vec<f64>>())
+                .filter(|flat| flat.len() >= 8 && flat.len() % 4 == 0);
+            let pts: Vec<Vec3> = if let Some(flat) = recorded {
+                let n = (((df - tf) / rate * PATH_POINTS_PER_S).ceil() as usize).max(8);
+                path_points(&flat, tf, df, n)
+                    .into_iter()
+                    .map(|[x, y, z]| Vec3::from_array(world_to_scene(x, y, z, s)))
+                    .collect()
+            } else {
+                // A replay from before data version 2 knows only the two ends: an invented arc.
+                let a = Vec3::from_array(world_to_scene(
+                    tp[0].as_f64().unwrap_or(0.0),
+                    tp[1].as_f64().unwrap_or(0.0),
+                    tp.get(2).and_then(Value::as_f64).unwrap_or(0.0),
+                    s,
+                ));
+                let b = p;
+                let arc_h = (Vec2::new(b.x - a.x, b.z - a.z).length() * 0.18).clamp(0.8, 7.0);
+                let n = 40;
+                (0..=n)
+                    .map(|k| {
+                        let t = k as f32 / n as f32;
+                        Vec3::new(
+                            a.x + (b.x - a.x) * t,
+                            a.y + (b.y - a.y) * t + arc_h * 4.0 * t * (1.0 - t),
+                            a.z + (b.z - a.z) * t,
+                        )
+                    })
+                    .collect()
+            };
             item.tracer = Some(Tracer {
                 pts,
                 tf,
@@ -311,6 +328,25 @@ pub fn build_util_item(
         }
     }
     Some(item)
+}
+
+/// A recorded flight (flat `[sample, x, y, z, ...]`, at least two points) as `n + 1` world
+/// points at even times from `tf` to `df`, the spacing `tracer_frame` walks. Outside the
+/// recording it holds the nearest end.
+pub fn path_points(flat: &[f64], tf: f64, df: f64, n: usize) -> Vec<[f64; 3]> {
+    let rows: Vec<&[f64]> = flat.chunks_exact(4).collect();
+    let mut seg = 0;
+    (0..=n)
+        .map(|k| {
+            let s = tf + (df - tf) * k as f64 / n as f64;
+            while seg + 2 < rows.len() && rows[seg + 1][0] < s {
+                seg += 1;
+            }
+            let (a, b) = (rows[seg], rows[seg + 1]);
+            let t = if b[0] > a[0] { ((s - a[0]) / (b[0] - a[0])).clamp(0.0, 1.0) } else { 0.0 };
+            [a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t]
+        })
+        .collect()
 }
 
 /// Per-frame animation state for one item (mirrors updateUtility()). Returns
@@ -333,7 +369,7 @@ pub fn tracer_frame(tr: &Tracer, s: f64) -> Option<(usize, f32, Vec3)> {
         return None;
     }
     let prog = if tr.df > tr.tf { ((s - tr.tf) / (tr.df - tr.tf)).min(1.0) } else { 1.0 };
-    let n = tr.pts.len() - 1; // 40
+    let n = tr.pts.len() - 1;
     let count = ((prog * n as f64).floor() as usize + 1).max(2);
     let op = if s <= tr.df {
         0.95
@@ -342,4 +378,35 @@ pub fn tracer_frame(tr: &Tracer, s: f64) -> Option<(usize, f32, Vec3)> {
     } as f32;
     let tip = tr.pts[count.saturating_sub(1).min(n)];
     Some((count, op, tip))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_recorded_flight_is_walked_at_even_times() {
+        // up to z=100 by sample 10, a bounce back to z=0 by sample 20
+        let flat = [0.0, 0.0, 0.0, 0.0, 10.0, 10.0, 0.0, 100.0, 20.0, 20.0, 0.0, 0.0];
+        let pts = path_points(&flat, 0.0, 20.0, 4);
+        assert_eq!(pts.len(), 5);
+        let zs: Vec<f64> = pts.iter().map(|p| p[2]).collect();
+        assert_eq!(zs, [0.0, 50.0, 100.0, 50.0, 0.0], "the corner of the bounce stays");
+        let xs: Vec<f64> = pts.iter().map(|p| p[0]).collect();
+        assert_eq!(xs, [0.0, 5.0, 10.0, 15.0, 20.0]);
+    }
+
+    #[test]
+    fn a_flight_outside_its_recording_holds_the_ends() {
+        let flat = [5.0, 1.0, 2.0, 3.0, 10.0, 4.0, 5.0, 6.0];
+        let pts = path_points(&flat, 0.0, 20.0, 4);
+        assert_eq!(pts[0], [1.0, 2.0, 3.0], "before the first point");
+        assert_eq!(pts[4], [4.0, 5.0, 6.0], "after the last, as a resting grenade");
+    }
+
+    #[test]
+    fn two_points_at_one_moment_do_not_divide_by_zero() {
+        let flat = [5.0, 1.0, 2.0, 3.0, 5.0, 4.0, 5.0, 6.0];
+        assert!(path_points(&flat, 5.0, 5.0, 2).iter().all(|p| p.iter().all(|v| v.is_finite())));
+    }
 }

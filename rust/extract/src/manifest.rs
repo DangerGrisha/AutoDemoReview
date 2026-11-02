@@ -172,6 +172,9 @@ pub fn build_manifest(
             if let Some(site) = b.site.as_deref() {
                 bm.insert("site".into(), Value::from(site));
             }
+            if let Some(pos) = b.pos {
+                bm.insert("pos".into(), Value::Array(pos.iter().map(|&v| jf(v)).collect()));
+            }
             if let (Some(t), Some(kind)) = (b.end_tick, b.end_kind) {
                 let key = match kind {
                     crate::BombKind::Defused => "defused",
@@ -213,6 +216,7 @@ pub fn build_manifest(
         Value::Array(elevation.into_iter().map(Value::from).collect()),
     );
     manifest.insert("rounds".into(), Value::Array(rounds_meta));
+    manifest.insert("dataVersion".into(), Value::from(crate::DATA_VERSION));
     Value::Object(manifest)
 }
 

@@ -16,18 +16,22 @@ use parser::second_pass::parser_settings::create_huffman_lookup_table;
 use parser::second_pass::variants::{PropColumn, VarVec, Variant};
 
 use crate::{
-    BlindEvent, BombEvent, BombKind, DemoSource, DetEvent, EndEvent, FireEvent, FreezeEvent,
-    GrenadeRow, KillEvent, TickRow,
+    BlindEvent, BombEvent, BombKind, DemoSource, DetEvent, EndEvent, ExpireEvent, FireEvent,
+    FreezeEvent, GrenadeRow, KillEvent, PlayerEvent, PlayerEventKind, TickRow,
 };
 
 /// The per-tick props the extraction samples (mirrors replay3d.TICK_PROPS; note
 /// `ducked` forces the parser single-threaded — accepted, it costs ~1 s total).
-const TICK_PROPS: [&str; 13] = [
+const TICK_PROPS: [&str; 20] = [
     "X", "Y", "Z", "pitch", "yaw", "health", "is_alive", "active_weapon_name",
     "flash_duration", "ducked", "is_scoped", "is_defusing", "team_num",
+    "is_walking", "is_airborne", "armor_value", "has_helmet", "has_defuser", "balance",
+    "active_weapon_ammo",
 ];
 
-const EVENTS: [&str; 13] = [
+// Not player_footstep: real demos carry it for only about 8% of a player's steps (checked
+// against distance run on two matches), so it says nothing about when they stepped.
+const EVENTS: [&str; 27] = [
     "round_freeze_end",
     "round_end",
     "player_death",
@@ -41,6 +45,20 @@ const EVENTS: [&str; 13] = [
     "bomb_planted",
     "bomb_defused",
     "bomb_exploded",
+    "smokegrenade_expired",
+    "inferno_expire",
+    "inferno_extinguish",
+    "decoy_detonate",
+    "player_hurt",
+    "weapon_reload",
+    "weapon_zoom",
+    "bomb_beginplant",
+    "bomb_abortplant",
+    "bomb_begindefuse",
+    "bomb_abortdefuse",
+    "bomb_dropped",
+    "bomb_pickup",
+    "item_pickup",
 ];
 
 pub struct Dp2Source {
@@ -80,10 +98,10 @@ impl Dp2Source {
         }
     }
 
-    /// One combined event pass (all 9 types + team/round enrichment), cached.
+    /// One combined event pass (all of EVENTS + team/position/round enrichment), cached.
     fn events(&mut self) -> Result<&[GameEvent]> {
         if self.events.is_none() {
-            let (real_player, mut real_to_og) = map_props(&["team_num"])?;
+            let (real_player, mut real_to_og) = map_props(&["team_num", "X", "Y", "Z", "last_place_name"])?;
             let (real_other, r2) = map_props(&["total_rounds_played", "is_warmup_period"])?;
             real_to_og.extend(r2);
             let mut settings = self.base_inputs();
@@ -292,6 +310,10 @@ impl DemoSource for Dp2Source {
         let (c_duck, c_scope, c_defuse) =
             (by_name("ducked"), by_name("is_scoped"), by_name("is_defusing"));
         let c_team = by_name("team_num");
+        let (c_walk, c_air) = (by_name("is_walking"), by_name("is_airborne"));
+        let (c_armor, c_helmet) = (by_name("armor_value"), by_name("has_helmet"));
+        let (c_kit, c_money) = (by_name("has_defuser"), by_name("balance"));
+        let c_ammo = by_name("active_weapon_ammo");
 
         let n = col_len(c_tick);
         let mut rows = Vec::with_capacity(n);
@@ -321,6 +343,13 @@ impl DemoSource for Dp2Source {
                 is_scoped: col_bool(c_scope, i).unwrap_or(false),
                 is_defusing: col_bool(c_defuse, i).unwrap_or(false),
                 team_num: col_i64(c_team, i),
+                is_walking: col_bool(c_walk, i).unwrap_or(false),
+                is_airborne: col_bool(c_air, i).unwrap_or(false),
+                armor: col_i64(c_armor, i),
+                has_helmet: col_bool(c_helmet, i),
+                has_defuser: col_bool(c_kit, i),
+                money: col_i64(c_money, i),
+                ammo: col_i64(c_ammo, i),
             });
         }
         Ok(rows)
@@ -337,6 +366,62 @@ impl DemoSource for Dp2Source {
                 y: v_f64(field(e, "y")),
                 z: v_f64(field(e, "z")),
                 sid: v_string(field(e, "user_steamid")).unwrap_or_default(),
+                entity: v_i64(field(e, "entityid")),
+            })
+            .collect())
+    }
+
+    fn expire_events(&mut self) -> Result<Vec<ExpireEvent>> {
+        Ok(self
+            .events()?
+            .iter()
+            .filter_map(|e| {
+                let gtype = match e.name.as_str() {
+                    "smokegrenade_expired" => "smoke",
+                    "inferno_expire" | "inferno_extinguish" => "molotov",
+                    "decoy_detonate" => "decoy",
+                    _ => return None,
+                };
+                Some(ExpireEvent {
+                    tick: e.tick as i64,
+                    gtype,
+                    entity: v_i64(field(e, "entityid"))?,
+                })
+            })
+            .collect())
+    }
+
+    fn player_events(&mut self) -> Result<Vec<PlayerEvent>> {
+        Ok(self
+            .events()?
+            .iter()
+            .filter_map(|e| {
+                let kind = match e.name.as_str() {
+                    "player_hurt" => PlayerEventKind::Hurt {
+                        attacker: v_string(field(e, "attacker_steamid")),
+                        damage: v_i64(field(e, "dmg_health")).unwrap_or(0),
+                        armor_damage: v_i64(field(e, "dmg_armor")).unwrap_or(0),
+                        hitgroup: v_string(field(e, "hitgroup")),
+                        weapon: v_string(field(e, "weapon")),
+                    },
+                    "weapon_reload" => PlayerEventKind::Reload,
+                    "weapon_zoom" => PlayerEventKind::Zoom,
+                    "bomb_beginplant" => PlayerEventKind::PlantStart,
+                    "bomb_abortplant" => PlayerEventKind::PlantAbort,
+                    "bomb_begindefuse" => PlayerEventKind::DefuseStart {
+                        kit: v_bool(field(e, "haskit")).unwrap_or(false),
+                    },
+                    "bomb_abortdefuse" => PlayerEventKind::DefuseAbort,
+                    "bomb_dropped" => PlayerEventKind::BombDrop,
+                    "bomb_pickup" => PlayerEventKind::BombPickup,
+                    "item_pickup" => PlayerEventKind::Pickup { item: v_string(field(e, "item"))? },
+                    _ => return None,
+                };
+                Some(PlayerEvent {
+                    tick: e.tick as i64,
+                    sid: v_string(field(e, "user_steamid"))?,
+                    kind,
+                })
             })
             .collect())
     }
@@ -444,8 +529,22 @@ impl DemoSource for Dp2Source {
                         Some(0) => Some("A".to_string()),
                         Some(1) => Some("B".to_string()),
                         _ => None,
+                    })
+                    // CS2's `site` is an entity index, but the planter stands in a named place
+                    .or_else(|| match v_string(field(e, "user_last_place_name")).as_deref() {
+                        Some("BombsiteA") => Some("A".to_string()),
+                        Some("BombsiteB") => Some("B".to_string()),
+                        _ => None,
                     });
-                Some(BombEvent { tick: e.tick as i64, kind, site })
+                let pos = match (
+                    v_f64(field(e, "user_X")),
+                    v_f64(field(e, "user_Y")),
+                    v_f64(field(e, "user_Z")),
+                ) {
+                    (Some(x), Some(y), Some(z)) => Some([x, y, z]),
+                    _ => None,
+                };
+                Some(BombEvent { tick: e.tick as i64, kind, site, pos })
             })
             .collect())
     }

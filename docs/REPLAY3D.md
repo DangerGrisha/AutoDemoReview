@@ -41,11 +41,85 @@ match page ── "3D replay" link ──► GET /matches/{id}/3d  (templates/re
 - Matches analyzed **before** this feature have no artifacts, since demos were not
   kept back then. Re-uploading the same demo backfills them. From 2026-11 a gzipped
   copy of each demo stays in `web/data/demos/<match_id>.dem.gz` (`KEEP_DEMOS=0` turns
-  that off), so new matches can be re-extracted when the extractor learns more.
+  that off), so new matches can be re-extracted when the extractor learns more. See
+  [What a replay holds](#what-a-replay-holds).
 - Supported maps (radar calibration in `rust/extract/src/mapscal.rs`, ported
   from `src/demoreview/maps.py`): mirage, inferno, nuke, overpass, ancient,
   anubis, vertigo, train. Other maps: extract3d exits nonzero → no 3D replay,
   the 2D report is unaffected.
+
+## What a replay holds
+
+`manifest.json` says `dataVersion`. `DATA_VERSION` lives in `rust/extract/src/lib.rs` and
+in `web/replay3d.py`, and a test keeps them equal. A manifest without the key is version 1.
+The file format is still C2R3 v1: version 1 replays open as they always did, and the golden
+fixtures stay byte-identical, because everything new is optional.
+
+| | Version 1 | Version 2 (from 2026-11) |
+|---|---|---|
+| Samples a second | 16 | 64 on a 64-tick demo (`--hz N` on the CLI picks another rate) |
+| Grenade flight | invented arc between the two ends | `path` on the utility item |
+| Grenade found by | thrower and time, up to 5 s of flight | its entity id, then thrower and time for a molotov |
+| Smoke, fire and decoy end | constants (18, 7, 15 s) | `duration` is the real one when the end is in the demo |
+| Bomb | plant time | also `bomb.pos`, and `bomb.site` from the planter's place name |
+| Header `events`, `state`, flags `0x20`, `0x40` | no | yes |
+
+**Header keys, each present only when non-empty:**
+
+- `state`: index-aligned with `players`. Each entry holds flat `[sample, value, sample,
+  value, ...]` change lists: `armor`, `helmet`, `kit`, `money`, `ammo`. `ammo` is `-1` for what
+  has no clip. Only `money` keeps changing after death.
+- `events`: `{k, s, p, ...}` sorted by `s` (fractional sample, like `shots`), up to the
+  round's last sample. `k` is one of `hurt` (`a` attacker slot, `d` health, `da` armour, `hg` hit
+  group, `w` weapon tag), `reload`, `zoom`, `plant`, `plantAbort`, `defuse` (`kit`), `defuseAbort`,
+  `bombDrop`, `bombPickup`, `pickup` (`item`).
+- `path` on a utility item: flat `[sample, x, y, z, ...]` up to the detonation, thinned to
+  within `PATH_TOLERANCE`=1 unit of the real flight, so a bounce keeps its corner.
+- Flags: `F_WALKING`=`0x20`, `F_AIRBORNE`=`0x40`. `0x80` is still free.
+
+**Checked against three real demos** (`hurt` against the health channel, `ammo` against shots):
+all 659 hits agree with the health drop on de_mirage, and 2880 of 2881 shots have a clip
+drop next to them. A jump lasts a median 0.64 s. Smokes last 22.06 s, not the 18 s we assumed.
+Some smokes make a jump of 50-80 units in the last tick before they go off: that is in the
+demo and too short to see.
+
+**Not in the file, on purpose:**
+
+- `player_footstep`: real demos carry it for only about 8% of a player's steps, measured
+  against distance run. The page keeps deriving steps from distance.
+- Reserve ammo: `total_ammo_left` read 0 on rifles in the rows checked.
+- `is_in_reload`: `reload` events plus the `ammo` list say the same.
+- Plant aborts: `bomb_abortplant` never appeared in the three demos (43 plant starts, 34
+  plants), though it is asked for. A plant that stops has to be inferred from the player
+  moving. `F_DEFUSING` already says when a defuse stops.
+
+**What it costs** (the three matches with a local demo, 23-30 rounds):
+
+| | 16 Hz | 64 Hz |
+|---|---|---|
+| Replay on disk | 2-2.7 MB | 6-8.7 MB |
+| Replay on the wire | not compressed at all | 2-2.9 MB |
+| Extraction | 11 s, 1.1 GB of memory | 21-39 s, 1.5-1.9 GB |
+| Coach analysis of a match | 0.5 s | 2.2 s |
+| FPS at 1080p on de_mirage, RTX 3070 | 87-125 | 88-140 (another match; no slower) |
+
+**Rebuilding.** A re-upload replaces a replay older than `DATA_VERSION`. Otherwise:
+
+```
+python tools/rebuild_replays.py                  # stale replays of matches with a kept demo
+python tools/rebuild_replays.py --force          # those matches, stale or not
+python tools/rebuild_replays.py demos/a.dem ...  # the match each demo's sha256 belongs to
+```
+
+The server does not do this by itself, because of the memory and time it takes. `extract`
+builds next to the final directory and moves the result in whole, so a failed rebuild keeps
+the old replay. So does a replay in use on Windows, which refuses to rename an open directory.
+Raising `DATA_VERSION` means running this after a deploy. A match without a kept demo stays
+as it is until someone uploads its demo again.
+
+**Compression.** `match_replay3d_artifact` sends a brotli or gzip copy made on first request
+and kept next to the file (`r01.3dr.br`), so old replays gain from it too. Quality 9, because
+someone is waiting: 33 ms for 148 KB, against 436 ms for 131 KB at quality 10.
 
 ## Build (once per code change)
 
@@ -499,9 +573,9 @@ All page-side (no new wasm scene work), in both HTMLs:
   requests `bomb_planted`/`bomb_defused`/`bomb_exploded` in the same event pass,
   `DemoSource::bomb_events()` (default-empty, so test sources are unaffected)
   yields `BombEvent`, and `build_models` pairs each round's plant with the
-  defuse/explosion that closes it into `Meta3d::bombs`. **Bombsite letters are
-  usually absent**: CS2 sends `site` as an entity index, so only a literal
-  "A"/"B" or 0/1 is mapped and anything else shows as just "planted".
+  defuse/explosion that closes it into `Meta3d::bombs`. CS2 sends `site` as an entity
+  index, so the letter comes from the planter's place name (`BombsiteA`) on data version 2.
+  Older replays only map a literal "A"/"B" or 0/1, and otherwise show just "planted".
 - **Kill feed (top-right, left of the scoreboard)** — manifest kill marks
   replayed as a CS2-style feed: entries appear when the clock passes the kill
   and expire after 6 s, with a fade in the last second; derived from the clock
@@ -649,9 +723,9 @@ no build, a browser that cannot decode Opus, a corrupted file, or a sound still 
 - **Not implemented for lack of data:** reloads, scoped-in clicks, grenade bounces and
   the plant and defuse start: there are no such events in the manifest or the codec
   (`F_SCOPED`/`F_DEFUSING` exist in the codec's flags but never reach the page). Walls
-  do not muffle anything, as the page knows no geometry. The bomb's position is not in
-  the data either: it is taken from whoever held it at the plant, so a scrub past the
-  plant leaves the bomb at a fixed middle distance.
+  do not muffle anything, as the page knows no geometry. The bomb sounds from `bomb.pos`.
+  A replay from before data version 2 has none: there it is taken from whoever held the
+  bomb at the plant, so a scrub past the plant leaves it at a fixed middle distance.
 
 ## Weapon icons (kill feed and player list)
 
@@ -731,8 +805,9 @@ machine they took the model from 137 FPS on the soldier down to 91:
 
 **Which clip plays** (`player_anim.rs`, unit-tested without a renderer): each weapon
 class has `idle`, `idle_crouch` and `walk_*`, `run_*`, `crouch_*` in 8 directions.
-`drive_player_anim` measures ground velocity over +-2 samples, since one 16 Hz step is
-too noisy, and turns it into a direction relative to the player's yaw. Gait and
+`ground_motion` measures ground velocity over 0.125 s either way, since one step between
+samples is too noisy, and in seconds because replays come at 16 and at 64 samples a second.
+`drive_player_anim` turns it into a direction relative to the player's yaw. Gait and
 direction both have hysteresis so clips do not flicker at a threshold. Clips run on
 the replay clock, so pausing holds the pose and slow motion slows the legs. Clip rate
 follows ground speed so the feet do not slide. The clips carry no root motion and report
@@ -810,4 +885,5 @@ agent a player actually wore (`agent_skin` in the parser, never extracted).
 | `KEEP_DEMOS` | `1` | `0` discards each demo after parsing instead of keeping a gzipped copy in `web/data/demos/` |
 
 Artifacts live in `web/data/replay3d/<match_id>/`; deleting a directory removes
-that match's 3D replay (it comes back on re-upload of the same .dem).
+that match's 3D replay (it comes back on re-upload of the same .dem, or from
+`tools/rebuild_replays.py` when its demo was kept).

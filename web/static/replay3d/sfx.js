@@ -54,10 +54,12 @@
  * to report_frame's header floats makes free-cam audio exact too — everything
  * here already funnels through updateEar()/at().
  *
- * Not implemented for lack of data: reloads, grenade bounces, footsteps by floor
- * material and walls muffling a sound. The bomb's position is not in the data
- * either: it is taken from whoever held it at the plant, so a scrub past the plant
- * loses it and the bomb then sounds from a fixed middle distance.
+ * Not implemented for lack of data: footsteps by floor material and walls muffling a
+ * sound. Footsteps come from distance travelled, because a demo's player_footstep event
+ * exists for only about 8% of steps. Not implemented yet: reloads and grenade bounces,
+ * whose data new replays do have. A replay from before data version 2 has no bomb
+ * position: it is taken from whoever held the bomb at the plant, so a scrub past the
+ * plant loses it and the bomb then sounds from a fixed middle distance.
  * ========================================================================== */
 (function () {
   'use strict';
@@ -651,6 +653,7 @@
       teams: (header.players || []).map(p => p.team),
       wtab: header.weaponTable || [], winner: meta.winner || null,
       bombBlast: !!(bomb && bomb.exploded != null),
+      bombPos: bomb && bomb.pos ? { x: bomb.pos[0], y: bomb.pos[1] } : null,
     };
     const tags = new Set(R.wtab.map(tagOf));
 
@@ -805,7 +808,8 @@
 
   function fireBomb(what, when) {
     if (what === 'plant') bombAt = lastC4;
-    const pos = bombAt ? at(bombAt.x, bombAt.y, null) : { pan: 0, dist: 900, delay: 0 };
+    const src = R.bombPos || bombAt;
+    const pos = src ? at(src.x, src.y, null) : { pan: 0, dist: 900, delay: 0 };
     const t = when + pos.delay, util = { bus: 'util' };
     if (what === 'plant') sample('c4:plant', t, pos, util);
     else if (what === 'beep') { if (!sample('c4:beep', t, pos, util)) c4Beep(t, pos); }
