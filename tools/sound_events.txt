@@ -1,0 +1,117 @@
+# What tools/convert_sounds.ps1 takes from CS2, by CS2's own sound event names. Each event
+# says which files it plays and at what volume and pitch, so none of that is guessed here.
+#
+#   <key> <event>
+#
+# The key is what web/static/replay3d/sfx.js asks for. shot:<tag> and far:<tag> go by the
+# weapon tags of rust/extract/src/weapons.rs; a gun with no far: line in CS2 keeps its
+# near sound at any distance.
+#
+# No event here may loop: constant beds (fire, smoke, room tone) were tried and hated.
+# BaseSmokeEffect.Sound is 14 s of hiss, so the page plays only its start.
+
+# rifles
+shot:AK Weapon_AK47.Single
+far:AK Weapon_AK47.SingleDistant
+shot:M4 Weapon_M4A4.Single
+far:M4 Weapon_M4A4.SingleDistant
+shot:M4S Weapon_M4A1.Silenced
+shot:AUG Weapon_AUG.Single
+far:AUG Weapon_AUG.SingleDistant
+shot:SG553 Weapon_sg556.Single
+far:SG553 Weapon_sg556.SingleDistant
+shot:FAMAS Weapon_FAMAS.Single
+far:FAMAS Weapon_FAMAS.SingleDistant
+shot:GALIL Weapon_GalilAR.Single
+far:GALIL Weapon_GalilAR.SingleDistant
+# snipers
+shot:AWP Weapon_AWP.Single
+far:AWP Weapon_AWP.SingleDistant
+shot:SCOUT Weapon_SSG08.Single
+far:SCOUT Weapon_SSG08.SingleDistant
+shot:SCAR Weapon_SCAR20.Single
+far:SCAR Weapon_SCAR20.SingleDistant
+shot:G3 Weapon_G3SG1.Single
+far:G3 Weapon_G3SG1.SingleDistant
+# smgs
+shot:MP9 Weapon_MP9.Single
+far:MP9 Weapon_MP9.SingleDistant
+shot:MP7 Weapon_MP7.Single
+far:MP7 Weapon_MP7.SingleDistant
+shot:MP5 Weapon_MP5.Single
+shot:MAC10 Weapon_MAC10.Single
+far:MAC10 Weapon_MAC10.SingleDistant
+shot:UMP Weapon_UMP45.Single
+far:UMP Weapon_UMP45.SingleDistant
+shot:P90 Weapon_P90.Single
+far:P90 Weapon_P90.SingleDistant
+shot:BIZON Weapon_bizon.Single
+far:BIZON Weapon_bizon.SingleDistant
+# pistols
+shot:GLOCK Weapon_Glock.Single
+far:GLOCK Weapon_Glock.SingleDistant
+shot:USP Weapon_USP.SilencedShot
+shot:P2000 Weapon_hkp2000.Single
+far:P2000 Weapon_hkp2000.SingleDistant
+shot:P250 Weapon_P250.Single
+far:P250 Weapon_P250.SingleDistant
+shot:FIVE7 Weapon_FiveSeven.Single
+far:FIVE7 Weapon_FiveSeven.SingleDistant
+shot:TEC9 Weapon_tec9.Single
+far:TEC9 Weapon_tec9.SingleDistant
+shot:CZ Weapon_CZ75A.Single
+far:CZ Weapon_CZ75A.SingleDistant
+shot:DUALS Weapon_ELITE.Single
+far:DUALS Weapon_ELITE.SingleDistant
+shot:DEAG Weapon_DEagle.Single
+far:DEAG Weapon_DEagle.SingleDistant
+shot:R8 Weapon_Revolver.Single
+far:R8 Weapon_Revolver.SingleDistant
+# heavy
+shot:NOVA Weapon_Nova.Single
+far:NOVA Weapon_Nova.SingleDistant
+shot:XM Weapon_XM1014.Single
+far:XM Weapon_XM1014.SingleDistant
+shot:SAWED Weapon_Sawedoff.Single
+far:SAWED Weapon_Sawedoff.SingleDistant
+shot:MAG7 Weapon_Mag7.Single
+far:MAG7 Weapon_Mag7.SingleDistant
+shot:M249 Weapon_M249.Single
+far:M249 Weapon_M249.SingleDistant
+shot:NEGEV Weapon_Negev.Single
+far:NEGEV Weapon_Negev.SingleDistant
+# melee
+shot:ZEUS Weapon_Taser.Single
+knife Weapon_Knife.Slash
+
+# players
+step:ct CT_Concrete.StepLeft
+step:t T_Concrete.StepLeft
+hit:body Player.DamageBodyArmor.Onlooker
+hit:own Player.DamageBody.Victim
+kill:body Player.DeathBody.Onlooker
+kill:hs Player.DeathHeadShot.Dink
+death Player.Death
+
+# grenades
+he BaseGrenade.Explode
+far:he BaseGrenade.ExplodeDistant
+flash Flashbang.Explode
+far:flash Flashbang.ExplodeDistant
+smoke BaseSmokeEffect.Sound
+far:smoke BaseSmokeEffect.SoundDistant
+molotov Inferno.Fire.Ignite
+molotov:end Inferno.FadeOut
+throw:he HEGrenade.Throw
+throw:flash Flashbang.Throw
+throw:smoke SmokeGrenade.Throw
+throw:molotov Molotov.Throw
+throw:decoy Decoy.Throw
+
+# the bomb
+c4:plant c4.plant
+c4:beep C4.PlantSound
+c4:warn C4.ExplodeWarning
+c4:trip C4.ExplodeTriggerTrip
+c4:defused c4.disarmfinish
+c4:explode c4.explode

@@ -51,7 +51,7 @@ const CS2_T: ModelSpec = ModelSpec {
 };
 const CS2_CT: ModelSpec = ModelSpec { path: "models/cs2_v1/ct.glb", ..CS2_T };
 /// demo team number of the T side (`teamColors` in the manifest); anything else gets CT.
-const TEAM_T: i64 = 2;
+pub const TEAM_T: i64 = 2;
 
 /// Locomotion speed thresholds (Source units/sec) for the fallback model's idle->walk->run.
 const SOLDIER_WALK_SPEED: f64 = 25.0;

@@ -1,0 +1,51 @@
+# What tools/convert_hud.ps1 takes from CS2's panorama/images/icons/equipment/.
+#
+#   <file name on the site> <icon in CS2>
+#
+# The file name is the weapon tag of rust/extract/src/weapons.rs. The page asks for
+# hud_v1/<tag>.svg, except for the three emoji tags, which it spells as knife, c4 and
+# fire. A tag with no icon stays a text label there.
+AK ak47
+M4 m4a1
+M4S m4a1_silencer
+AUG aug
+SG553 sg556
+FAMAS famas
+GALIL galilar
+AWP awp
+SCOUT ssg08
+SCAR scar20
+G3 g3sg1
+MP9 mp9
+MP7 mp7
+MP5 mp5sd
+MAC10 mac10
+UMP ump45
+P90 p90
+BIZON bizon
+GLOCK glock
+USP usp_silencer
+P2000 hkp2000
+P250 p250
+FIVE7 fiveseven
+TEC9 tec9
+CZ cz75a
+DUALS elite
+DEAG deagle
+R8 revolver
+NOVA nova
+XM xm1014
+SAWED sawedoff
+MAG7 mag7
+M249 m249
+NEGEV negev
+HE hegrenade
+FLASH flashbang
+SMOKE smokegrenade
+MOLLY molotov
+INC incgrenade
+DECOY decoy
+ZEUS taser
+knife knife
+c4 c4
+fire inferno

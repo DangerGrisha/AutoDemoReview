@@ -1,0 +1,48 @@
+# The real CS2 weapon models, one per weaponTable tag: <tag> <output file> <model>.
+# tools/convert_weapons.ps1 builds web/static/replay3d/assets/models/cs2_v1/weapons/<file>.glb
+# from weapons/models/<model>.vmdl_c, and weapons_viz.rs (include_str!) finds them by tag.
+# All knives share one tag in the replay, so each side gets its default knife.
+AK ak47 ak47/weapon_rif_ak47
+M4 m4a4 m4a4/weapon_rif_m4a4
+M4S m4a1s m4a1_silencer/weapon_rif_m4a1_silencer
+AUG aug aug/weapon_rif_aug
+SG553 sg553 sg556/weapon_rif_sg556
+FAMAS famas famas/weapon_rif_famas
+GALIL galil galilar/weapon_rif_galilar
+AWP awp awp/weapon_snip_awp
+SCOUT ssg08 ssg08/weapon_snip_ssg08
+SCAR scar20 scar20/weapon_snip_scar20
+G3 g3sg1 g3sg1/weapon_snip_g3sg1
+MP9 mp9 mp9/weapon_smg_mp9
+MP7 mp7 mp7/weapon_smg_mp7
+MP5 mp5sd mp5sd/weapon_smg_mp5sd
+MAC10 mac10 mac10/weapon_smg_mac10
+UMP ump45 ump45/weapon_smg_ump45
+P90 p90 p90/weapon_smg_p90
+BIZON bizon bizon/weapon_smg_bizon
+GLOCK glock18 glock18/weapon_pist_glock18
+USP usps usp_silencer/weapon_pist_usp_silencer
+P2000 p2000 hkp2000/weapon_pist_hkp2000
+P250 p250 p250/weapon_pist_p250
+FIVE7 fiveseven fiveseven/weapon_pist_fiveseven
+TEC9 tec9 tec9/weapon_pist_tec9
+CZ cz75a cz75a/weapon_pist_cz75a
+DUALS elite elite/weapon_pist_elite
+DEAG deagle deagle/weapon_pist_deagle
+R8 revolver revolver/weapon_pist_revolver
+NOVA nova nova/weapon_shot_nova
+XM xm1014 xm1014/weapon_shot_xm1014
+SAWED sawedoff sawedoff/weapon_shot_sawedoff
+MAG7 mag7 mag7/weapon_shot_mag7
+M249 m249 m249/weapon_mach_m249
+NEGEV negev negev/weapon_mach_negev
+ZEUS taser taser/weapon_pist_taser
+HE hegrenade grenade/hegrenade/weapon_hegrenade
+FLASH flashbang grenade/flashbang/weapon_flashbang
+SMOKE smokegrenade grenade/smokegrenade/weapon_smokegrenade
+MOLLY molotov grenade/molotov/weapon_molotov
+INC incendiary grenade/incendiary/weapon_incendiarygrenade
+DECOY decoy grenade/decoy/weapon_decoy
+C4 c4 c4/weapon_c4
+KNIFE_T knife_t knife/knife_default_t/weapon_knife_default_t
+KNIFE_CT knife_ct knife/knife_default_ct/weapon_knife_default_ct

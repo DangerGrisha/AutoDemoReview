@@ -71,7 +71,8 @@ if (-not (Test-Path $python)) { $python = 'python' }
     (Join-Path $repo 'web\static\replay3d\sfx.js') `
     (Join-Path $repo 'web\static\replay3d\assets\maps\*\world.glb') `
     (Join-Path $repo 'web\static\replay3d\assets\models\*.glb') `
-    (Join-Path $repo 'web\static\replay3d\assets\models\cs2_v1\*.glb')
+    (Join-Path $repo 'web\static\replay3d\assets\models\cs2_v1\*.glb') `
+    (Join-Path $repo 'web\static\replay3d\assets\models\cs2_v1\weapons\*.glb')
 if ($LASTEXITCODE -ne 0) { Write-Warning 'precompress failed - compressed serving will fall back to raw files' }
 
 $wasm = Get-Item (Join-Path $pkg 'viewer_bg.wasm')

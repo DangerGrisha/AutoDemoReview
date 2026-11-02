@@ -88,6 +88,7 @@
   #spec .pv .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
   #spec .pv .wp { color:var(--dim); font-size:10px; text-transform:uppercase; letter-spacing:.03em;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:64px; }
+  #spec .pv .wp img { height:12px; max-width:64px; display:block; opacity:.75; }
   #spec .pv .hp { font-variant-numeric:tabular-nums; font-weight:700; min-width:24px; text-align:right; }
   #spec .pv .hpbar { height:3px; border-radius:2px; background:#222b3a; overflow:hidden; }
   #spec .pv .hpbar i { display:block; height:100%; width:100%; background:var(--good); border-radius:2px;
@@ -124,6 +125,8 @@
   #feed .k .w { color:var(--muted); font-weight:600; }
   #feed .k .pill { background:#222b3a; border:1px solid var(--line2); border-radius:5px;
     padding:1px 7px; font-size:11px; font-weight:700; letter-spacing:.02em; }
+  #feed .k .pill:has(img) { background:none; border:none; padding:0 2px; }
+  #feed .k .pill img { height:16px; display:block; }
   #feed .k .b { font-size:11px; opacity:.92; font-weight:700; }
 
   /* "now spectating" banner (top center, below the score bar) */
@@ -245,15 +248,16 @@
 <!-- procedural match audio (gunfire / footsteps / utility / hits); defines
      window.ReplaySfx and mounts its own button + mixer into the bottom bar.
      Canonical copy: web/static/replay3d/sfx.js (build_replay3d.ps1 mirrors it). -->
-<script src="sfx.js?v=2"></script>
+<script src="sfx.js?v=3"></script>
 
 <script type="module">
 /* ============================================================================
  * JS <-> WASM control interface (the page owns the UI; Bevy owns the scene)
  *
  * JS -> WASM (exported from pkg/viewer.js):
- *   run(canvasSelector, assetRoot, cs2Models)  start the Bevy app; returns immediately
- *                                      (cs2Models: real player models, not the soldier)
+ *   run(canvasSelector, assetRoot, cs2Models, cs2Weapons)  start the Bevy app; returns immediately
+ *                                      (cs2Models: real player models, not the soldier;
+ *                                       cs2Weapons: real weapons, not the simple boxes)
  *   load_manifest(jsonText)            greybox + team colors + camera framing
  *   load_round(bytes) -> headerJson    decode one round's .3dr; resets clock to 0
  *   seek(seconds) / set_playing(bool) / set_speed(x)
@@ -335,7 +339,22 @@ const killMods = k => { const m=[]; if(k.w)m.push(k.w); if(k.hs)m.push('HS');
 const teamCol = t => t===3 ? 'var(--ct)' : t===2 ? 'var(--t)' : '#9aa4b2';
 const hpCol   = hp => hp>66 ? 'var(--good)' : hp>33 ? 'var(--warn)' : 'var(--bad)';
 const PSTRIDE = 10;                                  // per-player floats in the frame payload
-const SFX = window.ReplaySfx || null;                // procedural audio (sfx.js)
+const SFX = window.ReplaySfx || null;                // audio (sfx.js)
+
+// A weapon tag as CS2's icon (tools/convert_hud.ps1), or as text without one.
+// Costs nothing to call every frame: it only touches the page when the tag changes.
+const EMOJI_ICONS = { '🔪':'knife', '💣':'c4', '🔥':'fire' };
+function showWeapon(el, tag){
+  if (el._tag===tag) return;
+  el._tag=tag;
+  el.textContent=tag;
+  if (!tag) return;
+  const name = EMOJI_ICONS[tag] || tag.split(' ')[0];
+  const icon = new Image();
+  icon.alt = tag;
+  icon.onload = () => { if (el._tag===tag) el.replaceChildren(icon); };
+  icon.src = 'assets/hud_v1/'+encodeURIComponent(name)+'.svg';
+}
 
 // Every seek must tell the audio engine to re-anchor, otherwise the clock jump
 // would either replay or skip every event between the old and the new position.
@@ -482,7 +501,7 @@ function updateFeed(clock){
       el.append(a);
       if (kk.w){                    // CS2-style: [blind] weapon [noscope/smoke/wall] [HS]
         if (kk.ab) el.append(badge('🙈'));
-        const w=document.createElement('span'); w.className='pill'; w.textContent=kk.w; el.append(w);
+        const w=document.createElement('span'); w.className='pill'; showWeapon(w, kk.w); el.append(w);
         if (kk.ns) el.append(badge('NS'));
         if (kk.ts) el.append(badge('🌫'));
         if (kk.wb) el.append(badge('🧱'));
@@ -701,7 +720,7 @@ window.__replayFrame = (d) => {
     if (row){
       row.hp.textContent = alive ? hp : '☠';
       row.hp.style.color = alive ? hpCol(hp) : 'var(--dim)';
-      row.wp.textContent = alive ? wn : '';
+      showWeapon(row.wp, alive ? wn : '');
       row.bar.style.width = (alive ? Math.max(0,Math.min(100,hp)) : 0)+'%';
       row.bar.style.background = hpCol(hp);
       row.row.classList.toggle('dead', !alive);
@@ -764,6 +783,7 @@ scrub.addEventListener('input',()=>{
   if (advanceTimer){ clearTimeout(advanceTimer); advanceTimer=null; }
   seekTo(parseFloat(scrub.value)); });
 // sound button + mixer (the module builds its own UI in the bottom bar)
+if (SFX) SFX.useSamples('assets/sounds_v1/');    // a 404 only leaves the synth
 if (SFX) SFX.mountUI($('#bar .ctl'));
 
 // x-ray (see players through walls + smoke); default on, matches the wasm default
@@ -815,7 +835,11 @@ async function main(){
 
   await wasmReady;
   await mapWarm;
-  run('#canvas', null, cs2Models);   // null = page-relative "assets/" root (dev server)
+  // Real weapons when built (tools/convert_weapons.ps1), probed by one file. They hang
+  // from the real model's weapon bone, so the soldier never gets them anyway.
+  const cs2Weapons = cs2Models
+    && await fetch('assets/models/cs2_v1/weapons/ak47.glb', {method:'HEAD'}).then(r=>r.ok).catch(()=>false);
+  run('#canvas', null, cs2Models, cs2Weapons);   // null = page-relative "assets/" root (dev server)
   MANIFEST = JSON.parse(await manifestReq);
   if (qmap) MANIFEST.mapAsset = qmap;
 

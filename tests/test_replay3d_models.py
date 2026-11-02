@@ -82,7 +82,63 @@ def test_any_other_flag_value_leaves_them_on():
 def test_the_page_passes_the_choice_to_the_viewer():
     assert "const CS2_MODELS = true;" in _render(True)
     assert "const CS2_MODELS = false;" in _render(False)
-    assert "run('#canvas', '/static/replay3d/assets', CS2_MODELS)" in _render(True)
+    assert "run('#canvas', '/static/replay3d/assets', CS2_MODELS, CS2_WEAPONS)" in _render(True)
+
+
+class _Sounds:
+    """replay3d looking at a temporary sound set and icon folder."""
+
+    def __init__(self, index=False, icons=False, flag=None):
+        self.index, self.icons, self.flag = index, icons, flag
+
+    def __enter__(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name)
+        if self.index:
+            (root / "index.json").write_text("{}")
+        if self.icons:
+            (root / "AK.svg").write_text("<svg/>")
+        self._saved = replay3d.CS2_SOUNDS_INDEX, replay3d.HUD_ICONS_DIR
+        replay3d.CS2_SOUNDS_INDEX, replay3d.HUD_ICONS_DIR = root / "index.json", root
+        self._env = os.environ.pop("REPLAY3D_CS2_SOUNDS", None)
+        if self.flag is not None:
+            os.environ["REPLAY3D_CS2_SOUNDS"] = self.flag
+        return self
+
+    def __exit__(self, *exc):
+        replay3d.CS2_SOUNDS_INDEX, replay3d.HUD_ICONS_DIR = self._saved
+        os.environ.pop("REPLAY3D_CS2_SOUNDS", None)
+        if self._env is not None:
+            os.environ["REPLAY3D_CS2_SOUNDS"] = self._env
+        self._tmp.cleanup()
+
+
+def test_real_sounds_are_used_when_they_are_built():
+    with _Sounds(index=True):
+        assert replay3d.cs2_sounds_enabled()
+
+
+def test_a_fresh_clone_without_the_sounds_keeps_the_synth():
+    with _Sounds():
+        assert not replay3d.cs2_sounds_enabled()
+
+
+def test_the_flag_turns_the_sounds_off_without_touching_the_files():
+    with _Sounds(index=True, flag="0"):
+        assert not replay3d.cs2_sounds_enabled()
+
+
+def test_icons_are_used_only_when_they_are_built():
+    with _Sounds(icons=True):
+        assert replay3d.hud_icons_enabled()
+    with _Sounds():
+        assert not replay3d.hud_icons_enabled()
+
+
+def test_a_page_without_the_sounds_never_asks_for_them():
+    page = _render(False)
+    assert "const CS2_SOUNDS = false;" in page
+    assert "if (SFX && CS2_SOUNDS) SFX.useSamples(" in page
 
 
 def test_the_page_only_warm_fetches_models_it_will_use():

@@ -26,6 +26,8 @@ ARTIFACT_RE = re.compile(r"^(manifest\.json|r\d{2}\.3dr)$")
 # viewer's asset root (everything Bevy loads must live below that root).
 MAPS_DIR = config.WEB_DIR / "static" / "replay3d" / "assets" / "maps"
 CS2_MODELS_DIR = config.WEB_DIR / "static" / "replay3d" / "assets" / "models" / "cs2_v1"
+CS2_SOUNDS_INDEX = config.WEB_DIR / "static" / "replay3d" / "assets" / "sounds_v1" / "index.json"
+HUD_ICONS_DIR = config.WEB_DIR / "static" / "replay3d" / "assets" / "hud_v1"
 
 
 def artifacts_dir(match_id):
@@ -55,6 +57,28 @@ def cs2_models_enabled():
     if os.environ.get("REPLAY3D_CS2_MODELS", "1") == "0":
         return False
     return all((CS2_MODELS_DIR / name).is_file() for name in ("t.glb", "ct.glb"))
+
+
+def cs2_weapons_enabled():
+    """Show the real CS2 weapons? They go on the real models' weapon bone, so they need
+    those too, and REPLAY3D_CS2_MODELS=0 turns both off. A file missing from the set is
+    not worth checking for: the viewer shows a simple weapon for whichever fails to load.
+    """
+    return cs2_models_enabled() and any((CS2_MODELS_DIR / "weapons").glob("*.glb"))
+
+
+def cs2_sounds_enabled():
+    """Play the real CS2 sounds? Built from a local CS2 install and never committed, like
+    the models. Without them, or with REPLAY3D_CS2_SOUNDS=0, the page synthesizes gunfire.
+    """
+    return os.environ.get("REPLAY3D_CS2_SOUNDS", "1") != "0" and CS2_SOUNDS_INDEX.is_file()
+
+
+def hud_icons_enabled():
+    """Show CS2's weapon icons in the kill feed and the player list instead of short
+    text labels? Also built from a local CS2 install. A tag without an icon stays text.
+    """
+    return any(HUD_ICONS_DIR.glob("*.svg"))
 
 
 def map_asset_rel(map_name):

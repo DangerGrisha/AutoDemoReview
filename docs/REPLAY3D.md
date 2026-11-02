@@ -397,8 +397,24 @@ All page-side (no new wasm scene work), in both HTMLs:
 
 ## Weapon models (3rd person + 1st-person viewmodel)
 
-Procedural low-poly weapon kits (`viewer/src/weapons_viz.rs`) — no external
-assets, cuboids + a sphere in the same stylized look as the untextured map.
+**Real CS2 weapons** go on the real player models' `wpn` bone when they are built:
+
+```powershell
+.\tools\convert_weapons.ps1      # about 7 minutes; needs CS2 + Source2Viewer 20+
+.\tools\build_replay3d.ps1       # precompresses them
+```
+
+`rust/viewer/src/weapon_models.txt` lists the 44 models by weapon tag. The results
+land in `assets/models/cs2_v1/weapons/`, gitignored for the same reason as the
+player models below: 59 MB raw, 30 MB as Brotli, of which a round loads only the
+guns in its `weaponTable` (11 files in round 1 of the test match, 17 by round 13).
+They are static meshes: tracers start at their `muzzle_flash` point, and the
+first-person view holds the same model still until it gets real hands. Dual Berettas
+show one pistol. A file that fails to load falls back to the kit below, and
+`REPLAY3D_CS2_MODELS=0` turns the guns off along with the bodies.
+
+**The fallback** is the procedural low-poly weapon kits (`viewer/src/weapons_viz.rs`) —
+no external assets, cuboids + a sphere in the same stylized look as the untextured map.
 One silhouette per weapon CLASS, resolved from the round's `weaponTable` tag
 each frame: rifle (AK/M4/…), sniper (AWP/SCOUT/autos, with scope), SMG,
 pistol, shotgun, MG, knife (bright blade), C4 (brick + red LED), and colored
@@ -418,24 +434,47 @@ nothing rather than guessing.
 - Kits swap only when the weapon CLASS changes (cheap: compare + respawn a few
   cuboids). Dead/absent players show nothing (mount inherits the hidden body).
 
-## Sound (procedural, page-side)
+## Sound (real CS2 sounds, with a synth behind them; page-side)
 
-`web/static/replay3d/sfx.js` — the whole match soundtrack is **synthesized in the
-browser** with the Web Audio API. Nothing is downloaded and no sample ships with
-the repo: gunfire, footsteps, explosions and stings are built from filtered
-noise bursts and swept oscillators, in the same spirit as the procedural weapon
-kits in `weapons_viz.rs`. It needs **no wasm work** — the module reads data the
-page already has, so it can be iterated on with nothing but a page reload.
+`web/static/replay3d/sfx.js` plays the match soundtrack from data the page already
+has. It needs **no wasm work**, so it can be iterated on with nothing but a page
+reload. Each sound has two sources behind one event logic:
 
-- **The default mix is GUNFIRE ONLY.** The first pass also ran a room-tone bed
-  (brown noise) and molotov/smoke noise loops; in practice that was a constant
-  loud fan hum and a painful hiss, so all three were **removed from the code** —
-  a decoy's fake gunfire is the only surviving loop. Footsteps, impacts,
-  HE/flash and the POV sounds are still implemented but start at **0** and are
-  opt-in from the ⚙ mixer. A zeroed bus is checked in `claim()` before any node
-  is built, so muted categories cost nothing. `DEFAULTS` changes must bump
-  `STORE_KEY` (`replay3d.sfx.v2`), otherwise a stored older mix resurrects the
-  very sounds that were turned off.
+**Real CS2 sounds**, built from a local CS2 install and never committed:
+
+```powershell
+.\tools\convert_sounds.ps1       # about 4 minutes; needs CS2, Source2Viewer 20+, ffmpeg
+```
+
+`tools/sound_events.txt` names CS2's own sound events. `tools/prepare_sounds.py` reads
+those events' definitions and encodes their files to Ogg Opus in `assets/sounds_v1/`
+(177 files, 3.5 MB), with an `index.json` holding what the game mixes them by: volume,
+pitch, random pitch, voice limit and the volume-by-distance curve. Those are not tuned
+here, so a gun's near and distant events crossfade the way CS2 crossfades them, and a
+gun's next shot cuts its last with CS2's fade. `sfx.js` decodes on an
+`OfflineAudioContext`, which needs no user gesture, so the sounds are ready before the
+first click: everything but the guns at once and each round's guns as it loads, 36 MB
+of memory after round 1 and 65 MB after 14 rounds. The most voices measured at once in
+close firefights is 31 of the 96 allowed.
+
+`REPLAY3D_CS2_SOUNDS=0` turns them off. So does a clone without the files.
+
+**The synth** (filtered noise and swept oscillators) plays whatever has no decoded file:
+no build, a browser that cannot decode Opus, a corrupted file, or a sound still loading.
+
+- **Without the real sounds the default mix is GUNFIRE ONLY; with them, `SAMPLE_MIX`
+  also starts footsteps, grenades, the bomb and impacts.** The first pass also ran a
+  room-tone bed (brown noise) and molotov/smoke noise loops; in practice that was a
+  constant loud fan hum and a painful hiss, so all three were **removed from the code** —
+  a decoy's fake gunfire is the only surviving loop, nothing in `sound_events.txt` may
+  loop, and a smoke plays only the first `SMOKE_S` seconds of CS2's 14 s hiss. The POV
+  sounds and UI ticks start at **0** and are opt-in from the ⚙ mixer. A zeroed bus is
+  checked in `claim()` before any node is built, so muted categories cost nothing.
+  `DEFAULTS` changes must bump `STORE_KEY` (`replay3d.sfx.v3`), otherwise a stored older
+  mix resurrects the very sounds that were turned off.
+- **Level.** CS2's files are mastered hot, so samples play at `SAMPLE_HEADROOM` and a
+  limiter ends the chain. Measured over close firefights in three rounds: peak 0.94, no
+  clipped samples.
 - **Canonical copy + dev mirror.** The tracked file is
   `web/static/replay3d/sfx.js`; `build_replay3d.ps1` copies it to
   `rust/viewer/www/sfx.js` (gitignored, like the pkg mirror) and precompresses
@@ -444,13 +483,14 @@ page already has, so it can be iterated on with nothing but a page reload.
 - **What makes sound, and from which data:**
   | sound | source |
   |---|---|
-  | gunshots (per weapon CLASS: rifle/sniper/SMG/pistol/deagle/shotgun/MG, silenced variants, knife swish, Zeus arc) | round header `shots[] {s, p}` + the shooter's live `weapon` from the frame payload |
-  | footsteps (walk vs run) | distance travelled between frames (`worldX/worldY`), one step per `STEP_LEN`=76 u |
-  | HE blast, flash pop | header `utility[]` `detSample`/`pos` |
-  | decoy's fake gunfire | that item's `duration` window |
-  | grenade throw whoosh + pin | `throwSample`/`throwPos` |
-  | bullet impacts, own "hurt", body fall | per-frame `health` drops and `alive` 1→0 |
-  | kill ding (higher on a headshot), your own death thud, C4 detonation | manifest `kills[]` (`w:"💣"` = the bomb) |
+  | gunshots (each gun its own real sound; the synth has one per class: rifle/sniper/SMG/pistol/deagle/shotgun/MG, silenced variants, knife swish, Zeus arc) | round header `shots[] {s, p}` + the shooter's live `weapon` from the frame payload |
+  | footsteps (running only, walking is silent as in the game; always concrete, the floor material is not in the data) | distance travelled between frames (`worldX/worldY`), one step per `STEP_LEN`=76 u |
+  | HE blast, flash pop, smoke, molotov ignite and fade-out | header `utility[]` `detSample`/`pos`/`duration` |
+  | decoy's fake gunfire (as an AK: the data does not say what it imitates) | that item's `duration` window |
+  | grenade throw | `throwSample`/`throwPos` |
+  | bullet impacts, own "hurt", death sound | per-frame `health` drops and `alive` 1→0 |
+  | body and headshot kill sounds, kill ding (higher on a headshot), your own death thud | manifest `kills[]` |
+  | bomb plant, beeps speeding up, last warnings, defuse, blast | manifest `bomb {plant, defused, exploded}`, or a kill with `w:"💣"` for the blast in a round without it. The beep rate and warning times are remembered from the CS:GO code, not read from CS2 |
   | round-start beeps, round-end sting (major for CT, darker for T) | `durationS` + `winner` |
   | flash ringing + everything ducking and muffling | `flashOpacity` from the payload |
   | weapon-swap click, UI ticks | payload `weapon` changes / button presses |
@@ -475,19 +515,34 @@ page already has, so it can be iterated on with nothing but a page reload.
   voices each, nothing dropped; with footsteps on and 10 players sprinting a
   whole round it peaks at ~29 one-shots/s.
 - **UI.** The module mounts its own **🔊 Sound** button + **⚙ mixer** popover
-  into the bottom bar (per-bus sliders: gunfire, footsteps, utility, impacts,
-  own/POV, interface, room tone, reverb; toggles for the speed-of-sound delay
-  and the flash ringing), persisted in `localStorage` under `replay3d.sfx`.
+  into the bottom bar (per-bus sliders: gunfire, footsteps, grenades and C4, impacts,
+  own/POV, interface, reverb; toggles for the speed-of-sound delay and the flash
+  ringing), persisted in `localStorage` under `replay3d.sfx.v3`.
   **M** mutes. Browsers only allow audio after a gesture, so the context starts
   on the first click/keypress.
 - **Page hooks** (identical in both HTMLs): `SFX.setRound(header, meta)` in
   `loadRound`, `SFX.frame(d, nP)` in `__replayFrame`, `SFX.setListener` in
   `applyCam`, `SFX.setSpeed` on the speed buttons, and `seekTo()` — a wrapper
   around `seek()` that calls `SFX.resync()`, used by the scrubber and every
-  kill/utility mark.
-- **Not implemented for lack of data:** bomb plant/defuse beeps, reloads, and
-  scoped-in clicks — there are no such events in the manifest or the codec
-  (`F_SCOPED`/`F_DEFUSING` exist in the codec's flags but never reach the page).
+  kill/utility mark. `SFX.useSamples(base)` before `mountUI`, so the sliders show
+  the mix.
+- **Not implemented for lack of data:** reloads, scoped-in clicks, grenade bounces and
+  the plant and defuse start: there are no such events in the manifest or the codec
+  (`F_SCOPED`/`F_DEFUSING` exist in the codec's flags but never reach the page). Walls
+  do not muffle anything, as the page knows no geometry. The bomb's position is not in
+  the data either: it is taken from whoever held it at the plant, so a scrub past the
+  plant leaves the bomb at a fixed middle distance.
+
+## Weapon icons (kill feed and player list)
+
+```powershell
+.\tools\convert_hud.ps1          # a few seconds; needs CS2 + Source2Viewer 20+
+```
+
+`tools/hud_icons.txt` lists CS2's equipment icons by weapon tag. They go to
+`assets/hud_v1/<tag>.svg`, gitignored like the rest (44 files, 590 KB, loaded as they
+appear). The page's `showWeapon()` keeps the text label until the icon has loaded, so a
+clone without them, or a tag with no icon, stays text. There is no flag: the files decide.
 
 ## Player models (real CS2 characters, with a fallback)
 
@@ -629,7 +684,8 @@ agent a player actually wore (`agent_skin` in the parser, never extracted).
 |---|---|---|
 | `EXTRACT3D_BIN` | `rust/target/release/extract3d(.exe)` | extract3d binary; missing → uploads still work, no 3D |
 | `EXTRACT3D_TIMEOUT_S` | `900` | kill a hung extraction |
-| `REPLAY3D_CS2_MODELS` | `1` | `0` shows the fallback soldier instead of the real CS2 player models |
+| `REPLAY3D_CS2_MODELS` | `1` | `0` shows the fallback soldier and simple weapons instead of the real CS2 player and weapon models |
+| `REPLAY3D_CS2_SOUNDS` | `1` | `0` synthesizes gunfire instead of playing the real CS2 sounds |
 | `KEEP_DEMOS` | `1` | `0` discards each demo after parsing instead of keeping a gzipped copy in `web/data/demos/` |
 
 Artifacts live in `web/data/replay3d/<match_id>/`; deleting a directory removes

@@ -3,7 +3,7 @@
 pytest is not a project dependency (nothing else needs it, and the analysis code
 these tests cover is pure stdlib), so the suite has to be runnable with the same
 interpreter that runs the app. This walks the test directories, imports every
-`test_*.py`, and calls every `test_*` function in it.
+`test_*.py`, and calls every `test_*` function and `unittest.TestCase` test in it.
 
 Every test file is also a plain pytest module -- same plain `assert`s, same
 names -- so `python -m pytest` works unchanged wherever pytest IS installed.
@@ -40,6 +40,18 @@ def _load(path):
     return module
 
 
+def _tests(module):
+    """(name, callable) of every test in a module. debug() runs a TestCase test with its
+    setUp and cleanups and lets a failure or a skip raise, like a plain function's would."""
+    for name in sorted(vars(module)):
+        obj = getattr(module, name)
+        if name.startswith("test_") and callable(obj):
+            yield name, obj
+        elif isinstance(obj, type) and issubclass(obj, unittest.TestCase):
+            for method in unittest.TestLoader().getTestCaseNames(obj):
+                yield f"{name}.{method}", obj(method).debug
+
+
 def run(dirs=DEFAULT_DIRS):
     passed = failed = skipped = 0
     failures = []
@@ -58,12 +70,7 @@ def run(dirs=DEFAULT_DIRS):
                 continue
 
             rel = path.relative_to(ROOT).as_posix()
-            for fname in sorted(vars(module)):
-                if not fname.startswith("test_"):
-                    continue
-                fn = getattr(module, fname)
-                if not callable(fn):
-                    continue
+            for fname, fn in _tests(module):
                 try:
                     fn()
                 except unittest.SkipTest as exc:

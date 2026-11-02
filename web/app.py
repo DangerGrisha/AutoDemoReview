@@ -425,6 +425,9 @@ def match_replay3d(request: Request, match_id: int):
         "has_replay": replay3d.has_replay(match_id),
         "map_asset": map_asset,
         "cs2_models": replay3d.cs2_models_enabled(),
+        "cs2_weapons": replay3d.cs2_weapons_enabled(),
+        "cs2_sounds": replay3d.cs2_sounds_enabled(),
+        "hud_icons": replay3d.hud_icons_enabled(),
         "wasm_size": wasm_size,
         "map_size": map_size,
     })

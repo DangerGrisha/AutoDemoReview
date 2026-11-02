@@ -1,9 +1,18 @@
 /* ============================================================================
- * Procedural CS2-style sound for the 3D replay (page-side, no wasm work).
+ * CS2 sound for the 3D replay (page-side, no wasm work). One file, mirrored to
+ * rust/viewer/www/sfx.js for the dev page.
  *
- * Everything is SYNTHESIZED with the Web Audio API — no samples are downloaded,
- * exactly like weapons_viz.rs draws procedural weapon kits instead of shipping
- * models. One file, mirrored to rust/viewer/www/sfx.js for the dev page.
+ * Two sources behind the same event logic:
+ *   - real CS2 sounds, when the page calls useSamples(). tools/convert_sounds.ps1
+ *     builds them from a local CS2 install, never committed. index.json carries
+ *     the game's own volume, pitch and volume-by-distance curve for each sound;
+ *     a gun plays its near and distant event together, each on its own curve,
+ *     which is the crossfade CS2 itself does.
+ *   - the Web Audio synth, for anything without a decoded sample: no sound files
+ *     on this machine, a browser that cannot decode them, or a sound still loading.
+ *
+ * Without samples the mix is gunfire only, as it always was. With them the steps,
+ * grenades, bomb and hits are worth hearing and start on (see SAMPLE_MIX).
  *
  * Where the events come from (all data the page already has):
  *   round header (the .3dr JSON header returned by load_round)
@@ -13,22 +22,22 @@
  *                                                                decoy pot-shots
  *     players[]  {slot, name, team} / weaponTable[]           -> names, weapon class
  *   manifest round meta
- *     kills[]    {sample, atk, vic, w, hs, ...}               -> kill dings, C4 blast
+ *     kills[]    {sample, atk, vic, w, hs, ...}               -> kill sounds, C4 blast
+ *     bomb       {plant, defused, exploded}                   -> bomb beeps and blast
  *     durationS / winner                                      -> round start/end stings
  *   per-frame payload (PSTRIDE = 10 floats/player)
  *     worldX/worldY  -> footsteps (travelled distance) + 3D placement
  *     health         -> bullet impacts / own "hurt"
- *     alive          -> body fall
- *     weapon         -> weapon-swap click
+ *     alive          -> death sound
+ *     weapon         -> weapon-swap click, where the bomb was planted
  *     flashOpacity   -> flash ringing + ducking of everything else
  *
- * DEFAULT MIX IS GUNFIRE ONLY (see DEFAULTS). The first pass also ran a
- * room-tone bed plus molotov/smoke noise loops; those came out as a constant
- * loud fan hum and a painful hiss, so all three are GONE from the code (no
- * makeBrown, no loop beds — a decoy's fake gunfire is the only surviving loop).
- * Footsteps, impacts, HE/flash and the POV sounds are still implemented but
- * start at zero and are opt-in from the ⚙ mixer; a zeroed bus builds no audio
- * nodes at all, so muted categories are free.
+ * NO CONSTANT BEDS. The first pass also ran a room-tone bed plus molotov/smoke
+ * noise loops; those came out as a constant loud fan hum and a painful hiss, so
+ * all three are GONE from the code (no makeBrown, no loop beds — a decoy's fake
+ * gunfire is the only surviving loop). For the same reason a smoke plays only the
+ * start of CS2's 14 s hiss. A zeroed bus builds no audio nodes at all, so muted
+ * categories are free.
  *
  * Timing is driven by the PLAYBACK CLOCK, never by wall time, so scrubbing and
  * slow-mo stay correct: a clock jump larger than MAX_STEP_S counts as a scrub
@@ -45,9 +54,10 @@
  * to report_frame's header floats makes free-cam audio exact too — everything
  * here already funnels through updateEar()/at().
  *
- * Not implemented for lack of data: bomb plant/defuse beeps and reloads (no
- * such events in the manifest or codec). C4 detonation IS covered, via the kill
- * feed's "💣" weapon tag.
+ * Not implemented for lack of data: reloads, grenade bounces, footsteps by floor
+ * material and walls muffling a sound. The bomb's position is not in the data
+ * either: it is taken from whoever held it at the plant, so a scrub past the plant
+ * loses it and the bomb then sounds from a fixed middle distance.
  * ========================================================================== */
 (function () {
   'use strict';
@@ -66,8 +76,21 @@
   // flight, so a low cap audibly swallows gunfire.
   const MAX_VOICES = 96;
   const DECOY_PERIOD = 0.62;           // seconds between a decoy's fake shots
+  const DECOY_GUN = 'AK';              // the data does not say what a decoy imitates
   const MAX_EV_PER_FRAME = 64;         // runaway guard for the event cursor
   const STEP_BUDGET = 4;               // max footsteps started in one frame
+  const MIN_SAMPLE_GAIN = 0.002;       // below this a sample is not worth a voice
+  const STEAL_FADE_S = 0.1;            // CS2's fade when a gun's next shot cuts its last
+  const SAMPLE_SEND = 0.1;             // CS2's files carry their own tails: barely any reverb
+  // CS2's files are mastered hot, and the compressor's makeup gain was set for the
+  // quieter synth: at full level close gunfire clips before the compressor reacts.
+  const SAMPLE_HEADROOM = 0.7;
+  const SMOKE_S = 2.5;                 // how much of the 14 s smoke hiss is played
+  const C4_FUSE_S = 40;                // used when the data does not say when it blew
+  // Interval between beeps, by the share of the fuse that is left. Remembered from
+  // the CS:GO code rather than read from CS2, as are the times of the warnings.
+  const c4Interval = left => Math.max(0.15, 0.1 + 0.9 * left);
+  const C4_WARN_BEFORE_S = 1.5, C4_TRIP_BEFORE_S = 1;
 
   // Weapon display tags (weaponTable) -> synth class; same tag vocabulary as
   // extract/src/weapons.rs. An unknown tag on a shot record still fires as a
@@ -110,18 +133,23 @@
     on: true, master: 0.75, reverb: 0.5, propagation: true, tinnitus: true,
     shots: 0.9, steps: 0, util: 0, hits: 0, voice: 0, ui: 0,
   };
+  // What changes when the real sounds are there, unless the user set the slider.
+  const SAMPLE_MIX = { steps: 0.8, util: 0.9, hits: 0.8 };
   // Bumped whenever DEFAULTS change meaning: a stored older mix would otherwise
   // resurrect the settings the user just asked to get rid of.
-  const STORE_KEY = 'replay3d.sfx.v2';
+  const STORE_KEY = 'replay3d.sfx.v3';
 
   const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
   const rnd = (a, b) => a + Math.random() * (b - a);
+  // "ZEUS X" in rounds extracted before the tag was shortened.
+  const tagOf = w => (w || '').split(' ')[0];
 
   // ------------------------------------------------------------------- state
   const cfg = Object.assign({}, DEFAULTS);
+  let stored = {};
   try {
-    const st = JSON.parse(localStorage.getItem(STORE_KEY) || '{}');
-    for (const k in DEFAULTS) if (k in st) cfg[k] = st[k];
+    stored = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') || {};
+    for (const k in DEFAULTS) if (k in stored) cfg[k] = stored[k];
   } catch (_) { /* private mode / bad json: defaults */ }
   const save = () => { try {
     localStorage.setItem(STORE_KEY, JSON.stringify(cfg));
@@ -150,6 +178,13 @@
   let stepAcc = [];
   let prevFlash = 0;
   let earX = 0, earY = 0, earYaw = 0, earOk = false;
+  // Where the bomb was last seen in someone's hands, and where it was planted.
+  let lastC4 = null, bombAt = null;
+
+  // real sounds: null until useSamples() has its index
+  let bank = null;                     // {base, sounds, buffers, last}
+  let roundTags = [];                  // guns of this round, to load their sounds
+  const live = {};                     // 'key/source' -> voices it still holds
 
   // ============================================================= audio graph
   function ensureCtx() {
@@ -166,8 +201,12 @@
     comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -14; comp.knee.value = 22;
     comp.ratio.value = 4; comp.attack.value = 0.004; comp.release.value = 0.16;
+    // Last in line: a grenade next to a firefight still overshoots the compressor.
+    const limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -3; limiter.knee.value = 0;
+    limiter.ratio.value = 20; limiter.attack.value = 0.001; limiter.release.value = 0.08;
     master.connect(duckGain); duckGain.connect(duckLp);
-    duckLp.connect(comp); comp.connect(ctx.destination);
+    duckLp.connect(comp); comp.connect(limiter); limiter.connect(ctx.destination);
 
     for (const b of BUSES) {
       const g = ctx.createGain(); g.gain.value = cfg[b] != null ? cfg[b] : 1;
@@ -216,9 +255,9 @@
    *  `p` = {pan, dist, bus, send}. */
   function place(p) {
     const g = ctx.createGain();
-    g.gain.value = distGain(p.dist);
+    g.gain.value = p.gain != null ? p.gain : distGain(p.dist);
     const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = distCut(p.dist);
+    lp.type = 'lowpass'; lp.frequency.value = p.noAir ? 20000 : distCut(p.dist);
     const pan = ctx.createStereoPanner();
     pan.pan.value = clamp(p.pan || 0, -1, 1);
     g.connect(lp); lp.connect(pan); pan.connect(bus[p.bus] || bus.shots);
@@ -281,6 +320,125 @@
     osc.start(t); osc.stop(t + dur + 0.02);
   }
 
+  // ============================================================== real sounds
+  /** Load the real sounds from `base`. Before mountUI, so the sliders show the mix.
+   *  If the index then fails to load, the raised sliders simply drive the synth. */
+  function useSamples(base) {
+    for (const k in SAMPLE_MIX) if (!(k in stored)) cfg[k] = SAMPLE_MIX[k];
+    return fetch(base + 'index.json')
+      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(index => {
+        bank = { base, sounds: index.sounds || {}, buffers: {}, last: {} };
+        loadRoundSounds();
+      })
+      .catch(err => console.warn('[sfx] no real sounds, using the synth:', err));
+  }
+
+  /** Decoding needs no user gesture on an offline context, unlike a live one, so
+   *  the sounds are ready before the first click starts the audio. */
+  function loadFile(name) {
+    if (name in bank.buffers) return;
+    bank.buffers[name] = null;                       // asked for: one fetch per file
+    const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+    if (!OAC) return;
+    fetch(bank.base + name)
+      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); })
+      .then(data => new OAC(2, 1, 48000).decodeAudioData(data))
+      .then(buffer => { bank.buffers[name] = buffer; })
+      .catch(err => console.warn('[sfx] ' + name + ':', err));   // stays synthesized
+  }
+
+  function loadRoundSounds() {
+    if (!bank) return;
+    for (const key of Object.keys(bank.sounds)) {
+      if (!/^(shot|far):[A-Z0-9]+$/.test(key)) bank.sounds[key].f.forEach(loadFile);
+    }
+    for (const tag of roundTags) {
+      for (const key of ['shot:' + tag, 'far:' + tag]) {
+        if (bank.sounds[key]) bank.sounds[key].f.forEach(loadFile);
+      }
+    }
+  }
+
+  /** A decoded file of this sound, not the same one twice running if there is a choice. */
+  function pickBuffer(key, entry) {
+    const ready = entry.f.filter(name => bank.buffers[name]);
+    if (!ready.length) return null;
+    let name = ready[Math.floor(Math.random() * ready.length)];
+    if (name === bank.last[key] && ready.length > 1) {
+      name = ready[(ready.indexOf(name) + 1) % ready.length];
+    }
+    bank.last[key] = name;
+    return bank.buffers[name];
+  }
+
+  function curveAt(curve, dist) {
+    if (dist <= curve[0][0]) return curve[0][1];
+    for (let i = 1; i < curve.length; i++) {
+      if (dist <= curve[i][0]) {
+        const a = curve[i - 1], b = curve[i];
+        return a[1] + (b[1] - a[1]) * (dist - a[0]) / (b[0] - a[0]);
+      }
+    }
+    return curve[curve.length - 1][1];
+  }
+
+  /** CS2 limits how many voices of a sound one source holds: a gun's next shot cuts
+   *  its last with a short fade. Files here run for seconds, so without this one long
+   *  burst would fill every voice. */
+  function holdVoice(key, source, limit, when, voice) {
+    const id = key + '/' + source;
+    const held = (live[id] || []).filter(v => v.end > when);
+    while (held.length >= limit) {
+      const old = held.shift();
+      old.gain.gain.setValueAtTime(old.level, when);
+      old.gain.gain.linearRampToValueAtTime(0, when + STEAL_FADE_S);
+      old.node.stop(when + STEAL_FADE_S);
+      const i = voiceEnds.indexOf(old.end);
+      if (i >= 0) voiceEnds[i] = when + STEAL_FADE_S;
+    }
+    held.push(voice);
+    live[id] = held;
+  }
+
+  /** Play a real sound. False means there is none ready, so the caller synthesizes.
+   *  True includes a sound its own curve makes silent at this distance. */
+  function sample(key, when, pos, opts) {
+    const entry = bank && bank.sounds[key];
+    if (!entry) return false;
+    const buffer = pickBuffer(key, entry);
+    if (!buffer) return false;
+    const o = opts || {};
+    const busName = o.bus || 'shots';
+    const level = SAMPLE_HEADROOM * entry.v * (entry.c ? curveAt(entry.c, pos.dist) : distGain(pos.dist));
+    if (level < MIN_SAMPLE_GAIN) return true;
+    const rate = entry.p + (entry.r ? rnd(entry.r[0], entry.r[1]) : 0);
+    const length = buffer.duration / rate;
+    const end = when + (o.cutAfter ? Math.min(length, o.cutAfter) : length);
+    if (!claim(end, busName)) return true;
+    const gain = place({ pan: pos.pan, dist: pos.dist, bus: busName, send: o.send || 0,
+      gain: level, noAir: o.noAir });
+    const node = ctx.createBufferSource();
+    node.buffer = buffer;
+    node.playbackRate.value = rate;
+    node.connect(gain);
+    node.start(when);
+    if (o.cutAfter && o.cutAfter < length) {
+      gain.gain.setValueAtTime(level, end - 0.8);
+      gain.gain.linearRampToValueAtTime(0, end);
+      node.stop(end);
+    }
+    if (o.source != null && entry.n) holdVoice(key, o.source, entry.n, when, { gain, node, level, end });
+    return true;
+  }
+
+  /** A gun's near sound and its distant one, each fading by its own curve. */
+  function gunSample(tag, when, pos, source) {
+    if (!sample('shot:' + tag, when, pos, { send: SAMPLE_SEND, source })) return false;
+    sample('far:' + tag, when, pos, { noAir: true, source });
+    return true;
+  }
+
   // ============================================================ sound design
   function gunshot(when, cls, pos) {
     const P = GUN[cls] || GUN.rifle;
@@ -322,8 +480,8 @@
 
   /** Footsteps are by far the most frequent sound (ten players, ~3/s each), so
    *  the extra layers are spent only where they are actually audible. */
-  function footstep(when, pos, running) {
-    const g = (running ? 0.5 : 0.26) * rnd(0.85, 1.15);
+  function footstep(when, pos) {
+    const g = 0.5 * rnd(0.85, 1.15);
     burst({ t: when, pan: pos.pan, dist: pos.dist, bus: 'steps', type: 'bandpass',
       f0: rnd(620, 1150), q: 1.5, dur: 0.05, g, a: 0.002,
       send: pos.dist < 1200 ? 0.3 : 0 });
@@ -397,6 +555,10 @@
       f0: 700, f1: 2100, q: 0.9, dur: 0.22, g: 0.3, a: 0.05, send: 0.3 });
     burst({ t: when, pan: pos.pan, dist: pos.dist, bus: 'util', type: 'highpass',
       f0: 5200, q: 0.8, dur: 0.03, g: 0.16, a: 0.001, send: 0.15 });   // the pin
+  }
+
+  function c4Beep(when, pos) {
+    tone({ t: when, pan: pos.pan, dist: pos.dist, bus: 'util', f0: 2100, dur: 0.1, g: 0.25, a: 0.002 });
   }
 
   /** Kill confirmation for the spectated player (CS2's kill ding). */
@@ -477,15 +639,20 @@
     curX = []; curY = []; curAlive = []; curWpn = []; curPresent = [];
     prevX = []; prevY = []; prevHP = []; prevAlive = []; prevWpn = [];
     stepAcc = []; prevFlash = 0;
+    lastC4 = null; bombAt = null;
+    for (const id of Object.keys(live)) delete live[id];
     if (!header || !meta) return;
 
     const rate = meta.sampleRate || header.sampleRate || 16;
+    const bomb = meta.bomb && meta.bomb.plant != null ? meta.bomb : null;
     R = {
       rate, dur: meta.durationS || 0,
       names: (header.players || []).map(p => p.name || ''),
       teams: (header.players || []).map(p => p.team),
       wtab: header.weaponTable || [], winner: meta.winner || null,
+      bombBlast: !!(bomb && bomb.exploded != null),
     };
+    const tags = new Set(R.wtab.map(tagOf));
 
     for (const s of (header.shots || [])) {
       if (s && s.s != null) events.push({ t: s.s / rate, k: 'shot', slot: s.p | 0 });
@@ -500,6 +667,10 @@
         // so it survived the "gunshots only" cut; smoke/fire beds did not)
         if (dur > 0 && u.type === 'decoy') {
           loops.push({ t0, t1: t0 + dur, x, y, nextFake: 0 });
+          tags.add(DECOY_GUN);
+        }
+        if (dur > 0 && u.type === 'molotov') {
+          events.push({ t: t0 + dur, k: 'fire_out', x, y });
         }
       }
       if (u.throwSample != null && u.throwPos) {
@@ -511,9 +682,36 @@
       events.push({ t: kk.sample / rate, k: 'kill', atk: kk.atk, vic: kk.vic,
         hs: !!kk.hs, w: kk.w || '' });
     }
+    if (bomb) events.push(...bombEvents(bomb, rate, R.dur));
     events.push({ t: 0.35, k: 'start' });
     if (R.dur > 0 && R.winner) events.push({ t: R.dur, k: 'end', ct: R.winner === 'CT' });
     events.sort((a, b) => a.t - b.t);
+
+    roundTags = Array.from(tags);
+    loadRoundSounds();
+  }
+
+  /** The bomb's sounds, from the plant to whatever ended it. */
+  function bombEvents(bomb, rate, roundDur) {
+    const plant = bomb.plant / rate;
+    const blown = bomb.exploded != null;
+    const blow = blown ? bomb.exploded / rate : plant + C4_FUSE_S;
+    const fuse = Math.max(1, blow - plant);
+    let stop = blow;
+    if (bomb.defused != null) stop = bomb.defused / rate;
+    else if (!blown && roundDur > 0) stop = Math.min(blow, roundDur);
+
+    const out = [{ t: plant, k: 'c4', s: 'plant' }];
+    for (let t = plant; t < stop; t += c4Interval((blow - t) / fuse)) {
+      out.push({ t, k: 'c4', s: 'beep' });
+    }
+    if (bomb.defused != null) out.push({ t: stop, k: 'c4', s: 'defused' });
+    if (blown) {
+      out.push({ t: blow - C4_WARN_BEFORE_S, k: 'c4', s: 'warn' });
+      out.push({ t: blow - C4_TRIP_BEFORE_S, k: 'c4', s: 'trip' });
+      out.push({ t: blow, k: 'c4', s: 'explode' });
+    }
+    return out;
   }
 
   /** Scrub / round change: forget where we were. */
@@ -531,43 +729,67 @@
       case 'shot': {
         const i = ev.slot;
         if (i < 0 || i >= curX.length || !curPresent[i]) return;
-        const cls = WCLASS[R.wtab[curWpn[i]] || ''] || 'rifle';
+        const tag = tagOf(R.wtab[curWpn[i]]);
+        const cls = WCLASS[tag] || 'rifle';
         const own = i === camSlot;
         const pos = own ? AT_EAR() : atSlot(i, d);
         if (pos.dist > MAX_D) return;
         const t = when + pos.delay;
-        if (cls === 'knife') knifeSwing(t, pos);
-        else if (cls === 'zeus') zeusZap(t, pos);
-        else gunshot(t, cls, pos);
+        if (cls === 'knife') { if (!sample('knife', t, pos)) knifeSwing(t, pos); }
+        else if (cls === 'zeus') { if (!sample('shot:ZEUS', t, pos)) zeusZap(t, pos); }
+        else if (!gunSample(tag, t, pos, i)) gunshot(t, cls, pos);
         return;
       }
       case 'det': {
         const pos = at(ev.x, ev.y, null);
         if (pos.dist > MAX_D) return;
         const t = when + pos.delay;
-        // smoke and molotov are deliberately SILENT: their loops were the "fan
-        // hum" / ear-splitting hiss the first pass produced. Only the two loud
-        // one-shots remain, plus the decoy's pop.
-        if (ev.type === 'he') explosion(t, pos, true);
-        else if (ev.type === 'flash') flashPop(t, pos);
-        else if (ev.type === 'decoy') {
+        const util = { bus: 'util', send: SAMPLE_SEND }, far = { bus: 'util', noAir: true };
+        // The synth stays silent on smoke and molotov: its loops were the "fan hum"
+        // and the ear-splitting hiss of the first pass. The real sounds are one-shots.
+        if (ev.type === 'he') {
+          if (!sample('he', t, pos, util)) explosion(t, pos, true);
+          sample('far:he', t, pos, far);
+        } else if (ev.type === 'flash') {
+          if (!sample('flash', t, pos, util)) flashPop(t, pos);
+          sample('far:flash', t, pos, far);
+        } else if (ev.type === 'smoke') {
+          sample('smoke', t, pos, { bus: 'util', cutAfter: SMOKE_S });
+          sample('far:smoke', t, pos, far);
+        } else if (ev.type === 'molotov') {
+          sample('molotov', t, pos, util);
+        } else if (ev.type === 'decoy') {
           burst({ t, pan: pos.pan, dist: pos.dist, bus: 'util', type: 'bandpass',
             f0: 1600, q: 0.8, dur: 0.25, g: 0.3, a: 0.01, send: 0.3 });
         }
         return;
       }
-      case 'throw': {
+      case 'fire_out': {
         const pos = at(ev.x, ev.y, null);
-        if (pos.dist < 2200) throwWhoosh(when + pos.delay, pos);
+        if (pos.dist <= MAX_D) sample('molotov:end', when + pos.delay, pos, { bus: 'util' });
         return;
       }
+      case 'throw': {
+        const pos = at(ev.x, ev.y, null);
+        if (pos.dist < 2200 && !sample('throw:' + ev.type, when + pos.delay, pos, { bus: 'util' })) {
+          throwWhoosh(when + pos.delay, pos);
+        }
+        return;
+      }
+      case 'c4': fireBomb(ev.s, when); return;
       case 'kill': {
         const vs = slotOfName(ev.vic);
-        // C4 detonation arrives as a kill tagged "💣" — put the blast on the
-        // victim, who was standing next to the bomb
-        if (ev.w === '💣') {
+        // A round without bomb data still says when the bomb killed someone: a kill
+        // tagged "💣". Put the blast on the victim, who was standing next to the bomb.
+        if (ev.w === '💣' && !R.bombBlast) {
           const bp = vs >= 0 && curPresent[vs] ? atSlot(vs, d) : { pan: 0, dist: 700, delay: 0 };
-          explosion(when + bp.delay, bp, true);
+          if (!sample('c4:explode', when + bp.delay, bp, { bus: 'util' })) explosion(when + bp.delay, bp, true);
+        }
+        if (vs >= 0 && curPresent[vs] && ev.w !== '💣') {
+          const pos = vs === camSlot ? AT_EAR() : atSlot(vs, d);
+          const hit = { bus: 'hits' };
+          if (ev.hs) sample('kill:hs', when + pos.delay, pos, hit);
+          else sample('kill:body', when + pos.delay, pos, hit);
         }
         if (camSlot >= 0 && R.names[camSlot] === ev.atk) killDing(when, ev.hs);
         else if (vs >= 0 && vs === camSlot) {           // you died: dull low hit
@@ -581,6 +803,18 @@
     }
   }
 
+  function fireBomb(what, when) {
+    if (what === 'plant') bombAt = lastC4;
+    const pos = bombAt ? at(bombAt.x, bombAt.y, null) : { pan: 0, dist: 900, delay: 0 };
+    const t = when + pos.delay, util = { bus: 'util' };
+    if (what === 'plant') sample('c4:plant', t, pos, util);
+    else if (what === 'beep') { if (!sample('c4:beep', t, pos, util)) c4Beep(t, pos); }
+    else if (what === 'warn') sample('c4:warn', t, pos, util);
+    else if (what === 'trip') sample('c4:trip', t, pos, util);
+    else if (what === 'defused') sample('c4:defused', t, pos, util);
+    else if (what === 'explode') { if (!sample('c4:explode', t, pos, util)) explosion(t, pos, true); }
+  }
+
   // ==================================================================== frame
   function readPlayers(d, nP) {
     for (let i = 0; i < nP; i++) {
@@ -589,6 +823,7 @@
       curAlive[i] = d[o + 3] > 0.5;
       curWpn[i] = d[o + 5] | 0;
       curX[i] = d[o + 6]; curY[i] = d[o + 7];
+      if (curPresent[i] && curAlive[i] && R.wtab[curWpn[i]] === '💣') lastC4 = { x: curX[i], y: curY[i] };
     }
   }
   function snapshot(d, nP) {
@@ -623,15 +858,14 @@
       if (curAlive[i] && prevAlive[i]) {
         const dx = curX[i] - prevX[i], dy = curY[i] - prevY[i];
         const moved = Math.sqrt(dx * dx + dy * dy), sp = moved / dc;
-        if (sp > 24 && sp < 700) {                   // ignore jitter and teleports
+        if (sp > RUN_SPEED && sp < 700) {            // walking is silent, as in the game
           stepAcc[i] = (stepAcc[i] || 0) + moved;
-          const running = sp > RUN_SPEED;
-          const need = running ? STEP_LEN : STEP_LEN * 1.35;
-          if (stepAcc[i] >= need) {
-            stepAcc[i] -= need;
+          if (stepAcc[i] >= STEP_LEN) {
+            stepAcc[i] -= STEP_LEN;
             const pos = own ? { pan: rnd(-0.22, 0.22), dist: 0, delay: 0 } : atSlot(i, d);
             if ((own || pos.dist < STEP_MAX_D) && stepBudget-- > 0) {
-              footstep(now + pos.delay, pos, running);
+              const key = R.teams[i] === 3 ? 'step:ct' : 'step:t';
+              if (!sample(key, now + pos.delay, pos, { bus: 'steps' })) footstep(now + pos.delay, pos);
             }
           }
         } else stepAcc[i] = Math.min(stepAcc[i] || 0, STEP_LEN);
@@ -639,15 +873,20 @@
       const hp = d[6 + i * 10 + 4] | 0;
       const lost = prevHP[i] - hp;
       if (lost > 0 && curAlive[i]) {
-        if (own) ownHurt(now, lost);
-        else {
+        if (own) {
+          if (!sample('hit:own', now, AT_EAR(), { bus: 'hits' })) ownHurt(now, lost);
+        } else {
           const pos = atSlot(i, d);
-          if (pos.dist < 3000) bulletImpact(now + pos.delay, pos, lost >= 40);
+          if (pos.dist < 3000 && !sample('hit:body', now + pos.delay, pos, { bus: 'hits' })) {
+            bulletImpact(now + pos.delay, pos, lost >= 40);
+          }
         }
       }
       if (prevAlive[i] && !curAlive[i]) {
         const pos = own ? AT_EAR() : atSlot(i, d);
-        if (own || pos.dist < 3500) bodyFall(now + pos.delay, pos);
+        if ((own || pos.dist < 3500) && !sample('death', now + pos.delay, pos, { bus: 'hits' })) {
+          bodyFall(now + pos.delay, pos);
+        }
       }
       if (curWpn[i] !== prevWpn[i] && curAlive[i]) {  // weapon swap click
         const pos = own ? AT_EAR() : atSlot(i, d);
@@ -665,7 +904,9 @@
       if (clock < l.t0 || clock > l.t1 || clock < l.nextFake) continue;
       l.nextFake = clock + DECOY_PERIOD * rnd(0.75, 1.3);
       const pos = at(l.x, l.y, null);
-      if (pos.dist < MAX_D) gunshot(now + pos.delay, 'rifle', pos);
+      if (pos.dist < MAX_D && !gunSample(DECOY_GUN, now + pos.delay, pos)) {
+        gunshot(now + pos.delay, 'rifle', pos);
+      }
     }
   }
   function applyDuck(flashOp, now) {
@@ -728,7 +969,7 @@
 
     const wrap = document.createElement('span'); wrap.id = 'sfxwrap';
     const btn = document.createElement('button'); btn.id = 'sfxbtn';
-    btn.title = 'Procedural match audio: gunfire, footsteps, utility, hits (M)';
+    btn.title = 'Match audio: gunfire, footsteps, grenades, the bomb, hits (M)';
     const gear = document.createElement('button'); gear.id = 'sfxgear';
     gear.textContent = '⚙'; gear.title = 'Sound mixer';
     const panel = document.createElement('div'); panel.id = 'sfxpanel';
@@ -760,7 +1001,7 @@
     slider('master', 'master'); sep();
     slider('shots', 'gunfire');
     slider('steps', 'footsteps');
-    slider('util', 'HE / flash');
+    slider('util', 'grenades, C4');
     slider('hits', 'impacts');
     slider('voice', 'own / POV');
     slider('ui', 'interface');
@@ -808,7 +1049,7 @@
   }
 
   window.ReplaySfx = {
-    mountUI, setRound, frame, resync, ui: uiSound, setEnabled,
+    mountUI, useSamples, setRound, frame, resync, ui: uiSound, setEnabled,
     setListener(slot, first) { camSlot = slot; camFirst = first; },
     setSpeed(x) { speed = x || 1; },
     isOn: () => cfg.on,

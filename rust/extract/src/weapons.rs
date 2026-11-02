@@ -142,3 +142,32 @@ pub fn weapon_tag(name: Option<&str>) -> Option<String> {
     // unknown: show the raw name, uppercased, first 6 CHARS (not bytes)
     Some(name.to_uppercase().chars().take(6).collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// tools/convert_weapons.ps1 builds a real model per line of this list. A tag with no
+    /// line would quietly stay a procedural box in the viewer.
+    #[test]
+    fn every_held_weapon_tag_has_a_real_model() {
+        let list = include_str!("../../viewer/src/weapon_models.txt");
+        let listed: Vec<&str> = list
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .filter_map(|l| l.split_whitespace().next())
+            .collect();
+        for (_, tag) in WEAPON_TAGS {
+            assert!(listed.contains(tag), "{tag} is missing from weapon_models.txt");
+        }
+        // the tags weapon_tag makes without a row in WEAPON_TAGS (viewer: list_tag)
+        for tag in ["KNIFE_T", "KNIFE_CT", "C4", "ZEUS"] {
+            assert!(listed.contains(&tag), "{tag} is missing from weapon_models.txt");
+        }
+    }
+
+    #[test]
+    fn the_zeus_keeps_the_tag_the_viewer_knows_it_by() {
+        assert_eq!(weapon_tag(Some("Zeus x27")).as_deref(), Some("ZEUS X"));
+    }
+}

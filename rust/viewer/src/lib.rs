@@ -44,13 +44,16 @@ use util::{tracer_frame, util_frame, UtilKind};
 /// page-relative "assets" default (the standalone www/ dev page). `cs2_models` picks
 /// the real CS2 characters over the fallback soldier; the page only passes true when
 /// those (never committed) files exist, because a missing model means no players at all.
+/// `cs2_weapons` does the same for the guns, where a missing file only means a simple
+/// box in its place, and a 404 in the console that the page would rather not cause.
 #[wasm_bindgen]
-pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Option<bool>) {
+pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Option<bool>, cs2_weapons: Option<bool>) {
     console_error_panic_hook::set_once();
     App::new()
         .insert_resource(ClearColor(util::hex_color("#0b0e14")))
         .insert_resource(Viewer::default())
         .insert_resource(scene::UseCs2Models(cs2_models.unwrap_or(false)))
+        .insert_resource(weapons_viz::RealWeapons::new(cs2_weapons.unwrap_or(false)))
         .insert_resource(orbit::OrbitCam::default())
         .insert_resource(LabelsOut::default())
         .insert_resource(PlayerPoses::default())
@@ -104,6 +107,7 @@ pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Opti
                 drive_player_anim,
                 tint_players,
                 fade_team_colour,
+                weapons_viz::finish_real_weapons,
                 weapons_viz::update_weapon_mounts,
                 weapons_viz::update_viewmodel,
             ),
@@ -269,12 +273,10 @@ fn setup(mut commands: Commands) {
         MainCam,
     ))
     // first-person viewmodel anchor: bottom-right of the camera, like in game;
-    // weapons_viz::update_viewmodel fills/hides it based on cam mode + held weapon
+    // weapons_viz::update_viewmodel fills/hides/places it based on cam mode + held weapon
     .with_children(|p| {
         p.spawn((
-            Transform::from_translation(weapons_viz::VM_POS)
-                .with_rotation(Quat::from_rotation_y(weapons_viz::VM_YAW))
-                .with_scale(Vec3::splat(weapons_viz::VM_SCALE)),
+            Transform::default(),
             Visibility::Hidden,
             weapons_viz::ViewModel::default(),
         ));
@@ -344,6 +346,7 @@ fn drain_controls(
     mut q_map_vis: Query<&mut Visibility, (With<MapTag>, Without<GreyboxTag>)>,
     mut q_ambient: Query<&mut AmbientLight, With<MainCam>>,
     mut q_xray_cam: Query<&mut Camera, With<XrayCam>>,
+    mut real_weapons: ResMut<weapons_viz::RealWeapons>,
 ) {
     let msgs: Vec<ControlMsg> = std::mem::take(&mut *QUEUE.lock().unwrap());
     for msg in msgs {
@@ -409,6 +412,7 @@ fn drain_controls(
                     })
                     .collect();
 
+                real_weapons.request(&dec.weapon_table, &asset_server);
                 let shots = build_shots(&dec, m);
                 viewer.flash_focus = resolve_focus(viewer.flash_focus_name.as_deref(), &dec);
                 viewer.round = Some(RoundState { dec: *dec, n, rate, duration, utils, shots });
@@ -1018,6 +1022,9 @@ const TRACER_LEN_WU: f32 = 3000.0;
 /// scrub to the right spot). The hot head races the full beam in TRACER_TRAVEL, then
 /// the whole streak fades out by TRACER_LIFE. Tunable.
 const TRACER_TRAVEL: f64 = 0.045;
+/// Muzzle flash radius per scene unit from the camera: it pops from the overview without
+/// caging the shooter in a wire ball up close.
+const FLASH_VIEW_SHARE: f32 = 0.011;
 const TRACER_LIFE: f64 = 0.20;
 /// Length of the bright dash trailing the head, as a fraction of the beam length.
 const TRACER_STREAK_FRAC: f32 = 0.42;
@@ -1106,10 +1113,19 @@ fn build_shots(dec: &c2r3::DecodedRound, m: &crate::state::ManifestData) -> Vec<
 /// fades out by `TRACER_LIFE`, plus a brief muzzle flash at the origin. Keyed to the
 /// playback clock, so scrubbing lands on the right tracers and slo-mo stretches the
 /// streak. Rendered on the dedicated `TracerGizmos` group (thicker than the map grid).
-fn draw_tracers(viewer: Res<Viewer>, mut gizmos: Gizmos<TracerGizmos>) {
+/// A held real weapon gives the true muzzle as the start; the far end stays on the aim.
+fn draw_tracers(
+    viewer: Res<Viewer>,
+    real_weapons: Res<weapons_viz::RealWeapons>,
+    q_mounts: Query<(&weapons_viz::WeaponMount, &GlobalTransform)>,
+    q_viewmodel: Query<(&weapons_viz::ViewModel, &GlobalTransform)>,
+    q_cam: Query<&GlobalTransform, With<MainCam>>,
+    mut gizmos: Gizmos<TracerGizmos>,
+) {
     let Some(r) = viewer.round.as_ref() else {
         return;
     };
+    let cam = q_cam.single().map_or(Vec3::ZERO, |c| c.translation());
     let clock = viewer.clock;
     // hot muzzle-white: the bright core of every tracer, whatever the team tint.
     let head_col = Color::srgb(1.0, 0.95, 0.80);
@@ -1118,7 +1134,22 @@ fn draw_tracers(viewer: Res<Viewer>, mut gizmos: Gizmos<TracerGizmos>) {
         if !(0.0..=TRACER_LIFE).contains(&dt) {
             continue;
         }
-        let seg = sh.b - sh.a;
+        // in the shooter's OWN first-person view the shot leaves the viewmodel, and no
+        // muzzle flash: it is glued to the camera and would smear across the screen.
+        let own_fp = matches!(
+            viewer.cam_mode,
+            CamMode::Follow { slot, first_person: true } if slot == sh.slot
+        );
+        let muzzle = if own_fp {
+            q_viewmodel.iter().find_map(|(vm, at)| real_weapons.muzzle_world(vm.current, at))
+        } else {
+            q_mounts
+                .iter()
+                .find(|(mount, _)| mount.slot == sh.slot)
+                .and_then(|(mount, at)| real_weapons.muzzle_world(mount.current, at))
+        };
+        let a = muzzle.unwrap_or(sh.a);
+        let seg = sh.b - a;
         let len = seg.length();
         if len < 1e-4 {
             continue;
@@ -1137,21 +1168,16 @@ fn draw_tracers(viewer: Res<Viewer>, mut gizmos: Gizmos<TracerGizmos>) {
         };
         // dim team-tinted trail -> hot white head
         gizmos.line_gradient(
-            sh.a + dir * tail_d,
-            sh.a + dir * head_d,
+            a + dir * tail_d,
+            a + dir * head_d,
             sh.color.with_alpha(fade * 0.12),
             head_col.with_alpha(fade),
         );
-        // muzzle flash pop — skip it in the shooter's OWN first-person view, where the
-        // muzzle is glued to the camera and the flash would smear across the screen.
-        let own_fp = matches!(
-            viewer.cam_mode,
-            CamMode::Follow { slot, first_person: true } if slot == sh.slot
-        );
+        // muzzle flash pop
         if !own_fp && dt < 0.05 {
             let flash = (1.0 - dt / 0.05) as f32;
             gizmos
-                .sphere(Isometry3d::from_translation(sh.a), 0.015 * len, head_col.with_alpha(flash))
+                .sphere(Isometry3d::from_translation(a), FLASH_VIEW_SHARE * cam.distance(a), head_col.with_alpha(flash))
                 .resolution(8);
         }
     }

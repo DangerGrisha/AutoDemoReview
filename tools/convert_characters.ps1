@@ -31,6 +31,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\cs2_paths.ps1"
 
 $repo = Split-Path -Parent $PSScriptRoot
 $s2v = Join-Path $repo 'tools\s2v\v20\Source2Viewer-CLI.exe'
@@ -48,34 +49,7 @@ $models = @(
     [pscustomobject]@{ Model = 'tm_phoenix'; Side = 't' }
 )
 
-function Find-Pak01 {
-    $candidates = New-Object System.Collections.Generic.List[string]
-    $steamRoots = @(
-        "$env:ProgramFiles(x86)\Steam", "$env:ProgramFiles\Steam",
-        'C:\Steam', 'D:\Steam', 'D:\games\Steam', 'E:\Steam'
-    )
-    # Same search as convert_maps.ps1: Steam's library index first, string joins
-    # because the candidate list names drives that may not exist here.
-    foreach ($root in $steamRoots) {
-        $vdf = "$root\steamapps\libraryfolders.vdf"
-        if (Test-Path $vdf) {
-            foreach ($m in [regex]::Matches((Get-Content $vdf -Raw), '"path"\s+"([^"]+)"')) {
-                $candidates.Add(($m.Groups[1].Value -replace '\\\\', '\'))
-            }
-        }
-        $candidates.Add($root)
-    }
-    foreach ($lib in $candidates) {
-        $p = "$lib\steamapps\common\Counter-Strike Global Offensive\game\csgo\pak01_dir.vpk"
-        if (Test-Path $p) { return (Resolve-Path $p).Path }
-    }
-    return $null
-}
-
-if (-not $Vpk) { $Vpk = Find-Pak01 }
-if (-not $Vpk -or -not (Test-Path $Vpk)) {
-    throw "CS2 pak01_dir.vpk not found. Pass -Vpk '<…\game\csgo\pak01_dir.vpk>' or set CS2_PAK01_VPK."
-}
+$Vpk = Resolve-Pak01 $Vpk
 if (-not (Test-Path $s2v)) {
     throw "Source2Viewer-CLI 20+ not found at $s2v -- see docs/REPLAY3D.md (unzip cli-windows-x64.zip into tools\s2v\v20\)."
 }

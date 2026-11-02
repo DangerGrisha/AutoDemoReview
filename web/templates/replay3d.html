@@ -7,7 +7,7 @@
 {% if has_replay %}
 {# ?v= busts the 7-day static cache when the frame-payload layout changes; keep
    the token in lockstep with the import + fetch URLs below #}
-<link rel="preload" as="fetch" crossorigin href="/static/replay3d/pkg/viewer_bg.wasm?v=4">
+<link rel="preload" as="fetch" crossorigin href="/static/replay3d/pkg/viewer_bg.wasm?v=5">
 {% if map_asset %}<link rel="preload" as="fetch" crossorigin href="/static/replay3d/assets/{{ map_asset }}">{% endif %}
 {% endif %}
 <style>
@@ -94,6 +94,7 @@
   #spec .pv .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
   #spec .pv .wp { color:var(--dim); font-size:10px; text-transform:uppercase; letter-spacing:.03em;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:64px; }
+  #spec .pv .wp img { height:12px; max-width:64px; display:block; opacity:.75; }
   #spec .pv .hp { font-variant-numeric:tabular-nums; font-weight:700; min-width:24px; text-align:right; }
   #spec .pv .hpbar { height:3px; border-radius:2px; background:#222b3a; overflow:hidden; }
   #spec .pv .hpbar i { display:block; height:100%; width:100%; background:var(--good); border-radius:2px;
@@ -130,6 +131,8 @@
   #feed .k .w { color:var(--muted); font-weight:600; }
   #feed .k .pill { background:#222b3a; border:1px solid var(--line2); border-radius:5px;
     padding:1px 7px; font-size:11px; font-weight:700; letter-spacing:.02em; }
+  #feed .k .pill:has(img) { background:none; border:none; padding:0 2px; }
+  #feed .k .pill img { height:16px; display:block; }
   #feed .k .b { font-size:11px; opacity:.92; font-weight:700; }
 
   /* "now spectating" banner (top center, below the score bar) */
@@ -267,7 +270,7 @@
 
 <!-- procedural match audio (gunfire / footsteps / utility / hits); defines
      window.ReplaySfx and mounts its own button + mixer into the bottom bar -->
-<script src="/static/replay3d/sfx.js?v=4"></script>
+<script src="/static/replay3d/sfx.js?v=5"></script>
 
 <script type="module">
 /* Same JS <-> WASM control interface as rust/viewer/www/index.html (the dev
@@ -278,11 +281,14 @@
  * weapon,worldX,worldY,yawDeg,present} — worldX/worldY/yawDeg are raw demo
  * coords for the live radar. ?v= must match the preload hint above. */
 import init, { run, load_manifest, load_round, seek, set_playing, set_speed, set_flash_focus,
-  set_map_visible, set_camera_follow, set_camera_free, set_xray } from '/static/replay3d/pkg/viewer.js?v=4';
+  set_map_visible, set_camera_follow, set_camera_free, set_xray } from '/static/replay3d/pkg/viewer.js?v=5';
 
 const BASE = '/matches/{{ match_id }}/replay3d/';
 const MAP_ASSET = {{ (map_asset or "")|tojson }};
 const CS2_MODELS = {{ (cs2_models or false)|tojson }};
+const CS2_WEAPONS = {{ (cs2_weapons or false)|tojson }};
+const CS2_SOUNDS = {{ (cs2_sounds or false)|tojson }};
+const HUD_ICONS = {{ (hud_icons or false)|tojson }};
 // UNCOMPRESSED sizes injected by the server (progress denominators; the
 // on-wire Content-Length is the compressed size, so it is the wrong one).
 const WASM_SIZE = {{ wasm_size or 0 }};
@@ -345,7 +351,22 @@ const killMods = k => { const m=[]; if(k.w)m.push(k.w); if(k.hs)m.push('HS');
 const teamCol = t => t===3 ? 'var(--ct)' : t===2 ? 'var(--t)' : '#9aa4b2';
 const hpCol   = hp => hp>66 ? 'var(--good)' : hp>33 ? 'var(--warn)' : 'var(--bad)';
 const PSTRIDE = 10;                                  // per-player floats in the frame payload
-const SFX = window.ReplaySfx || null;                // procedural audio (sfx.js)
+const SFX = window.ReplaySfx || null;                // audio (sfx.js)
+
+// A weapon tag as CS2's icon (tools/convert_hud.ps1), or as text without one.
+// Costs nothing to call every frame: it only touches the page when the tag changes.
+const EMOJI_ICONS = { '🔪':'knife', '💣':'c4', '🔥':'fire' };
+function showWeapon(el, tag){
+  if (el._tag===tag) return;
+  el._tag=tag;
+  el.textContent=tag;
+  if (!HUD_ICONS || !tag) return;
+  const name = EMOJI_ICONS[tag] || tag.split(' ')[0];
+  const icon = new Image();
+  icon.alt = tag;
+  icon.onload = () => { if (el._tag===tag) el.replaceChildren(icon); };
+  icon.src = '/static/replay3d/assets/hud_v1/'+encodeURIComponent(name)+'.svg';
+}
 
 // Every seek must tell the audio engine to re-anchor, otherwise the clock jump
 // would either replay or skip every event between the old and the new position.
@@ -492,7 +513,7 @@ function updateFeed(clock){
       el.append(a);
       if (kk.w){                    // CS2-style: [blind] weapon [noscope/smoke/wall] [HS]
         if (kk.ab) el.append(badge('🙈'));
-        const w=document.createElement('span'); w.className='pill'; w.textContent=kk.w; el.append(w);
+        const w=document.createElement('span'); w.className='pill'; showWeapon(w, kk.w); el.append(w);
         if (kk.ns) el.append(badge('NS'));
         if (kk.ts) el.append(badge('🌫'));
         if (kk.wb) el.append(badge('🧱'));
@@ -711,7 +732,7 @@ window.__replayFrame = (d) => {
     if (row){
       row.hp.textContent = alive ? hp : '☠';
       row.hp.style.color = alive ? hpCol(hp) : 'var(--dim)';
-      row.wp.textContent = alive ? wn : '';
+      showWeapon(row.wp, alive ? wn : '');
       row.bar.style.width = (alive ? Math.max(0,Math.min(100,hp)) : 0)+'%';
       row.bar.style.background = hpCol(hp);
       row.row.classList.toggle('dead', !alive);
@@ -774,6 +795,7 @@ scrub.addEventListener('input',()=>{
   if (advanceTimer){ clearTimeout(advanceTimer); advanceTimer=null; }
   seekTo(parseFloat(scrub.value)); });
 // sound button + mixer (the module builds its own UI in the bottom bar)
+if (SFX && CS2_SOUNDS) SFX.useSamples('/static/replay3d/assets/sounds_v1/');
 if (SFX) SFX.mountUI($('#bar .ctl'));
 
 // x-ray (see players through walls + smoke); default on, matches the wasm default
@@ -800,7 +822,7 @@ async function main(){
   // HTTP cache (Cache-Control makes Bevy's later fetch of the SAME URL a
   // deterministic disk-cache hit), and the manifest rides along.
   const wasmReady = init({ module_or_path:
-    fetchWithProgress('/static/replay3d/pkg/viewer_bg.wasm?v=4', WASM_SIZE, barSetter('barWasm','pctWasm')) });
+    fetchWithProgress('/static/replay3d/pkg/viewer_bg.wasm?v=5', WASM_SIZE, barSetter('barWasm','pctWasm')) });
   const mapWarm = MAP_ASSET
     ? fetchWithProgress('/static/replay3d/assets/'+MAP_ASSET, MAP_SIZE, barSetter('barMap','pctMap'))
         .then(r=>r.arrayBuffer())
@@ -818,7 +840,7 @@ async function main(){
   await wasmReady;
   await mapWarm;
   await modelsWarm;
-  run('#canvas', '/static/replay3d/assets', CS2_MODELS);
+  run('#canvas', '/static/replay3d/assets', CS2_MODELS, CS2_WEAPONS);
   MANIFEST = JSON.parse(await manifestReq);
   if (MAP_ASSET) MANIFEST.mapAsset = MAP_ASSET;
 

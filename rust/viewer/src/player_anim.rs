@@ -54,7 +54,8 @@ impl WeaponClass {
 /// common and the least wrong-looking if a new gun appears.
 pub fn class_for_tag(tag: &str) -> WeaponClass {
     match tag {
-        "GLOCK" | "USP" | "P2000" | "P250" | "FIVE7" | "TEC9" | "CZ" | "DUALS" | "DEAG" | "R8" => {
+        // "ZEUS X" is what `weapon_tag` in rust/extract makes of "Zeus x27".
+        "GLOCK" | "USP" | "P2000" | "P250" | "FIVE7" | "TEC9" | "CZ" | "DUALS" | "DEAG" | "R8" | "ZEUS X" => {
             WeaponClass::Pistol
         }
         "🔪" | "💣" | "HE" | "FLASH" | "SMOKE" | "MOLLY" | "INC" | "DECOY" => WeaponClass::Knife,
@@ -249,6 +250,7 @@ mod tests {
         assert_eq!(class_for_tag("NEGEV"), WeaponClass::Rifle);
         assert_eq!(class_for_tag("MP9"), WeaponClass::Rifle);
         assert_eq!(class_for_tag("DEAG"), WeaponClass::Pistol);
+        assert_eq!(class_for_tag("ZEUS X"), WeaponClass::Pistol);
         assert_eq!(class_for_tag("🔪"), WeaponClass::Knife);
         assert_eq!(class_for_tag("💣"), WeaponClass::Knife);
         assert_eq!(class_for_tag("SMOKE"), WeaponClass::Knife);
