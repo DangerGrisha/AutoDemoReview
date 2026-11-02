@@ -24,6 +24,18 @@ impl Default for OrbitCam {
     }
 }
 
+impl OrbitCam {
+    /// An orbit that puts the camera at `eye`, looking along Source's pitch and yaw.
+    pub fn look_from(&mut self, eye: Vec3, pitch: f32, yaw: f32) {
+        const DIST: f32 = 5.0;
+        let forward = Vec3::new(pitch.cos() * yaw.cos(), -pitch.sin(), -pitch.cos() * yaw.sin());
+        self.target = eye + forward * DIST;
+        self.pitch = pitch.clamp(-1.54, 1.54);
+        self.yaw = (-yaw.cos()).atan2(yaw.sin());
+        self.dist = DIST;
+    }
+}
+
 pub fn orbit_camera(
     viewer: Res<crate::state::Viewer>,
     mut orbit: ResMut<OrbitCam>,
@@ -66,5 +78,24 @@ pub fn orbit_camera(
         let offset = Vec3::new(pc * ys, ps, pc * yc) * orbit.dist;
         *tf = Transform::from_translation(orbit.target + offset)
             .looking_at(orbit.target, Vec3::Y);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_look_puts_the_camera_at_the_eye_facing_along_the_angles() {
+        let mut o = OrbitCam::default();
+        let eye = Vec3::new(1.0, 2.0, 3.0);
+        // yaw 90 in Source is +y, which the scene calls -z; pitch 30 looks down
+        o.look_from(eye, 30_f32.to_radians(), 90_f32.to_radians());
+        let (yc, ys) = (o.yaw.cos(), o.yaw.sin());
+        let (pc, ps) = (o.pitch.cos(), o.pitch.sin());
+        let camera = o.target + Vec3::new(pc * ys, ps, pc * yc) * o.dist;
+        assert!((camera - eye).length() < 1e-4, "{camera}");
+        let forward = (o.target - camera).normalize();
+        assert!((forward - Vec3::new(0.0, -0.5, -0.866)).length() < 1e-3, "{forward}");
     }
 }

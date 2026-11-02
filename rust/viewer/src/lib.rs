@@ -187,6 +187,13 @@ pub fn set_camera_free() {
     push_control(ControlMsg::SetCamFree);
 }
 
+/// Put the free camera where the game's `setpos x y z; setang pitch yaw 0` would, so a view
+/// can be compared with the same view in CS2.
+#[wasm_bindgen]
+pub fn set_camera_look(x: f32, y: f32, z: f32, pitch: f32, yaw: f32) {
+    push_control(ControlMsg::SetCamLook { pos: [x, y, z], pitch, yaw });
+}
+
 /// Toggle the x-ray overlay: when on (default), players are drawn on top of walls
 /// and smoke so you can always see them, like a demo watched with wallhack.
 #[wasm_bindgen]
@@ -469,6 +476,11 @@ fn drain_controls(
                 }
             }
             ControlMsg::SetCamFree => viewer.cam_mode = CamMode::Free,
+            ControlMsg::SetCamLook { pos, pitch, yaw } => {
+                let s = viewer.manifest.as_ref().map(|m| m.scene_scale as f32).unwrap_or(0.02);
+                orbit_cam.look_from(Vec3::new(pos[0], pos[2], -pos[1]) * s, pitch.to_radians(), yaw.to_radians());
+                viewer.cam_mode = CamMode::Free;
+            }
             ControlMsg::SetCamFollow { slot, first_person } => {
                 viewer.cam_mode = CamMode::Follow { slot, first_person };
             }

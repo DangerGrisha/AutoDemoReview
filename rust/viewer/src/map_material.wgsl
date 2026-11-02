@@ -13,13 +13,13 @@ struct MapParams {
     tint: vec4<f32>,
     // xyz towards the sun, w the range the light is stored in
     sun_dir: vec4<f32>,
-    // rgb sun light on a surface facing it, w exposure
+    // rgb sun light on a surface facing it, w what light is multiplied by before the curve
     sun_rgb: vec4<f32>,
     // x unlit, y lightmap is there, z alpha cutoff
     misc: vec4<f32>,
     // Valve's filmic curve: shoulder, linear strength, linear angle, toe strength
     curve: vec4<f32>,
-    // toe numerator, toe denominator, white point, 1 / the curve at the white point
+    // toe numerator, toe denominator, white point (linear), 1 / the curve at the white point
     curve2: vec4<f32>,
 };
 

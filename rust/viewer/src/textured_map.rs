@@ -404,6 +404,9 @@ pub struct Tone {
 impl Tone {
     /// These numbers make the curve a straight line up to the white point.
     const STRAIGHT: [f32; 6] = [0.0, 0.001, 0.001, 1.0, 1.0, 1.0];
+    /// What the engine multiplies an exposed picture by before the curve. Without it, and with
+    /// the white point read as a plain number, de_mirage came out 1.5 times too dark.
+    const BEFORE_CURVE: f32 = 2.8;
 
     fn from_header(header: Option<&Value>) -> Self {
         let number = |key: &str, fallback: f32| {
@@ -411,11 +414,12 @@ impl Tone {
         };
         let mut tone = Self {
             exposure: number("exposure", 1.0),
-            white: number("white", 1.0).max(0.01),
+            // a file without tone settings shows its colours as they are
+            white: number("white", Self::BEFORE_CURVE.log2()),
             curve: floats::<6>(header.and_then(|t| t.get("curve"))).unwrap_or(Self::STRAIGHT),
         };
         // numbers that divide by zero would turn the whole map black
-        if !(tone.bend(tone.white).abs() > 1e-6) {
+        if !(tone.bend(tone.white_point()).abs() > 1e-6) {
             tone.curve = Self::STRAIGHT;
         }
         tone
@@ -426,15 +430,26 @@ impl Tone {
         (x * (a * x + c * b) + d * e) / (x * (a * x + b) + d * f) - e / f
     }
 
+    /// The file gives the white point in stops.
+    fn white_point(&self) -> f32 {
+        2.0_f32.powf(self.white)
+    }
+
+    /// What light is multiplied by on its way into the curve.
+    fn scale(&self) -> f32 {
+        self.exposure * Self::BEFORE_CURVE
+    }
+
     /// What the screen gets for this much light.
     fn apply(&self, light: f32) -> f32 {
-        self.bend((light * self.exposure).min(self.white)) / self.bend(self.white)
+        self.bend((light * self.scale()).min(self.white_point())) / self.bend(self.white_point())
     }
 
     /// The two vectors the shader reads the curve from.
     fn uniforms(&self) -> (Vec4, Vec4) {
         let [a, b, c, d, e, f] = self.curve;
-        (Vec4::new(a, b, c, d), Vec4::new(e, f, self.white, 1.0 / self.bend(self.white)))
+        let white = self.white_point();
+        (Vec4::new(a, b, c, d), Vec4::new(e, f, white, 1.0 / self.bend(white)))
     }
 }
 
@@ -442,8 +457,8 @@ impl Tone {
 #[derive(Resource)]
 pub struct MapLight {
     pub grid: LightGrid,
-    /// what a floor in full sun reads in the grid
-    open_floor: Vec3,
+    /// the light on a player in the open, averaged over all the ways a surface can face
+    open_player: Vec3,
     sun_color: Color,
     sun_illuminance: f32,
     ambient: f32,
@@ -459,6 +474,8 @@ impl MapLight {
         const BEVY_EXPOSURE: f32 = 0.001_002;
         /// What a floor in the open reads from the sky on these maps, whatever the sun does.
         const SKY_ON_FLOOR: f32 = 0.5;
+        /// A surface turned every way at once gets a quarter of a light it could face.
+        const SUN_ON_AVERAGE: f32 = 0.25;
         let sun = Vec3::from_array(sun_rgb);
         let scale = tone.apply(1.0);
         let on_screen = sun * scale;
@@ -466,19 +483,22 @@ impl MapLight {
         let tint = on_screen / strongest;
         Self {
             grid,
-            open_floor: sun * sun_dir[1].max(0.2) + Vec3::splat(SKY_ON_FLOOR),
+            open_player: sun * SUN_ON_AVERAGE + Vec3::splat(SKY_ON_FLOOR),
             sun_color: Color::linear_rgb(tint.x, tint.y, tint.z),
             sun_illuminance: strongest * std::f32::consts::PI / BEVY_EXPOSURE,
             ambient: SKY_ON_FLOOR * scale / BEVY_EXPOSURE,
         }
     }
 
-    /// How much of an open floor's light there is at this point, in Hammer units, as a
-    /// multiplier on a player already lit for the open. The floor keeps them from going
-    /// fully black: a dark room is dark, a player is still something you need to find.
+    /// The light at this point, in Hammer units, as a multiplier on a player already lit for
+    /// the open. It compares with the average over a player's surfaces and not with a floor
+    /// facing the sun: shade comes from all around, and the viewer's one sun only reaches the
+    /// side facing it, so the floor's number left a player in the shade black from behind.
+    /// The minimum keeps them from going fully black: a dark room is dark, a player is still
+    /// something you need to find.
     pub fn at(&self, p: Vec3) -> Vec3 {
         const DARKEST: f32 = 0.06;
-        (self.grid.sample(p) / self.open_floor).clamp(Vec3::splat(DARKEST), Vec3::ONE)
+        (self.grid.sample(p) / self.open_player).clamp(Vec3::splat(DARKEST), Vec3::ONE)
     }
 }
 
@@ -565,11 +585,29 @@ fn texture_settings(linear_only_lightmap: bool) -> ImageSamplerDescriptor {
     }
 }
 
-fn load_texture(asset_server: &AssetServer, path: String, lightmap: bool) -> Handle<Image> {
+/// What a texture holds, which decides how it is read.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum TextureKind {
+    Color,
+    Mask,
+    Lightmap,
+}
+
+impl TextureKind {
+    /// Bevy ignores the format written in a KTX2 file and reads it as colour unless told
+    /// otherwise. A lightmap read as colour keeps the sun, which is in its alpha, and loses
+    /// ten to twenty times the light in the shade, so rooms go black and streets look right.
+    fn is_srgb(self) -> bool {
+        self == Self::Color
+    }
+}
+
+fn load_texture(asset_server: &AssetServer, path: String, kind: TextureKind) -> Handle<Image> {
     asset_server
         .load_builder()
         .with_settings(move |s: &mut ImageLoaderSettings| {
-            s.sampler = ImageSampler::Descriptor(texture_settings(lightmap));
+            s.is_srgb = kind.is_srgb();
+            s.sampler = ImageSampler::Descriptor(texture_settings(kind == TextureKind::Lightmap));
         })
         .load(path)
 }
@@ -579,7 +617,7 @@ fn map_params(def: &MaterialDef, geo: &MapGeo, tint: [f32; 3]) -> MapParams {
     MapParams {
         tint: Vec4::new(tint[0], tint[1], tint[2], def.opacity),
         sun_dir: Vec4::new(geo.sun_dir[0], geo.sun_dir[1], geo.sun_dir[2], geo.light_range),
-        sun_rgb: Vec4::new(geo.sun_rgb[0], geo.sun_rgb[1], geo.sun_rgb[2], geo.tone.exposure),
+        sun_rgb: Vec4::new(geo.sun_rgb[0], geo.sun_rgb[1], geo.sun_rgb[2], geo.tone.scale()),
         misc: Vec4::new(if def.unlit { 1.0 } else { 0.0 }, 0.0, def.cutoff, 0.0),
         curve,
         curve2,
@@ -672,7 +710,7 @@ pub fn finish_map_load(
     let lightmap = geo
         .lightmap
         .as_ref()
-        .map(|rel| load_texture(&asset_server, path_of(rel), true));
+        .map(|rel| load_texture(&asset_server, path_of(rel), TextureKind::Lightmap));
 
     let mut queue = TextureQueue::default();
     let mut refs = Vec::with_capacity(geo.materials.len());
@@ -708,8 +746,9 @@ pub fn finish_map_load(
                 if slot != Slot::Color && !layers {
                     continue;
                 }
+                let kind = if slot == Slot::Blend { TextureKind::Mask } else { TextureKind::Color };
                 queue.0.push(QueuedTexture {
-                    image: load_texture(&asset_server, path_of(rel), false),
+                    image: load_texture(&asset_server, path_of(rel), kind),
                     target: target.clone(),
                     slot,
                     tint: def.tint,
@@ -746,7 +785,7 @@ pub fn finish_map_load(
         let material = plain.add(MapMaterial {
             params: MapParams {
                 tint: Vec4::ONE,
-                sun_rgb: Vec4::new(0.0, 0.0, 0.0, geo.tone.exposure),
+                sun_rgb: Vec4::new(0.0, 0.0, 0.0, geo.tone.scale()),
                 misc: Vec4::new(1.0, 0.0, 0.0, 0.0),
                 curve,
                 curve2,
@@ -759,7 +798,7 @@ pub fn finish_map_load(
             two_sided: true,
         });
         queue.0.push(QueuedTexture {
-            image: load_texture(&asset_server, path_of(rel), false),
+            image: load_texture(&asset_server, path_of(rel), TextureKind::Color),
             target: MatRef::Plain(material.clone()),
             slot: Slot::Color,
             tint: [1.0; 3],
@@ -966,29 +1005,39 @@ mod tests {
             range: 4.0,
         };
         let tone = Tone { exposure: 0.9, white: 1.5, curve: Tone::STRAIGHT };
-        // straight overhead, so an open floor reads the sun plus the sky: 3.5, 2.5, 1.5
+        // the average over a player in the open is 0.75 + 0.5, 0.5 + 0.5 and 0.25 + 0.5
         let bright = MapLight::new(grid(255), [0.0, 1.0, 0.0], [3.0, 2.0, 1.0], tone);
         assert_eq!(bright.at(Vec3::ZERO), Vec3::ONE);
         let dark = MapLight::new(grid(0), [0.0, 1.0, 0.0], [3.0, 2.0, 1.0], tone);
         assert_eq!(dark.at(Vec3::ZERO), Vec3::splat(0.06));
-        // full sun on an albedo of 1 gives what the map's shader gives: 3 * 0.9 / 1.5
+        // shade of 0.5 all around, which the grid codes as sqrt(0.5 / 4)
+        let shade = MapLight::new(grid(90), [0.0, 1.0, 0.0], [3.0, 2.0, 1.0], tone);
+        let at = shade.at(Vec3::ZERO);
+        assert!((at - Vec3::new(0.4, 0.5, 0.665)).length() < 0.01, "{at}");
+        // full sun on an albedo of 1 gives what the map's shader gives: 3 * 0.9 * 2.8 / 2^1.5
         let pixel = bright.sun_illuminance / std::f32::consts::PI * 0.001_002;
-        assert!((pixel - 1.8).abs() < 0.005, "{pixel}");
+        assert!((pixel - 2.675).abs() < 0.01, "{pixel}");
     }
 
     #[test]
     fn the_tone_curve_is_the_maps_own() {
         // de_mirage: a straight line up to the white point
         let mirage = Tone { exposure: 0.9, white: 1.5, curve: Tone::STRAIGHT };
-        assert!((mirage.apply(1.0) - 0.6).abs() < 0.001);
+        assert!((mirage.apply(1.0) - 0.892).abs() < 0.002, "{}", mirage.apply(1.0));
         assert_eq!(mirage.apply(100.0), 1.0);
         assert!(mirage.apply(0.0).abs() < 0.001);
         // de_ancient: it bends, so the shade is lifted against a straight line to the same white
         let ancient = Tone { exposure: 1.35, white: 4.0, curve: [0.1499, 0.5012, 0.0999, 0.1999, 0.02, 0.2999] };
-        assert!((ancient.apply(1.0) - 0.533).abs() < 0.005);
-        assert!(ancient.apply(1.0) > 1.35 / 4.0);
+        assert!((ancient.apply(1.0) - 0.648).abs() < 0.005, "{}", ancient.apply(1.0));
         assert_eq!(ancient.apply(100.0), 1.0);
         assert!(ancient.apply(0.5) < ancient.apply(1.0));
+    }
+
+    #[test]
+    fn only_colour_is_read_as_srgb() {
+        assert!(TextureKind::Color.is_srgb());
+        assert!(!TextureKind::Mask.is_srgb());
+        assert!(!TextureKind::Lightmap.is_srgb());
     }
 
     #[test]
@@ -996,6 +1045,7 @@ mod tests {
         let header = serde_json::json!({ "exposure": 1.0, "white": 2.0, "curve": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0] });
         let tone = Tone::from_header(Some(&header));
         assert_eq!(tone.curve, Tone::STRAIGHT);
-        assert!((tone.apply(1.0) - 0.5).abs() < 0.001);
+        // 2.8 into a straight line whose white point is 2^2
+        assert!((tone.apply(1.0) - 0.7).abs() < 0.002, "{}", tone.apply(1.0));
     }
 }

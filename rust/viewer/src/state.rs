@@ -23,6 +23,8 @@ pub enum ControlMsg {
     SetXray(bool),
     /// Release the camera back to free orbit.
     SetCamFree,
+    /// Put the free camera at a place in Source units, looking along pitch and yaw in degrees.
+    SetCamLook { pos: [f32; 3], pitch: f32, yaw: f32 },
     /// Lock the camera to a player slot in first- (true) or third-person (false).
     SetCamFollow { slot: usize, first_person: bool },
 }

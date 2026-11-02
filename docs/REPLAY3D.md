@@ -379,10 +379,21 @@ What each part does, and why:
 - **`map_material.wgsl` is Source 2's own lighting:** `albedo * (irradiance + sun * NdotL *
   visibility)`. There is **no division by pi**, because Source 2's lights and lightmaps already
   carry it. Dividing gave a sun a third too dim.
+- **A lightmap has to be loaded with `is_srgb = false`.** Bevy ignores the format written in a
+  KTX2 file and reads it as colour unless told otherwise. The sun's visibility is in the alpha,
+  which sRGB does not touch, so a lightmap read as colour keeps the streets right and takes ten
+  to twenty times the light out of the shade. It looks like a problem with exposure and is not.
+  The same goes for blend masks.
 - **The tone curve is the map's own:** Valve's filmic curve with the numbers from the `.vpost`.
   On de_mirage they make it a straight line up to the white point, and on de_ancient it bends.
-  `exposure` is the middle of `minexposure` and `maxexposure` on `post_processing_volume`.
-  Bloom, fog and the colour grade are not implemented.
+  The picture is multiplied by 2.8 before the curve, and `m_flWhitePoint` is in stops, so
+  1.5 means a white of 2^1.5. Read as a plain number, without the 2.8, it left de_mirage 1.5
+  times too dark.
+  `exposure` is the middle of `minexposure` and `maxexposure` on `post_processing_volume`. The
+  game adapts between the two, which is at most 11% either way on de_mirage and de_nuke, but
+  26% on de_ancient and 44% on de_anubis, where the middle looks pale outdoors.
+  Bloom, fog and the colour grade are not implemented. The grade is small on de_mirage (3 out of
+  255 on average) and larger on de_nuke (9), de_inferno (13), de_anubis (15) and de_vertigo (17).
 - **The sun's shadow has its own channel.** `direct_light_shadows` holds up to four lights, and
   `bakedshadowindex` on `light_environment` names the sun's. de_mirage has the same thing in
   the first three, which hides a mistake here: mixing them left the other maps grey and without
@@ -401,7 +412,30 @@ What each part does, and why:
 - **Players stand in the map's light.** The bake stores a coarse light grid. `MapLight` sets
   the viewer's sun and ambient so that Bevy's PBR gives the same pixels as the map's shader,
   and `fade_team_colour` multiplies a player's material by the light at their position,
-  relative to an open floor.
+  relative to what an average surface of a player gets in the open. Comparing with a floor
+  facing the sun left a player in the shade black from behind.
+
+### Checking the light against the game
+
+The game ships its own screenshots of each map, in `pak01_dir.vpk`, at
+`panorama/images/map_icons/screenshots/720p/<map>_<n>_png.vtex_c`. `set_camera_look(x, y, z,
+pitch, yaw)` takes the arguments of `setpos` and `setang`, so a view can be lined up with them.
+The same surfaces, in sRGB, picked by eye and with the framing only roughly the same:
+
+| Surface | Screenshot | Viewer |
+|---|---|---|
+| de_mirage, A site floor in the sun | 250, 217, 169 | 250, 219, 167 |
+| de_mirage, A site wall in the sun | 231, 186, 124 | 230, 184, 128 |
+| de_mirage, Palace floor | 99, 59, 30 | 96, 59, 28 |
+| de_nuke, site A concrete wall | 108, 106, 90 | 111, 107, 94 |
+
+With the lightmap read as colour, that Palace floor read 17, 3, 0.
+
+**Still different from those screenshots:** floors and painted metal shine in the game and are
+matte here, and walls have no relief, since the map's shader has no normal maps and no
+reflections. de_nuke's tanks come out too bright (158 against 124). Props with no lightmap read
+the bake's coarse grid rather than the game's probes, which may be why; this has not been
+checked. The sky is a little dimmer (176, 213, 224 against 201, 226, 255).
 
 ### What it costs (de_mirage, RTX 3070, 1920x1080)
 
@@ -434,8 +468,8 @@ shows them all.
 | de_inferno | 8.66 M | 919 | 296 MB | 66-125 | 1496 | 31 s | plain, size |
 | de_dust2 | 4.54 M | 691 | 298 MB | 78+ (*) | 1021 | 22 s | plain, size |
 | de_overpass | 3.98 M | 846 | 305 MB | 74+ (*) | 1084 | 23 s | plain, size |
-| de_ancient | 9.19 M | 297 | 305 MB | 106-123 | 658 | 26 s | plain, size and darkness |
-| de_train | 8.25 M | 1252 | 409 MB | 50+ (*) | 1672 | 30 s | plain, size and darkness |
+| de_ancient | 9.19 M | 297 | 305 MB | 106-123 | 658 | 26 s | plain, size |
+| de_train | 8.25 M | 1252 | 409 MB | 50+ (*) | 1672 | 30 s | plain, size |
 
 (*) No local match on this map: the number is the overview, the players are from another map.
 de_vertigo's world sits about 11000 units up, so another map's players see none of it.
@@ -446,9 +480,13 @@ What is still wrong on them:
   read. This is the material of the newer maps.
 - **Some overlays are solid cards.** On de_inferno a red rectangle and a crest on a brown square
   sit on walls.
-- **Rooms are very dark** on de_ancient, de_nuke and de_train. The shader uses one fixed exposure
-  and the game adjusts it, which is the likely reason. This has not been checked against the game.
-- **de_train has no sun at all** (`brightness = 0`), and most of it is close to black.
+- **de_anubis looks pale outdoors** against its screenshots, which are more saturated. Its
+  exposure range is the widest and its colour grade among the strongest, and neither is applied.
+- **de_train has no sun at all** (`brightness = 0`). From above it is grey and readable. No match
+  on this map is at hand to look closer.
+- **Stationary lights are missing.** `directlight = 3` lights are drawn by the game at run time
+  from the other channels of `direct_light_shadows`, and only their bounce is in the lightmap.
+  There are 14 of them on de_nuke, 34 on de_train and none on de_mirage.
 
 The size is mostly textures, and on the heaviest maps geometry too: brickwork modelled in
 triangles takes de_inferno's `world.c2map` to 104 MB. `-MaxTexture 1024` and simplifying inside
