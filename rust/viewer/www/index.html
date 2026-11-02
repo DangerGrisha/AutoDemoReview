@@ -252,7 +252,8 @@
  * JS <-> WASM control interface (the page owns the UI; Bevy owns the scene)
  *
  * JS -> WASM (exported from pkg/viewer.js):
- *   run(canvasSelector, assetRoot)     start the Bevy app; returns immediately
+ *   run(canvasSelector, assetRoot, cs2Models)  start the Bevy app; returns immediately
+ *                                      (cs2Models: real player models, not the soldier)
  *   load_manifest(jsonText)            greybox + team colors + camera framing
  *   load_round(bytes) -> headerJson    decode one round's .3dr; resets clock to 0
  *   seek(seconds) / set_playing(bool) / set_speed(x)
@@ -806,10 +807,15 @@ async function main(){
   // no-cache: a re-extraction rewrites manifest.json in place — never let the
   // heuristic HTTP cache serve yesterday's copy (this hid the score once)
   const manifestReq = fetch('manifest.json', {cache:'no-cache'}).then(r=>r.text());
+  // real player models when built (tools/convert_characters.ps1); ?soldier forces the
+  // fallback. Warm-fetched like the map, or the first round plays with nobody on it.
+  const cs2Models = !new URLSearchParams(location.search).has('soldier')
+    && (await Promise.all(['t','ct'].map(s=>fetch(`assets/models/cs2_v1/${s}.glb`)
+         .then(r=>r.ok && r.arrayBuffer().then(()=>true)).catch(()=>false)))).every(Boolean);
 
   await wasmReady;
   await mapWarm;
-  run('#canvas', null);   // null = page-relative "assets/" root (dev server)
+  run('#canvas', null, cs2Models);   // null = page-relative "assets/" root (dev server)
   MANIFEST = JSON.parse(await manifestReq);
   if (qmap) MANIFEST.mapAsset = qmap;
 

@@ -144,6 +144,33 @@ pub struct PlayerBody {
 #[derive(Component)]
 pub struct PlayerAnimSlot(pub usize);
 
+/// Gait + direction memory for `drive_player_anim` (both have hysteresis).
+#[derive(Component, Default)]
+pub struct PlayerLoco(pub crate::player_anim::Locomotion);
+
+/// On a textured player mesh: its team colour and how far `fade_team_colour` has painted
+/// it, so the material is only rewritten when that changes.
+#[derive(Component)]
+pub struct TeamFade {
+    pub team: Color,
+    pub level: u8,
+}
+
+/// Clips one player can be fading between at once. A new clip reuses the oldest node,
+/// so running out only cuts a fade short, and that takes three clip changes in one fade.
+pub const CLIP_NODES: usize = 4;
+
+/// One player's own small animation graph. The next clip is written into the next node
+/// rather than each graph holding all 78: Bevy walks every graph node for every animated
+/// bone every frame, and 78 nodes x 80 bones x 10 players was 2.6 ms a frame in wasm.
+#[derive(Component)]
+pub struct PlayerClipNodes {
+    pub nodes: [AnimationNodeIndex; CLIP_NODES],
+    /// Index into `nodes` of the clip playing now.
+    pub current: usize,
+    pub clip: AssetId<AnimationClip>,
+}
+
 #[derive(Component)]
 pub struct UtilTag;
 

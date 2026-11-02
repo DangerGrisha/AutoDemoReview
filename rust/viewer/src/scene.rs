@@ -7,25 +7,55 @@ use bevy::prelude::*;
 use c2r3::DecodedRound;
 use serde_json::Value;
 
-use bevy::animation::graph::{AnimationGraph, AnimationNodeIndex};
-use bevy::asset::RenderAssetUsages;
-use bevy::gltf::{GltfAssetLabel, GltfLoaderSettings};
+use bevy::asset::{LoadState, RenderAssetUsages};
+use bevy::gltf::{Gltf, GltfAssetLabel, GltfLoaderSettings};
 
 use crate::coords::{radar_ground_rect, world_to_scene, Calibration};
+use crate::player_anim::{self, Gait, WeaponClass};
 use crate::state::{GreyboxTag, ManifestData, MapTag, PlayerBody};
 use crate::util::hex_color;
 
 pub const CAP_H: f32 = 0.35 * 2.0 + 1.0; // player height reference (also label anchor)
 
-// --- humanoid player model (Soldier.glb: Mixamo rig, clips Idle/Run/TPose/Walk) ---
-pub const MODEL_PATH: &str = "models/player.glb";
+/// One player model file and how it sits inside a `PlayerBody` (+X forward at yaw 0).
+pub struct ModelSpec {
+    pub path: &'static str,
+    pub scale: f32,
+    pub yaw_offset: f32,
+    /// True paints the model in the team colour at any distance. False shows its textures
+    /// up close and fades to the team colour far away (`fade_team_colour` in lib.rs).
+    pub team_paint: bool,
+    /// Has a `wpn` bone the held weapon can follow.
+    pub weapon_bone: bool,
+}
+
+// --- fallback model (Soldier.glb: Mixamo rig, clips Idle/Run/TPose/Walk) ---
 /// Soldier.glb stands 1.832 units tall; scale to ~CAP_H (1.7). Tunable.
-pub const MODEL_SCALE: f32 = 0.93;
-/// The model's bind-pose forward vs our yaw (+X at yaw 0). Calibrated visually.
-pub const MODEL_YAW_OFFSET: f32 = -std::f32::consts::FRAC_PI_2;
-/// Locomotion speed thresholds (Source units/sec) for idle->walk->run.
-pub const WALK_SPEED: f64 = 25.0;
-pub const RUN_SPEED: f64 = 150.0;
+const SOLDIER: ModelSpec = ModelSpec {
+    path: "models/player.glb",
+    scale: 0.93,
+    yaw_offset: -std::f32::consts::FRAC_PI_2,
+    team_paint: true,
+    weapon_bone: false,
+};
+// --- real CS2 models, built by tools/convert_characters.ps1 and never committed ---
+/// The exports stand in metres; a scene unit is 1/0.02 Source units of 0.0254 m.
+const CS2_SCALE: f32 = 0.02 / 0.0254;
+/// They face +Z, which a +90 degree yaw turns onto the body's +X.
+const CS2_T: ModelSpec = ModelSpec {
+    path: "models/cs2_v1/t.glb",
+    scale: CS2_SCALE,
+    yaw_offset: std::f32::consts::FRAC_PI_2,
+    team_paint: false,
+    weapon_bone: true,
+};
+const CS2_CT: ModelSpec = ModelSpec { path: "models/cs2_v1/ct.glb", ..CS2_T };
+/// demo team number of the T side (`teamColors` in the manifest); anything else gets CT.
+const TEAM_T: i64 = 2;
+
+/// Locomotion speed thresholds (Source units/sec) for the fallback model's idle->walk->run.
+const SOLDIER_WALK_SPEED: f64 = 25.0;
+const SOLDIER_RUN_SPEED: f64 = 150.0;
 
 pub fn parse_manifest(json: &str) -> Result<ManifestData, String> {
     let v: Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
@@ -242,34 +272,168 @@ mod hidden_material_tests {
     }
 }
 
-/// Handles for the shared humanoid player model + its animation graph. Built once
-/// at startup; the glTF scene + clips load asynchronously.
-#[derive(Resource, Clone)]
-pub struct PlayerModel {
-    pub scene: Handle<WorldAsset>,
-    pub graph: Handle<AnimationGraph>,
-    pub idle: AnimationNodeIndex,
-    pub walk: AnimationNodeIndex,
-    pub run: AnimationNodeIndex,
+/// Whether the page asked for the real CS2 models (`run()`'s third argument).
+#[derive(Resource, Clone, Copy)]
+pub struct UseCs2Models(pub bool);
+
+/// A pose's clip, by whichever clips the model has.
+#[derive(Clone)]
+pub enum ClipTable {
+    Soldier { idle: Handle<AnimationClip>, walk: Handle<AnimationClip>, run: Handle<AnimationClip> },
+    Cs2(HashMap<(WeaponClass, bool, Gait, usize), Handle<AnimationClip>>),
 }
 
-/// Startup: load the character scene + Idle/Walk/Run clips into one AnimationGraph.
+impl ClipTable {
+    pub fn idle(&self) -> &Handle<AnimationClip> {
+        self.pose(WeaponClass::Rifle, false, Gait::Still, 0, 0.0)
+    }
+
+    /// `speed` only matters to the fallback model, which has no gaits of its own.
+    pub fn pose(&self, class: WeaponClass, crouch: bool, gait: Gait, sector: usize, speed: f64) -> &Handle<AnimationClip> {
+        match self {
+            ClipTable::Soldier { idle, walk, run } => {
+                if speed >= SOLDIER_RUN_SPEED {
+                    run
+                } else if speed >= SOLDIER_WALK_SPEED {
+                    walk
+                } else {
+                    idle
+                }
+            }
+            ClipTable::Cs2(clips) => &clips[&(class, crouch, gait, sector)],
+        }
+    }
+}
+
+/// Handles for one player model + its clips.
+#[derive(Clone)]
+pub struct Rig {
+    pub spec: &'static ModelSpec,
+    pub scene: Handle<WorldAsset>,
+    pub clips: ClipTable,
+}
+
+/// The model each side wears (the same one twice for the fallback). Appears once the
+/// files have loaded (`finish_player_model`).
+#[derive(Resource)]
+pub struct PlayerModel {
+    pub t: Rig,
+    pub ct: Rig,
+}
+
+impl PlayerModel {
+    pub fn for_team(&self, team: i64) -> &Rig {
+        if team == TEAM_T {
+            &self.t
+        } else {
+            &self.ct
+        }
+    }
+}
+
+fn soldier_rig(gltf: &Gltf) -> Option<Rig> {
+    // Soldier.glb clip order: 0 Idle, 1 Run, 2 TPose, 3 Walk.
+    let clip = |i: usize| gltf.animations.get(i).cloned();
+    Some(Rig {
+        spec: &SOLDIER,
+        scene: gltf.scenes.first()?.clone(),
+        clips: ClipTable::Soldier { idle: clip(0)?, walk: clip(3)?, run: clip(1)? },
+    })
+}
+
+/// None when the file lacks a clip some pose needs (a stale or half-built export).
+fn cs2_rig(spec: &'static ModelSpec, gltf: &Gltf) -> Option<Rig> {
+    let mut clips = HashMap::new();
+    for class in WeaponClass::ALL {
+        for crouch in [false, true] {
+            for gait in [Gait::Still, Gait::Walk, Gait::Run] {
+                for sector in 0..player_anim::SECTORS {
+                    let name = player_anim::clip_name(class, crouch, gait, sector);
+                    let clip = gltf.named_animations.get(name.as_str())?.clone();
+                    clips.insert((class, crouch, gait, sector), clip);
+                }
+            }
+        }
+    }
+    Some(Rig { spec, scene: gltf.scenes.first()?.clone(), clips: ClipTable::Cs2(clips) })
+}
+
+/// Player model files still loading; `finish_player_model` turns them into `PlayerModel`.
+///
+/// This loads each file's root `Gltf` once and takes the clips from it on purpose.
+/// Bevy re-reads and re-decodes the whole file for every labelled load, so one
+/// `GltfAssetLabel::Animation(i)` per clip froze the page for half a minute.
+#[derive(Resource)]
+pub struct PendingPlayerModel {
+    t: Handle<Gltf>,
+    ct: Handle<Gltf>,
+    cs2: bool,
+}
+
+impl PendingPlayerModel {
+    fn soldier(asset_server: &AssetServer) -> Self {
+        let file = asset_server.load(SOLDIER.path);
+        Self { t: file.clone(), ct: file, cs2: false }
+    }
+
+    fn cs2(asset_server: &AssetServer) -> Self {
+        Self { t: asset_server.load(CS2_T.path), ct: asset_server.load(CS2_CT.path), cs2: true }
+    }
+
+    /// A broken CS2 file costs the real models, not the players.
+    fn fall_back(&self, commands: &mut Commands, asset_server: &AssetServer) {
+        if self.cs2 {
+            warn!("CS2 player models did not load; using the fallback soldier");
+            commands.insert_resource(Self::soldier(asset_server));
+        } else {
+            error!("player model did not load; rounds will show no players");
+            commands.remove_resource::<Self>();
+        }
+    }
+}
+
+/// Startup: start loading the model file(s) for the page's choice.
 pub fn setup_player_model(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
-    mut graphs: ResMut<Assets<AnimationGraph>>,
+    use_cs2: Res<UseCs2Models>,
 ) {
-    let scene = asset_server.load(GltfAssetLabel::Scene(0).from_asset(MODEL_PATH));
-    // Soldier.glb clip order: 0 Idle, 1 Run, 2 TPose, 3 Walk.
-    let idle_clip = asset_server.load(GltfAssetLabel::Animation(0).from_asset(MODEL_PATH));
-    let run_clip = asset_server.load(GltfAssetLabel::Animation(1).from_asset(MODEL_PATH));
-    let walk_clip = asset_server.load(GltfAssetLabel::Animation(3).from_asset(MODEL_PATH));
-    let mut graph = AnimationGraph::new();
-    let idle = graph.add_clip(idle_clip, 1.0, graph.root);
-    let walk = graph.add_clip(walk_clip, 1.0, graph.root);
-    let run = graph.add_clip(run_clip, 1.0, graph.root);
-    let graph = graphs.add(graph);
-    commands.insert_resource(PlayerModel { scene, graph, idle, walk, run });
+    commands.insert_resource(if use_cs2.0 {
+        PendingPlayerModel::cs2(&asset_server)
+    } else {
+        PendingPlayerModel::soldier(&asset_server)
+    });
+}
+
+/// Once the files are in, publish `PlayerModel`.
+pub fn finish_player_model(
+    mut commands: Commands,
+    pending: Option<Res<PendingPlayerModel>>,
+    asset_server: Res<AssetServer>,
+    gltfs: Res<Assets<Gltf>>,
+) {
+    let Some(pending) = pending else { return };
+    if [&pending.t, &pending.ct]
+        .iter()
+        .any(|file| matches!(asset_server.load_state(*file), LoadState::Failed(_)))
+    {
+        pending.fall_back(&mut commands, &asset_server);
+        return;
+    }
+    let (Some(t), Some(ct)) = (gltfs.get(&pending.t), gltfs.get(&pending.ct)) else {
+        return;
+    };
+    let rigs = if pending.cs2 {
+        cs2_rig(&CS2_T, t).zip(cs2_rig(&CS2_CT, ct))
+    } else {
+        soldier_rig(t).map(|rig| (rig.clone(), rig))
+    };
+    let Some((t, ct)) = rigs else {
+        pending.fall_back(&mut commands, &asset_server);
+        return;
+    };
+    commands.insert_resource(PlayerModel { t, ct });
+    commands.remove_resource::<PendingPlayerModel>();
 }
 
 /// Spawn one humanoid model per player slot. The `PlayerBody` parent carries the
@@ -277,19 +441,21 @@ pub fn setup_player_model(
 /// child carries the fixed model scale + forward offset. Team tint and animation are
 /// wired post-load once the scene's meshes / `AnimationPlayer` appear (see lib.rs).
 pub fn spawn_players(commands: &mut Commands, model: &PlayerModel, dec: &DecodedRound) {
-    let child = Transform::from_scale(Vec3::splat(MODEL_SCALE))
-        .with_rotation(Quat::from_rotation_y(MODEL_YAW_OFFSET));
-    for slot in 0..dec.players.len() {
+    for (slot, player) in dec.players.iter().enumerate() {
+        let rig = model.for_team(player.team);
+        let child = Transform::from_scale(Vec3::splat(rig.spec.scale))
+            .with_rotation(Quat::from_rotation_y(rig.spec.yaw_offset));
         commands
             .spawn((Transform::default(), Visibility::Hidden, PlayerBody { slot }))
             .with_children(|p| {
-                p.spawn((WorldAssetRoot(model.scene.clone()), child));
-                // chest weapon mount: weapons_viz swaps the held kit under it
+                p.spawn((WorldAssetRoot(rig.scene.clone()), child));
+                // chest weapon mount: weapons_viz swaps the held kit under it. A model
+                // with a `wpn` bone takes it over once the scene has spawned.
                 p.spawn((
                     Transform::from_translation(crate::weapons_viz::MOUNT_POS)
                         .with_scale(Vec3::splat(crate::weapons_viz::THIRD_SCALE)),
                     Visibility::Inherited,
-                    crate::weapons_viz::WeaponMount { slot, current: None },
+                    crate::weapons_viz::WeaponMount { slot, current: None, on_bone: false },
                 ));
             });
     }

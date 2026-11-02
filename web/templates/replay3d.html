@@ -7,7 +7,7 @@
 {% if has_replay %}
 {# ?v= busts the 7-day static cache when the frame-payload layout changes; keep
    the token in lockstep with the import + fetch URLs below #}
-<link rel="preload" as="fetch" crossorigin href="/static/replay3d/pkg/viewer_bg.wasm?v=3">
+<link rel="preload" as="fetch" crossorigin href="/static/replay3d/pkg/viewer_bg.wasm?v=4">
 {% if map_asset %}<link rel="preload" as="fetch" crossorigin href="/static/replay3d/assets/{{ map_asset }}">{% endif %}
 {% endif %}
 <style>
@@ -278,10 +278,11 @@
  * weapon,worldX,worldY,yawDeg,present} — worldX/worldY/yawDeg are raw demo
  * coords for the live radar. ?v= must match the preload hint above. */
 import init, { run, load_manifest, load_round, seek, set_playing, set_speed, set_flash_focus,
-  set_map_visible, set_camera_follow, set_camera_free, set_xray } from '/static/replay3d/pkg/viewer.js?v=3';
+  set_map_visible, set_camera_follow, set_camera_free, set_xray } from '/static/replay3d/pkg/viewer.js?v=4';
 
 const BASE = '/matches/{{ match_id }}/replay3d/';
 const MAP_ASSET = {{ (map_asset or "")|tojson }};
+const CS2_MODELS = {{ (cs2_models or false)|tojson }};
 // UNCOMPRESSED sizes injected by the server (progress denominators; the
 // on-wire Content-Length is the compressed size, so it is the wrong one).
 const WASM_SIZE = {{ wasm_size or 0 }};
@@ -799,10 +800,16 @@ async function main(){
   // HTTP cache (Cache-Control makes Bevy's later fetch of the SAME URL a
   // deterministic disk-cache hit), and the manifest rides along.
   const wasmReady = init({ module_or_path:
-    fetchWithProgress('/static/replay3d/pkg/viewer_bg.wasm?v=3', WASM_SIZE, barSetter('barWasm','pctWasm')) });
+    fetchWithProgress('/static/replay3d/pkg/viewer_bg.wasm?v=4', WASM_SIZE, barSetter('barWasm','pctWasm')) });
   const mapWarm = MAP_ASSET
     ? fetchWithProgress('/static/replay3d/assets/'+MAP_ASSET, MAP_SIZE, barSetter('barMap','pctMap'))
         .then(r=>r.arrayBuffer())
+    : Promise.resolve(null);
+  // player models too: without this Bevy only starts on them after the map,
+  // and the first round plays with nobody on it until they arrive
+  const modelsWarm = CS2_MODELS
+    ? Promise.all(['t','ct'].map(s=>fetch(`/static/replay3d/assets/models/cs2_v1/${s}.glb`)
+        .then(r=>r.arrayBuffer()).catch(()=>null)))
     : Promise.resolve(null);
   // no-cache: re-processing a match rewrites these artifacts in place — always
   // revalidate instead of trusting the heuristic HTTP cache (cheap 304s)
@@ -810,7 +817,8 @@ async function main(){
 
   await wasmReady;
   await mapWarm;
-  run('#canvas', '/static/replay3d/assets');
+  await modelsWarm;
+  run('#canvas', '/static/replay3d/assets', CS2_MODELS);
   MANIFEST = JSON.parse(await manifestReq);
   if (MAP_ASSET) MANIFEST.mapAsset = MAP_ASSET;
 

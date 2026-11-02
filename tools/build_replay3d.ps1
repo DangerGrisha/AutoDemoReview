@@ -63,11 +63,15 @@ Copy-Item (Join-Path $repo 'web\static\replay3d\sfx.js') `
     (Join-Path $repo 'rust\viewer\www\sfx.js') -Force
 
 Write-Host '=== 6/6 precompress .br/.gz siblings for compressed serving ===' -ForegroundColor Cyan
-python (Join-Path $repo 'tools\precompress.py') `
+# the project venv has brotli (requirements-tools.txt); fall back to PATH
+$python = Join-Path $repo '.venv\Scripts\python.exe'
+if (-not (Test-Path $python)) { $python = 'python' }
+& $python (Join-Path $repo 'tools\precompress.py') `
     (Join-Path $pkg 'viewer_bg.wasm') (Join-Path $pkg 'viewer.js') `
     (Join-Path $repo 'web\static\replay3d\sfx.js') `
     (Join-Path $repo 'web\static\replay3d\assets\maps\*\world.glb') `
-    (Join-Path $repo 'web\static\replay3d\assets\models\*.glb')
+    (Join-Path $repo 'web\static\replay3d\assets\models\*.glb') `
+    (Join-Path $repo 'web\static\replay3d\assets\models\cs2_v1\*.glb')
 if ($LASTEXITCODE -ne 0) { Write-Warning 'precompress failed - compressed serving will fall back to raw files' }
 
 $wasm = Get-Item (Join-Path $pkg 'viewer_bg.wasm')

@@ -6,6 +6,7 @@
 
 mod coords;
 mod orbit;
+mod player_anim;
 mod scene;
 mod state;
 mod util;
@@ -14,6 +15,7 @@ mod weapons_viz;
 pub use coords::*;
 
 use bevy::animation::graph::AnimationGraphHandle;
+use bevy::animation::graph::AnimationNodeType;
 use bevy::animation::transition::AnimationTransitions;
 use bevy::animation::AnimationPlayer;
 use bevy::asset::AssetMetaCheck;
@@ -26,7 +28,8 @@ use wasm_bindgen::prelude::*;
 
 use state::{
     ang_lerp, lerp, push_control, sample_pos, CamMode, ControlMsg, GreyboxTag, MainCam, MapTag,
-    PlayerAnimSlot, PlayerBody, RoundState, ShotViz, UtilTag, Viewer, XrayCam, QUEUE,
+    PlayerAnimSlot, PlayerBody, PlayerClipNodes, PlayerLoco, RoundState, ShotViz, TeamFade, UtilTag,
+    Viewer, XrayCam, CLIP_NODES, QUEUE,
 };
 use util::{tracer_frame, util_frame, UtilKind};
 
@@ -38,13 +41,16 @@ use util::{tracer_frame, util_frame, UtilKind};
 /// all further control goes through the queued messages below. `asset_root` is
 /// the base every asset path (radar PNG, map glTF + its textures) resolves
 /// against — on wasm it becomes the fetch() URL prefix. `None` keeps Bevy's
-/// page-relative "assets" default (the standalone www/ dev page).
+/// page-relative "assets" default (the standalone www/ dev page). `cs2_models` picks
+/// the real CS2 characters over the fallback soldier; the page only passes true when
+/// those (never committed) files exist, because a missing model means no players at all.
 #[wasm_bindgen]
-pub fn run(canvas_selector: String, asset_root: Option<String>) {
+pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Option<bool>) {
     console_error_panic_hook::set_once();
     App::new()
         .insert_resource(ClearColor(util::hex_color("#0b0e14")))
         .insert_resource(Viewer::default())
+        .insert_resource(scene::UseCs2Models(cs2_models.unwrap_or(false)))
         .insert_resource(orbit::OrbitCam::default())
         .insert_resource(LabelsOut::default())
         .insert_resource(PlayerPoses::default())
@@ -76,6 +82,8 @@ pub fn run(canvas_selector: String, asset_root: Option<String>) {
             Update,
             (
                 drain_controls,
+                scene::finish_player_model,
+                spawn_round_players,
                 advance_clock,
                 update_players,
                 update_utility,
@@ -95,6 +103,7 @@ pub fn run(canvas_selector: String, asset_root: Option<String>) {
                 setup_player_anim,
                 drive_player_anim,
                 tint_players,
+                fade_team_colour,
                 weapons_viz::update_weapon_mounts,
                 weapons_viz::update_viewmodel,
             ),
@@ -327,7 +336,6 @@ fn drain_controls(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
-    player_model: Option<Res<scene::PlayerModel>>,
     mut orbit_cam: ResMut<orbit::OrbitCam>,
     q_greybox: Query<Entity, With<GreyboxTag>>,
     q_map: Query<Entity, With<MapTag>>,
@@ -382,11 +390,6 @@ fn drain_controls(
                 for e in &q_round {
                     commands.entity(e).despawn();
                 }
-                let Some(pm) = player_model.as_deref() else {
-                    warn!("player model not ready; skipping round spawn");
-                    continue;
-                };
-                scene::spawn_players(&mut commands, pm, &dec);
 
                 let n = dec.n_samples;
                 let rate = dec.sample_rate;
@@ -738,61 +741,139 @@ fn find_body_slot(
     }
 }
 
-/// When a spawned character's `AnimationPlayer` appears, attach our animation graph,
-/// start it on Idle, and tag it with the owning player slot for `drive_player_anim`.
-fn setup_player_anim(
+/// Give the current round its player bodies as soon as both it and the player model
+/// are there: the model loads at its own pace, so a round can get here first.
+/// `drain_controls` despawns the old bodies when a new round arrives.
+fn spawn_round_players(
     mut commands: Commands,
-    model: Option<Res<scene::PlayerModel>>,
-    mut q_new: Query<(Entity, &mut AnimationPlayer), Added<AnimationPlayer>>,
-    q_childof: Query<&ChildOf>,
-    q_body: Query<&PlayerBody>,
-) {
-    let Some(model) = model else { return };
-    for (e, mut player) in &mut q_new {
-        let mut transitions = AnimationTransitions::new();
-        transitions.play(&mut player, model.idle, Duration::ZERO).repeat();
-        let mut ec = commands.entity(e);
-        ec.insert((AnimationGraphHandle(model.graph.clone()), transitions));
-        if let Some(slot) = find_body_slot(e, &q_childof, &q_body) {
-            ec.insert(PlayerAnimSlot(slot));
-        }
-    }
-}
-
-/// Pick idle/walk/run each frame from the player's synthesized ground speed and
-/// crossfade to it. Speed = horizontal position delta between the two bracketing
-/// samples, in Source units/sec (freeze-on-death => speed 0 when not alive).
-fn drive_player_anim(
     viewer: Res<Viewer>,
     model: Option<Res<scene::PlayerModel>>,
-    mut q: Query<(&PlayerAnimSlot, &mut AnimationPlayer, &mut AnimationTransitions)>,
+    q_bodies: Query<(), With<PlayerBody>>,
 ) {
     let (Some(model), Some(r)) = (model, viewer.round.as_ref()) else {
         return;
     };
-    let (i0, i1, _f, _s) = sample_pos(viewer.clock, r.rate, r.n);
-    for (slot, mut player, mut transitions) in &mut q {
+    if q_bodies.is_empty() {
+        scene::spawn_players(&mut commands, &model, &r.dec);
+    }
+}
+
+/// When a spawned character's `AnimationPlayer` appears, attach its side's animation
+/// graph, start it on Idle, tag it with the owning player slot for `drive_player_anim`,
+/// and hand the weapon mount over to the model's weapon bone if it has one.
+fn setup_player_anim(
+    mut commands: Commands,
+    viewer: Res<Viewer>,
+    model: Option<Res<scene::PlayerModel>>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
+    mut q_new: Query<(Entity, &mut AnimationPlayer), Added<AnimationPlayer>>,
+    q_childof: Query<&ChildOf>,
+    q_body: Query<&PlayerBody>,
+    q_children: Query<&Children>,
+    q_names: Query<&Name>,
+    mut q_mounts: Query<(Entity, &mut weapons_viz::WeaponMount)>,
+) {
+    let (Some(model), Some(r)) = (model, viewer.round.as_ref()) else {
+        return;
+    };
+    for (e, mut player) in &mut q_new {
+        let Some(slot) = find_body_slot(e, &q_childof, &q_body) else {
+            continue;
+        };
+        let team = r.dec.players.get(slot).map(|p| p.team).unwrap_or(0);
+        let rig = model.for_team(team);
+        let idle = rig.clips.idle();
+        let mut graph = AnimationGraph::new();
+        let root = graph.root;
+        let nodes = std::array::from_fn(|_| graph.add_clip(idle.clone(), 1.0, root));
+        let mut transitions = AnimationTransitions::new();
+        transitions.play(&mut player, nodes[0], Duration::ZERO).repeat();
+        commands.entity(e).insert((
+            AnimationGraphHandle(graphs.add(graph)),
+            transitions,
+            PlayerAnimSlot(slot),
+            PlayerLoco::default(),
+            PlayerClipNodes { nodes, current: 0, clip: idle.id() },
+        ));
+        if rig.spec.weapon_bone {
+            let bone = q_children.iter_descendants(e).find(|b| {
+                q_names.get(*b).is_ok_and(|n| n.as_str() == weapons_viz::WEAPON_BONE)
+            });
+            let mount = q_mounts.iter_mut().find(|(_, m)| m.slot == slot);
+            if let (Some(bone), Some((mount_e, mut mount))) = (bone, mount) {
+                commands.entity(mount_e).insert(ChildOf(bone));
+                mount.on_bone = true;
+                // makes update_weapon_mounts respawn the kit at its bone position
+                mount.current = None;
+            }
+        }
+    }
+}
+
+/// Ground velocity around sample `i`, over +-GROUND_MOTION_REACH samples because a
+/// single 16 Hz step is too noisy to steer clips with: (speed in Source units/s, dx, dy).
+fn ground_motion(tr: &c2r3::Track, i: usize, n: usize, rate: f64) -> (f64, f64, f64) {
+    const GROUND_MOTION_REACH: usize = 2;
+    let (lo, hi) = (i.saturating_sub(GROUND_MOTION_REACH), (i + GROUND_MOTION_REACH).min(n - 1));
+    if hi == lo {
+        return (0.0, 0.0, 0.0);
+    }
+    let (dx, dy) = (tr.x[hi] - tr.x[lo], tr.y[hi] - tr.y[lo]);
+    let dt = (hi - lo) as f64 / rate;
+    ((dx * dx + dy * dy).sqrt() / dt, dx, dy)
+}
+
+/// Pick each player's clip from their weapon, crouch and movement relative to where
+/// they face, crossfade to it, and run it on the replay's clock: a paused replay
+/// holds the pose, slow motion slows the legs, and the rate follows the ground speed
+/// so the feet do not slide. Freeze-on-death => speed 0 when not alive.
+fn drive_player_anim(
+    viewer: Res<Viewer>,
+    model: Option<Res<scene::PlayerModel>>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
+    mut q: Query<(
+        &PlayerAnimSlot,
+        &mut PlayerLoco,
+        &mut PlayerClipNodes,
+        &AnimationGraphHandle,
+        &mut AnimationPlayer,
+        &mut AnimationTransitions,
+    )>,
+) {
+    let (Some(model), Some(r)) = (model, viewer.round.as_ref()) else {
+        return;
+    };
+    if r.n == 0 {
+        return;
+    }
+    let (i0, _i1, _f, _s) = sample_pos(viewer.clock, r.rate, r.n);
+    let playback = if viewer.playing { viewer.speed as f32 } else { 0.0 };
+    for (slot, mut loco, mut clips, graph, mut player, mut transitions) in &mut q {
         let Some(tr) = r.dec.tracks.get(slot.0) else {
             continue;
         };
-        let alive = r.n > 0 && tr.flags[i0] & c2r3::F_ALIVE != 0;
-        let speed = if alive && i1 != i0 {
-            let (dx, dy) = (tr.x[i1] - tr.x[i0], tr.y[i1] - tr.y[i0]);
-            (dx * dx + dy * dy).sqrt() * r.rate
-        } else {
-            0.0
-        };
-        let target = if speed >= scene::RUN_SPEED {
-            model.run
-        } else if speed >= scene::WALK_SPEED {
-            model.walk
-        } else {
-            model.idle
-        };
-        if transitions.get_main_animation() != Some(target) {
-            transitions
-                .play(&mut player, target, Duration::from_millis(180))
-                .repeat();
+        let alive = tr.flags[i0] & c2r3::F_ALIVE != 0;
+        let (speed, dx, dy) = if alive { ground_motion(tr, i0, r.n, r.rate) } else { (0.0, 0.0, 0.0) };
+        loco.0.update(speed, player_anim::heading_cw(dx, dy, tr.yaw[i0]));
+
+        let crouch = tr.flags[i0] & c2r3::F_CROUCH != 0;
+        let class = weapons_viz::current_tag(r, slot.0, i0)
+            .map_or(player_anim::WeaponClass::Rifle, player_anim::class_for_tag);
+        let team = r.dec.players.get(slot.0).map(|p| p.team).unwrap_or(0);
+        let target = model.for_team(team).clips.pose(class, crouch, loco.0.gait, loco.0.sector, speed);
+        if clips.clip != target.id() {
+            clips.current = (clips.current + 1) % CLIP_NODES;
+            let node = clips.nodes[clips.current];
+            if let Some(mut graph) = graphs.get_mut(&graph.0) {
+                if let Some(graph_node) = graph.get_mut(node) {
+                    graph_node.node_type = AnimationNodeType::Clip(target.clone());
+                }
+            }
+            clips.clip = target.id();
+            transitions.play(&mut player, node, Duration::from_millis(180)).repeat();
+        }
+        if let Some(active) = player.animation_mut(clips.nodes[clips.current]) {
+            active.set_speed(playback * player_anim::clip_rate(crouch, loco.0.gait, speed));
         }
     }
 }
@@ -802,6 +883,7 @@ fn drive_player_anim(
 fn tint_players(
     mut commands: Commands,
     viewer: Res<Viewer>,
+    model: Option<Res<scene::PlayerModel>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     q_new: Query<
         (Entity, &MeshMaterial3d<StandardMaterial>),
@@ -814,7 +896,7 @@ fn tint_players(
     q_childof: Query<&ChildOf>,
     q_body: Query<&PlayerBody>,
 ) {
-    let (Some(m), Some(r)) = (viewer.manifest.as_ref(), viewer.round.as_ref()) else {
+    let (Some(m), Some(r), Some(model)) = (viewer.manifest.as_ref(), viewer.round.as_ref(), model) else {
         return;
     };
     for (e, mat_handle) in &q_new {
@@ -833,15 +915,55 @@ fn tint_players(
             .copied()
             .unwrap_or(Color::srgb_u8(0xcc, 0xcc, 0xcc));
         if let Some(base) = materials.get(&mat_handle.0).cloned() {
-            let lin = color.to_linear();
-            let tinted = StandardMaterial {
-                base_color: color,
-                // subtle self-lit team glow so players stay legible through walls
-                emissive: LinearRgba::rgb(lin.red * 0.16, lin.green * 0.16, lin.blue * 0.16),
-                ..base
-            };
-            let h = materials.add(tinted);
+            let painted = model.for_team(team).spec.team_paint;
+            let (base_color, emissive) = team_look(color, if painted { 1.0 } else { 0.0 });
+            let h = materials.add(StandardMaterial { base_color, emissive, ..base });
             commands.entity(e).insert(MeshMaterial3d(h));
+            if !painted {
+                commands.entity(e).insert(TeamFade { team: color, level: 0 });
+            }
+        }
+    }
+}
+
+/// `paint` 0 is the model's own textures, 1 is the team colour over them. Both keep a
+/// self-lit share of the colour so players stay legible through walls, but a dark texture
+/// up close washes out quickly, so it gets little.
+fn team_look(team: Color, paint: f32) -> (Color, LinearRgba) {
+    const GLOW_TEXTURED: f32 = 0.05;
+    const GLOW_PAINTED: f32 = 0.16;
+    let lin = team.to_linear();
+    let glow = GLOW_TEXTURED + (GLOW_PAINTED - GLOW_TEXTURED) * paint;
+    let base = |channel: f32| 1.0 + (channel - 1.0) * paint;
+    (
+        Color::linear_rgb(base(lin.red), base(lin.green), base(lin.blue)),
+        LinearRgba::rgb(lin.red * glow, lin.green * glow, lin.blue * glow),
+    )
+}
+
+/// Real textures where they can be seen, the team colour where they cannot: from the
+/// overview a sand-coloured T is a few pixels on a sand-coloured map. Levels rather than
+/// a smooth value, so a moving camera does not rewrite ten materials every frame.
+fn fade_team_colour(
+    q_cam: Query<&GlobalTransform, With<MainCam>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut q: Query<(&GlobalTransform, &MeshMaterial3d<StandardMaterial>, &mut TeamFade)>,
+) {
+    /// Scene units. The chase camera sits at 2.7, the default overview near 80.
+    const TEXTURES_UP_TO: f32 = 6.0;
+    const PAINTED_FROM: f32 = 20.0;
+    const LEVELS: f32 = 8.0;
+    let Ok(cam) = q_cam.single() else { return };
+    for (mesh, material, mut fade) in &mut q {
+        let dist = cam.translation().distance(mesh.translation());
+        let paint = ((dist - TEXTURES_UP_TO) / (PAINTED_FROM - TEXTURES_UP_TO)).clamp(0.0, 1.0);
+        let level = (paint * LEVELS).round() as u8;
+        if level == fade.level {
+            continue;
+        }
+        fade.level = level;
+        if let Some(mut mat) = materials.get_mut(&material.0) {
+            (mat.base_color, mat.emissive) = team_look(fade.team, level as f32 / LEVELS);
         }
     }
 }

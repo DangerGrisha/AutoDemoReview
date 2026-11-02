@@ -422,6 +422,7 @@ def match_replay3d(request: Request, match_id: int):
         "demo_name": row["original_filename"] or "match.dem",
         "has_replay": replay3d.has_replay(match_id),
         "map_asset": map_asset,
+        "cs2_models": replay3d.cs2_models_enabled(),
         "wasm_size": wasm_size,
         "map_size": map_size,
     })

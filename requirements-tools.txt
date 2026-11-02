@@ -1,0 +1,5 @@
+# Offline asset tools only (tools/prepare_map.py, tools/prepare_character.py,
+# tools/precompress.py). The web app itself does not need these.
+numpy
+Pillow
+brotli

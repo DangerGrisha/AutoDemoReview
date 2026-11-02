@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use bevy::camera::visibility::RenderLayers;
 use bevy::prelude::*;
 
+use crate::player_anim::{class_for_tag, WeaponClass};
 use crate::state::{sample_pos, CamMode, RoundState, Viewer};
 
 // --- calibration one-liners (verify by eye) ---------------------------------
@@ -27,17 +28,40 @@ pub const VM_SCALE: f32 = 1.0;
 /// minus a slight inward cant so it reads like a held gun, not a screenshot prop.
 pub const VM_YAW: f32 = std::f32::consts::FRAC_PI_2 - 0.08;
 
+/// The CS2 skeleton's weapon bone. Its local +X runs along the barrel, +Y to the
+/// player's left and +Z up, so a quarter turn about +X lines up a kit's +Y up / +Z right.
+pub const WEAPON_BONE: &str = "wpn";
+const BONE_KIT_ROLL: f32 = std::f32::consts::FRAC_PI_2;
+/// Bones inherit the model's scale (0.787), so this matches THIRD_SCALE in the scene.
+const BONE_KIT_SCALE: f32 = 1.016;
+
+/// The kit's origin in `wpn` bone space (metres), measured so its grip lands on the
+/// right hand in each clip set's idle pose: the bone sits between the hands, not on
+/// the grip, and the knife set holds it at an angle.
+fn bone_mount(class: WeaponClass) -> Transform {
+    let pos = match class {
+        WeaponClass::Rifle => Vec3::new(-0.23, 0.0, -0.02),
+        WeaponClass::Pistol => Vec3::new(-0.13, 0.0, -0.04),
+        WeaponClass::Knife => Vec3::new(-0.035, -0.016, -0.076),
+    };
+    Transform::from_translation(pos)
+        .with_rotation(Quat::from_rotation_x(BONE_KIT_ROLL))
+        .with_scale(Vec3::splat(BONE_KIT_SCALE))
+}
+
 /// Marker for spawned weapon part meshes — `tint_players` must SKIP these
 /// (they'd get team-painted otherwise; guns stay gunmetal).
 #[derive(Component)]
 pub struct WeaponPart;
 
-/// Chest attachment point, one per player body (spawned in scene::spawn_players).
+/// Weapon attachment point, one per player body (spawned in scene::spawn_players):
+/// on the chest, or on the `wpn` bone when the model has one (`on_bone`).
 /// `current` is the kit index currently spawned under it (None = empty hands).
 #[derive(Component)]
 pub struct WeaponMount {
     pub slot: usize,
     pub current: Option<usize>,
+    pub on_bone: bool,
 }
 
 /// First-person viewmodel anchor, child of the main camera (spawned in setup).
@@ -195,13 +219,17 @@ pub fn setup_weapon_assets(
     commands.insert_resource(WeaponAssets { kits, by_tag });
 }
 
+/// `slot`'s held weaponTable tag at sample `i0` (None: dead/absent slot, WEAPON_NONE).
+pub fn current_tag(r: &RoundState, slot: usize, i0: usize) -> Option<&str> {
+    let tr = r.dec.tracks.get(slot)?;
+    let widx = *tr.weapon.get(i0)? as usize;
+    r.dec.weapon_table.get(widx).map(String::as_str)
+}
+
 /// The kit for `slot`'s held weapon at sample `i0` (None = nothing to draw:
 /// dead/absent slot, WEAPON_NONE, or an unknown tag we'd rather not guess at).
 fn current_kit(r: &RoundState, slot: usize, i0: usize, assets: &WeaponAssets) -> Option<usize> {
-    let tr = r.dec.tracks.get(slot)?;
-    let widx = *tr.weapon.get(i0)? as usize;
-    let tag = r.dec.weapon_table.get(widx)?;
-    assets.kit_for_tag(tag)
+    assets.kit_for_tag(current_tag(r, slot, i0)?)
 }
 
 fn spawn_parts(
@@ -224,13 +252,13 @@ fn spawn_parts(
     });
 }
 
-/// Third person: keep every body's chest mount holding the weapon class the
-/// player actually has this frame (kit swap only on class change).
+/// Third person: keep every body's mount holding the weapon class the player
+/// actually has this frame (kit swap only on class change).
 pub fn update_weapon_mounts(
     mut commands: Commands,
     viewer: Res<Viewer>,
     assets: Option<Res<WeaponAssets>>,
-    mut q_mounts: Query<(Entity, &mut WeaponMount, Option<&Children>)>,
+    mut q_mounts: Query<(Entity, &mut WeaponMount, &mut Transform, Option<&Children>)>,
 ) {
     let Some(assets) = assets else { return };
     let Some(r) = viewer.round.as_ref() else { return };
@@ -238,7 +266,7 @@ pub fn update_weapon_mounts(
         return;
     }
     let (i0, _i1, _f, _s) = sample_pos(viewer.clock, r.rate, r.n);
-    for (e, mut mount, children) in &mut q_mounts {
+    for (e, mut mount, mut tf, children) in &mut q_mounts {
         let kit = current_kit(r, mount.slot, i0, &assets);
         if mount.current == kit {
             continue;
@@ -247,6 +275,11 @@ pub fn update_weapon_mounts(
         if let Some(ch) = children {
             for c in ch.iter() {
                 commands.entity(c).despawn();
+            }
+        }
+        if mount.on_bone {
+            if let Some(tag) = current_tag(r, mount.slot, i0) {
+                *tf = bone_mount(class_for_tag(tag));
             }
         }
         if let Some(k) = kit {

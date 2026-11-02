@@ -8,6 +8,7 @@ is the single source of truth (no DB column).
 """
 
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -24,6 +25,7 @@ ARTIFACT_RE = re.compile(r"^(manifest\.json|r\d{2}\.3dr)$")
 # Map worlds converted via Source2Viewer + tools/prepare_map.py, under the
 # viewer's asset root (everything Bevy loads must live below that root).
 MAPS_DIR = config.WEB_DIR / "static" / "replay3d" / "assets" / "maps"
+CS2_MODELS_DIR = config.WEB_DIR / "static" / "replay3d" / "assets" / "models" / "cs2_v1"
 
 
 def artifacts_dir(match_id):
@@ -41,6 +43,18 @@ def artifact_path(match_id, fname):
         return None
     path = artifacts_dir(match_id) / fname
     return path if path.is_file() else None
+
+
+def cs2_models_enabled():
+    """Show the real CS2 player models instead of the fallback soldier?
+
+    They are built from a local CS2 install and never committed, so a fresh clone
+    simply lacks them, and the viewer shows no players at all if told to load a
+    missing file. REPLAY3D_CS2_MODELS=0 turns them off without deleting anything.
+    """
+    if os.environ.get("REPLAY3D_CS2_MODELS", "1") == "0":
+        return False
+    return all((CS2_MODELS_DIR / name).is_file() for name in ("t.glb", "ct.glb"))
 
 
 def map_asset_rel(map_name):

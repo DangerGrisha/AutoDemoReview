@@ -290,8 +290,9 @@ radar PNGs stay gitignored and are rebuilt. This is the piece that broke past
   - rebuild with `tools/build_replay3d.ps1`: `extract3d(.exe)` + the wasm bundle
     under `web/static/replay3d/pkg/` + the radar PNG copies
   - recreate from `.env.example`: `.env` (never committed)
-- Only `.glb` under `assets/maps/` is tracked; the radar PNG copies in the same
-  `assets/` dir stay ignored (`.gitignore`).
+- Only `.glb` under `assets/maps/` plus the fallback `assets/models/player.glb` are
+  tracked; the radar PNG copies in the same `assets/` dir stay ignored (`.gitignore`),
+  and so do the real player models (see "Player models").
 
 ## Dev page (no FastAPI)
 
@@ -403,7 +404,9 @@ grenade spheres (per-type palette matching the page UI). Unknown tags draw
 nothing rather than guessing.
 
 - **Third person:** a `WeaponMount` child on every `PlayerBody` at chest height
-  (`MOUNT_POS`, `THIRD_SCALE` consts), barrel along the body yaw (+X). Parts sit
+  (`MOUNT_POS`, `THIRD_SCALE` consts), barrel along the body yaw (+X). On a real
+  CS2 model `setup_player_anim` moves the mount onto the `wpn` bone so the kit
+  follows the hands (`bone_mount` holds the per-class grip offset). Parts sit
   on layers `[0, x-ray]` like the player meshes, so held weapons show through
   walls too. `tint_players` explicitly skips `WeaponPart` meshes (guns stay
   gunmetal, not team-painted).
@@ -484,6 +487,93 @@ page already has, so it can be iterated on with nothing but a page reload.
   scoped-in clicks — there are no such events in the manifest or the codec
   (`F_SCOPED`/`F_DEFUSING` exist in the codec's flags but never reach the page).
 
+## Player models (real CS2 characters, with a fallback)
+
+Each side wears a real CS2 model with CS2's own animations: `ctm_sas` for CT and
+`tm_phoenix` for T, the base models and not the agent skins players buy. Without
+those files the viewer uses `models/player.glb`, a Mixamo soldier painted in the
+team colour with just idle, walk and run.
+
+**They are never committed.** These are Valve's assets and this repo is public, so
+`web/static/replay3d/assets/models/cs2_v1/` is gitignored and every machine that
+serves them builds them from its own CS2 install. `REPLAY3D_CS2_MODELS=0` switches
+back to the soldier without deleting anything, which is the plan if Valve ever asks
+for them to go. Valve's terms only allow its content in fan work on a non-commercial
+basis, so this has to change before the site ever charges for access.
+
+```powershell
+.\tools\convert_characters.ps1   # about 30 seconds; needs CS2 + Source2Viewer 20+
+```
+
+Unzip Source2Viewer's `cli-windows-x64.zip` into `tools\s2v\v20\` first. It sits next
+to the older copy that the map conversion was tuned against. Version 20 is required:
+CS2 moved its clips to animation-graph files (`.vnmclip`) that older versions cannot
+export. Run `pip install -r requirements-tools.txt` for the Python side.
+
+**Where the assets are.** `characters/models/*.vmdl_c` are now one-bone stubs. The
+real models are under `agents/models/`, while their textures stayed in
+`characters/models/*/materials/`. Clips are in `animation/anims/world/<class>/`.
+
+**What `tools/prepare_character.py` does**, and why it does not share a pipeline with
+`prepare_map.py` (whose `--slim-attrs` and flat colours would wreck a skinned model):
+
+- keeps only the third-person meshes, and trims each primitive to its used vertices,
+  because bevy_gltf uploads a primitive's whole vertex pool;
+- strips jiggle, eye and helper bones (94 down to 79), folding their weights onto the
+  nearest kept ancestor, and collapses the identical per-mesh skins into one;
+- keeps the clips in `rust/viewer/src/player_clips.txt`. The viewer finds them by
+  name, and a Rust test checks that this list and the poses in `player_anim.rs` agree;
+- bakes a track that holds one value in every clip into the rest pose. A track that
+  differs between clips stays even if it is constant inside each, or a crossfade
+  would keep the previous clip's value;
+- gives idle clips a one-second length. They export as a single key, and Bevy loops
+  with `seek % duration`, so a zero-length clip would turn the clock into NaN;
+- keeps every second key (15 per second) and writes textures as JPEG atlases (colour
+  2048 px, normals 1024 px), dropping AO, metal and roughness maps.
+
+The exports are in metres, Y up, facing +Z, with feet at Y=0 (`CS2_SCALE` and
+`yaw_offset` in `scene.rs`). The T-pose reports 78 Source units, but what matters is
+the animated pose: the head sits at 64 units standing and 47 crouching, which matches
+`EYE_STAND` and `EYE_CROUCH`.
+
+**Load each file once.** `scene.rs` loads the root `Gltf` and takes the clips from it.
+Do not call `asset_server.load(GltfAssetLabel::Animation(i)...)` per clip: Bevy re-reads
+and re-decodes the whole file for every labelled load. With 78 clips on two models that
+was 79 full loads per file and half a minute at 5 FPS after the loading screen.
+
+**Keep what Bevy repeats small.** Two more costs scale badly, and on ten players on this
+machine they took the model from 137 FPS on the soldier down to 91:
+
+- Bevy makes one entity per glTF primitive, and each gets its own draws (two, with x-ray)
+  and its own copy of every joint matrix. So `prepare_character.py` merges the whole
+  character into one primitive with one material and texture atlases. This only works
+  while the source materials are opaque and do not tile; the script stops if one tiles.
+- Bevy walks every animation graph node for every animated bone, every frame. So no graph
+  holds the 78 clips: each player has a graph of `CLIP_NODES` nodes, and
+  `drive_player_anim` writes the next clip into the next node.
+
+**Which clip plays** (`player_anim.rs`, unit-tested without a renderer): each weapon
+class has `idle`, `idle_crouch` and `walk_*`, `run_*`, `crouch_*` in 8 directions.
+`drive_player_anim` measures ground velocity over +-2 samples, since one 16 Hz step is
+too noisy, and turns it into a direction relative to the player's yaw. Gait and
+direction both have hysteresis so clips do not flicker at a threshold. Clips run on
+the replay clock, so pausing holds the pose and slow motion slows the legs. Clip rate
+follows ground speed so the feet do not slide. The clips carry no root motion and report
+a velocity of 0, so the nominal speeds in `player_anim.rs` were measured from how fast a
+planted foot moves relative to the body. That also confirms the directions: `e` is the
+character's right.
+
+**Team colour fades with distance** (`fade_team_colour`). Up close a player shows the real
+textures. From about 20 scene units out it is painted in the team colour like the soldier,
+because from the overview a sand-coloured T is a few pixels on a sand-coloured map.
+
+All of this reads channels the replay format already has (position, yaw, `F_CROUCH`,
+weapon), so old `.3dr` files get the new models with no re-upload.
+
+**Not done yet:** death, defuse and firing clips (all available in `animation/anims/
+world/shared/` and the weapon folders), aim pitch on the spine, jumps, and showing the
+agent a player actually wore (`agent_skin` in the parser, never extracted).
+
 ## Players, grenades & the x-ray overlay (rendering)
 
 - **X-ray players (wallhack view).** A second, higher-`order` camera (`XrayCam`,
@@ -537,6 +627,7 @@ page already has, so it can be iterated on with nothing but a page reload.
 |---|---|---|
 | `EXTRACT3D_BIN` | `rust/target/release/extract3d(.exe)` | extract3d binary; missing → uploads still work, no 3D |
 | `EXTRACT3D_TIMEOUT_S` | `900` | kill a hung extraction |
+| `REPLAY3D_CS2_MODELS` | `1` | `0` shows the fallback soldier instead of the real CS2 player models |
 
 Artifacts live in `web/data/replay3d/<match_id>/`; deleting a directory removes
 that match's 3D replay (it comes back on re-upload of the same .dem).
