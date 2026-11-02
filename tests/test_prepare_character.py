@@ -20,7 +20,8 @@ from prepare_map import is_hidden_material  # noqa: E402
 
 class _Fixture:
     """Builds the json + bin of a small export: character root -> root_motion ->
-    pelvis -> (spine, jiggle_pouch), two third-person meshes, a first-person mesh."""
+    (pelvis -> (spine_0 to spine_3, jiggle_pouch), wpnPivot), two third-person meshes, a
+    first-person mesh."""
 
     def __init__(self):
         self.bin = bytearray()
@@ -70,6 +71,8 @@ class _Fixture:
             # pelvis holds a different value per clip
             track(2, "rotation", key([spine_rot[0]], "VEC4", [0.0]))
             track(3, "rotation", key(spine_rot, "VEC4"))
+            track(12, "translation", key([[0, 1.5, 0.3]], "VEC3", [0.0]))
+            track(12, "rotation", key([q], "VEC4", [0.0]))
             if jiggle:
                 track(4, "rotation", key([q, q], "VEC4"))
             return {"name": name, "samplers": samplers, "channels": channels}
@@ -89,14 +92,18 @@ class _Fixture:
             "scenes": [{"nodes": [0, 5, 6, 7, 8]}],
             "nodes": [
                 {"name": "agents\\models\\x\\x.vmdl_c", "children": [1]},
-                {"name": "root_motion", "children": [2]},
+                {"name": "root_motion", "children": [2, 12]},
                 {"name": "pelvis", "translation": [0, 1, 0], "children": [3, 4]},
-                {"name": "spine_0", "translation": [0, 0.2, 0]},
+                {"name": "spine_0", "translation": [0, 0.2, 0], "children": [9]},
                 {"name": "jiggle_pouch", "translation": [0, 0.1, 0]},
                 {"name": "x.vmdl_c.thirdperson_body", "mesh": 0, "skin": 0},
                 {"name": "x.vmdl_c.firstperson_arms", "mesh": 1, "skin": 0},
                 {"name": "weapon.vnmskel"},
                 {"name": "x.vmdl_c.thirdperson_gloves", "mesh": 2, "skin": 0},
+                {"name": "spine_1", "translation": [0, 0.1, 0], "children": [10]},
+                {"name": "spine_2", "translation": [0, 0.1, 0], "children": [11]},
+                {"name": "spine_3", "translation": [0, 0.1, 0]},
+                {"name": "wpnPivot", "translation": [0, 1.5, 0.3]},
             ],
             "meshes": [
                 {"primitives": [{"attributes": {**body_attrs(), "TEXCOORD_1": uv1}, "indices": idx, "material": 0}]},
@@ -272,6 +279,32 @@ def test_track_differing_between_clips_stays_even_when_held_within_each():
     spine = next(i for i, n in enumerate(result["nodes"]) if n["name"] == "spine_0")
     idle = result["animations"][0]
     assert any(c["target"] == {"node": spine, "path": "rotation"} for c in idle["channels"])
+
+
+def test_the_gun_hangs_off_the_chest_with_its_pose_kept():
+    result, blob, _ = _build()
+    nodes = result["nodes"]
+    index = {n["name"]: i for i, n in enumerate(nodes)}
+    assert index["wpnPivot"] in nodes[index["spine_3"]]["children"]
+    assert index["wpnPivot"] not in nodes[index["root_motion"]]["children"]
+
+    # the fixture's gun is at (0, 1.5, 0.3) under root_motion in every clip, chest moving or not
+    idle = next(a for a in result["animations"] if a["name"] == "idle_rifle")
+    chain = ("pelvis", "spine_0", "spine_1", "spine_2", "spine_3", "wpnPivot")
+
+    def value(name, path):
+        node = nodes[index[name]]
+        for ch in idle["channels"]:
+            if ch["target"] == {"node": index[name], "path": path}:
+                return _read(result, blob, idle["samplers"][ch["sampler"]]["output"])[0].astype(float)
+        fallback = [0.0, 0.0, 0.0, 1.0] if path == "rotation" else [0.0, 0.0, 0.0]
+        return np.array(node.get(path, fallback), float)
+
+    pos, rot = np.zeros(3), np.array([0.0, 0.0, 0.0, 1.0])
+    for name in chain:
+        pos = pos + pc._quat_rotate(rot, value(name, "translation"))
+        rot = pc._quat_mul(rot, value(name, "rotation") / np.linalg.norm(value(name, "rotation")))
+    assert np.abs(pos - [0, 1.5, 0.3]).max() < 1e-3, pos
 
 
 def test_still_clip_gets_a_length_so_looping_does_not_divide_by_zero():

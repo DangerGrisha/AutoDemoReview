@@ -57,6 +57,18 @@ pub struct ManifestData {
     /// textured CS2 map, relative to the asset root (manifest.mapV2). The page leaves it
     /// out for the "light map" choice and on GPUs without BC textures.
     pub map_v2: Option<String>,
+    /// who killed whom in each round, by the round's number (manifest.rounds[].kills)
+    pub kills: HashMap<i64, Vec<KillFact>>,
+}
+
+/// One kill, as the manifest has it.
+#[derive(Clone, Debug)]
+pub struct KillFact {
+    pub sample: usize,
+    pub attacker: String,
+    pub victim: String,
+    pub weapon: String,
+    pub headshot: bool,
 }
 
 /// One precomputed shot tracer (built at round load from a `weapon_fire` record
@@ -82,6 +94,9 @@ pub struct RoundState {
     pub duration: f64,
     pub utils: Vec<crate::util::UtilItem>,
     pub shots: Vec<ShotViz>,
+    /// What each player does besides walking. Waits for the clip file, which loads at its own
+    /// pace, and stays None for a model that has no such clips.
+    pub anim: Option<crate::player_actions::RoundAnim>,
 }
 
 #[derive(Resource)]
@@ -165,9 +180,10 @@ pub struct TeamFade {
 /// so running out only cuts a fade short, and that takes three clip changes in one fade.
 pub const CLIP_NODES: usize = 4;
 
-/// One player's own small animation graph. The next clip is written into the next node
-/// rather than each graph holding all 78: Bevy walks every graph node for every animated
-/// bone every frame, and 78 nodes x 80 bones x 10 players was 2.6 ms a frame in wasm.
+/// The walking and whole-body part of one player's own small animation graph (see
+/// player_rig.rs). The next clip is written into the next node rather than each graph holding
+/// them all: Bevy walks every graph node for every animated bone every frame, and 78 nodes x
+/// 80 bones x 10 players was 2.6 ms a frame in wasm.
 #[derive(Component)]
 pub struct PlayerClipNodes {
     pub nodes: [AnimationNodeIndex; CLIP_NODES],

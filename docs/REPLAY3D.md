@@ -626,7 +626,7 @@ nothing rather than guessing.
   `VM_POS`/`VM_YAW`/`VM_SCALE`), filled with the followed player's current kit
   only while spectating in 1st person — weapon swaps mid-round show up live.
 - Kits swap only when the weapon CLASS changes (cheap: compare + respawn a few
-  cuboids). Dead/absent players show nothing (mount inherits the hidden body).
+  cuboids). Dead players hold nothing, and absent ones show nothing (mount inherits the hidden body).
 
 ## Sound (real CS2 sounds, with a synth behind them; page-side)
 
@@ -753,8 +753,14 @@ for them to go. Valve's terms only allow its content in fan work on a non-commer
 basis, so this has to change before the site ever charges for access.
 
 ```powershell
-.\tools\convert_characters.ps1   # about 30 seconds; needs CS2 + Source2Viewer 20+
+.\tools\convert_characters.ps1   # about a minute and 250 MB of raw files while it runs; needs CS2 + Source2Viewer 20+
 ```
+
+It writes `t_rig2.glb`, `ct_rig2.glb` and `actions_rig2.glb`. Static assets are cached for a
+week by URL, so a rebuild that changes the bone tree has to change the file names too: an old
+model with new clips would put the gun in the wrong place. The names live in `scene.rs`,
+`web/replay3d.py`, the warm fetch in `replay3d.html` and the two Python tools. A machine that
+only has the older `t.glb` and `ct.glb` gets the soldier until it runs the script again.
 
 Unzip Source2Viewer's `cli-windows-x64.zip` into `tools\s2v\v20\` first. It sits next
 to the older copy that the map conversion was tuned against. Version 20 is required:
@@ -777,6 +783,12 @@ real models are under `agents/models/`, while their textures stayed in
 - bakes a track that holds one value in every clip into the rest pose. A track that
   differs between clips stays even if it is constant inside each, or a crossfade
   would keep the previous clip's value;
+- moves `wpnPivot` from `root_motion` to `spine_3` and rewrites its tracks to match. The game
+  keeps the gun in the hands with IK, which we do not have, so otherwise any blend of arms
+  and legs and any bend of the spine would pull the gun out of the hands;
+- leaves in the clips any track `actions_rig2.glb` moves, even if it holds one value in all
+  the walking clips. Bevy leaves a bone alone when no playing clip has a track for it, so a
+  value baked into the rest pose would never come back after a reload;
 - gives idle clips a one-second length. They export as a single key, and Bevy loops
   with `seek % duration`, so a zero-length clip would turn the clock into NaN;
 - keeps every second key (15 per second) and writes textures as JPEG atlases (colour
@@ -800,7 +812,7 @@ machine they took the model from 137 FPS on the soldier down to 91:
   character into one primitive with one material and texture atlases. This only works
   while the source materials are opaque and do not tile; the script stops if one tiles.
 - Bevy walks every animation graph node for every animated bone, every frame. So no graph
-  holds the 78 clips: each player has a graph of `CLIP_NODES` nodes, and
+  holds all the clips: each player has a graph of 11 nodes (`player_rig.rs`), and
   `drive_player_anim` writes the next clip into the next node.
 
 **Which clip plays** (`player_anim.rs`, unit-tested without a renderer): each weapon
@@ -819,12 +831,83 @@ character's right.
 textures. From about 20 scene units out it is painted in the team colour like the soldier,
 because from the overview a sand-coloured T is a few pixels on a sand-coloured map.
 
-All of this reads channels the replay format already has (position, yaw, `F_CROUCH`,
-weapon), so old `.3dr` files get the new models with no re-upload.
+The walking reads channels every replay has (position, yaw, `F_CROUCH`, weapon), so old
+`.3dr` files get the models with no re-upload.
 
-**Not done yet:** death, defuse and firing clips (all available in `animation/anims/
-world/shared/` and the weapon folders), aim pitch on the spine, jumps, and showing the
-agent a player actually wore (`agent_skin` in the parser, never extracted).
+### What a player does besides walking
+
+`actions_rig2.glb` holds 284 clips on a copy of the skeleton's names and no mesh, once for both
+sides. Bevy finds a clip's bones by the path of names from the root, so they fit either model.
+They come from the clip files themselves (`vnmclip_c`, exported in bulk), because the deaths are
+not in the models' animation graphs: the game uses ragdolls. `player_actions.txt` is the list,
+read by `tools/prepare_actions.py` and by the viewer, so the two cannot disagree on a name.
+
+```text
+Add ── Blend ── walking and whole-body clips, crossfaded
+    │        └─ upper-body clips, which have no leg tracks, so the legs keep walking
+    ├─ a shot
+    └─ a flinch or a landing
+```
+
+| What | Comes from | On old replays |
+|---|---|---|
+| Shot | `shots` | yes |
+| Draw | the weapon channel changing | yes |
+| Grenade throw | `utility[].throwSample`, 0.3 s before the grenade leaves the hand | yes |
+| Flash arm | the flash channel, at 1 s or more | yes |
+| Defuse | `F_DEFUSING` | yes |
+| Death | `F_ALIVE` falling, `kills` for who and whether it was a headshot | yes, the fall chosen by attacker and headshot only |
+| Flinch | `hurt` by hit group, or the health channel dropping | generic flinch only |
+| Knife swing | a `hurt` or a kill with the knife. `shots` keeps guns only, so misses do not show | kills only |
+| Reload, plant | `reload`, `plant` events | no |
+| Jump, fall, landing | `F_AIRBORNE` | no |
+
+**`player_actions.rs` works out a whole round at once and answers from the clock.** It is pure
+and unit-tested without a renderer. Nothing depends on earlier frames, so a scrub, pause or slow
+motion lands on the same pose as playing there: stills taken after seeking from either
+direction differ by nothing. Timed clips run at speed 0 with their time written every frame.
+
+**The fall** is chosen by whether the attacker was in front (from behind a body goes forward) and
+by the hit group, varied per player and round without a random number, so a scrub gets the same
+fall. A body stays until the round ends, off the x-ray layer, since only the living should show
+through walls. A kill in mid-air comes down to where the player last stood. A dropout of the
+alive flag shorter than 0.1 s, health back and all, is not a death: it does happen in real demos.
+
+**The aim** (`apply_player_aim`) runs after the clips and before transforms propagate. No clip can
+do it, since it has to follow the demo's pitch and the twist between legs and eyes. The legs lag
+behind: `body_yaw_track` keeps a standing player's feet until twisted by 50 degrees and turns them
+along quickly when moving, and never lets the twist pass 80. The spine takes the pitch up to 55
+degrees and the head the rest. The turn is split between four bones by powers of one rotation, so
+the chest ends up turned by exactly the whole aim and the gun, which hangs off it, points there.
+
+**Things that cost time to find in Bevy 0.19:**
+
+- A seek time equal to the clip's length wraps to 0 even at speed 0, which stood corpses back up.
+  `held_time` stops just short of the end.
+- An Add node computes `delta * base`, while CS2 authors additive clips as `base * delta`. The two
+  differ by the base's rotation. Each additive clip has a `+non_additive` twin, so
+  `prepare_actions.py` writes `pose(t) * reference^-1`, exact on the pose it was authored over.
+- An additive track on a bone with no base value writes the delta as the pose, so added clips keep
+  only tracks the walking clips also have, and no scale.
+- A blend weight is a share of the total, so "all of the arms" over a walking clip is a large
+  weight, not 1. Bones with no track in a clip are unaffected by it, which is why no bone masks.
+- The children of an Add run in node order and the first is the base, so the Blend must be made
+  before the added clips.
+
+**Without the clips** (a missing or broken `actions_rig2.glb`) players walk as before and vanish on
+death. The same goes for the soldier, whose bones the clips do not fit. A broken file only logs
+a warning.
+
+**What it costs**, on de_mirage at 1920x1080 on an RTX 3070, in three alternating pairs against
+the previous build: 119 to 105 FPS at the start of a round and 84 to 77 in a fight, so 12% and 8%,
+under the 20% this was allowed. 5.75 MB more on disk and 1.33 MB on the wire, loading in the
+background without a long task of its own. Building a round's timelines does not show in the time
+to change rounds.
+
+**Not like the game:** a corpse plays a clip rather than a ragdoll, so it can sink into a wall or
+hang over an edge. Ladders set `F_AIRBORNE`, so a climb shows the falling pose. The gun vanishes
+on death. The agent a player actually wore is not shown (`agent_skin` in the parser, never
+extracted).
 
 ## Players, grenades & the x-ray overlay (rendering)
 

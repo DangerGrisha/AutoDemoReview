@@ -51,6 +51,9 @@ MAPS_DIR = config.WEB_DIR / "static" / "replay3d" / "assets" / "maps"
 # and never committed, unlike the plain ones above.
 MAPS_V2_DIR = config.WEB_DIR / "static" / "replay3d" / "assets" / "maps_v2"
 CS2_MODELS_DIR = config.WEB_DIR / "static" / "replay3d" / "assets" / "models" / "cs2_v1"
+# The page's assets are cached for a week by URL, so a rebuild that changes the bone tree
+# gets new names. tools/prepare_character.py and rust/viewer/src/scene.rs hold the same.
+CS2_MODEL_FILES = ("t_rig2.glb", "ct_rig2.glb")
 CS2_SOUNDS_INDEX = config.WEB_DIR / "static" / "replay3d" / "assets" / "sounds_v1" / "index.json"
 HUD_ICONS_DIR = config.WEB_DIR / "static" / "replay3d" / "assets" / "hud_v1"
 
@@ -122,7 +125,7 @@ def cs2_models_enabled():
     """
     if os.environ.get("REPLAY3D_CS2_MODELS", "1") == "0":
         return False
-    return all((CS2_MODELS_DIR / name).is_file() for name in ("t.glb", "ct.glb"))
+    return all((CS2_MODELS_DIR / name).is_file() for name in CS2_MODEL_FILES)
 
 
 def cs2_weapons_enabled():

@@ -43,13 +43,15 @@ const SOLDIER: ModelSpec = ModelSpec {
 const CS2_SCALE: f32 = 0.02 / 0.0254;
 /// They face +Z, which a +90 degree yaw turns onto the body's +X.
 const CS2_T: ModelSpec = ModelSpec {
-    path: "models/cs2_v1/t.glb",
+    path: "models/cs2_v1/t_rig2.glb",
     scale: CS2_SCALE,
     yaw_offset: std::f32::consts::FRAC_PI_2,
     team_paint: false,
     weapon_bone: true,
 };
-const CS2_CT: ModelSpec = ModelSpec { path: "models/cs2_v1/ct.glb", ..CS2_T };
+const CS2_CT: ModelSpec = ModelSpec { path: "models/cs2_v1/ct_rig2.glb", ..CS2_T };
+/// Everything a player does besides walking, on the same skeleton (tools/prepare_actions.py).
+const CS2_ACTIONS: &str = "models/cs2_v1/actions_rig2.glb";
 /// demo team number of the T side (`teamColors` in the manifest); anything else gets CT.
 pub const TEAM_T: i64 = 2;
 
@@ -97,7 +99,9 @@ pub fn parse_manifest(json: &str) -> Result<ManifestData, String> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
+    let kills = crate::player_actions::parse_kills(&v);
     Ok(ManifestData {
+        kills,
         scene_scale,
         cal,
         team_colors,
@@ -368,6 +372,48 @@ fn cs2_rig(spec: &'static ModelSpec, gltf: &Gltf) -> Option<Rig> {
     Some(Rig { spec, scene: gltf.scenes.first()?.clone(), clips: ClipTable::Cs2(clips) })
 }
 
+/// The clips of `CS2_ACTIONS` by name, with their lengths. A round works without them, just
+/// with less going on, so a player model never waits for them.
+#[derive(Resource)]
+pub struct ActionClips {
+    clips: HashMap<&'static str, (Handle<AnimationClip>, f32)>,
+}
+
+impl ActionClips {
+    pub fn get(&self, name: &str) -> Option<(&Handle<AnimationClip>, f32)> {
+        self.clips.get(name).map(|(clip, length)| (clip, *length))
+    }
+}
+
+/// `CS2_ACTIONS` still loading.
+#[derive(Resource)]
+pub struct PendingActions(Handle<Gltf>);
+
+/// Once the file is in, publish `ActionClips`. A clip the file lacks just never plays.
+pub fn finish_action_clips(
+    mut commands: Commands,
+    pending: Option<Res<PendingActions>>,
+    asset_server: Res<AssetServer>,
+    gltfs: Res<Assets<Gltf>>,
+    clips: Res<Assets<AnimationClip>>,
+) {
+    let Some(pending) = pending else { return };
+    if matches!(asset_server.load_state(&pending.0), LoadState::Failed(_)) {
+        warn!("player action clips did not load; players will only walk");
+        commands.remove_resource::<PendingActions>();
+        return;
+    }
+    let Some(gltf) = gltfs.get(&pending.0) else { return };
+    let mut found = HashMap::new();
+    for (name, _) in crate::player_actions::action_list() {
+        let Some(handle) = gltf.named_animations.get(name) else { continue };
+        let Some(clip) = clips.get(handle) else { return }; // not in yet: try next frame
+        found.insert(name, (handle.clone(), clip.duration()));
+    }
+    commands.insert_resource(ActionClips { clips: found });
+    commands.remove_resource::<PendingActions>();
+}
+
 /// Player model files still loading; `finish_player_model` turns them into `PlayerModel`.
 ///
 /// This loads each file's root `Gltf` once and takes the clips from it on purpose.
@@ -394,6 +440,10 @@ impl PendingPlayerModel {
     fn fall_back(&self, commands: &mut Commands, asset_server: &AssetServer) {
         if self.cs2 {
             warn!("CS2 player models did not load; using the fallback soldier");
+            // The clips are for CS2's bones. On the soldier a death would do nothing, which
+            // leaves a corpse standing.
+            commands.remove_resource::<PendingActions>();
+            commands.remove_resource::<ActionClips>();
             commands.insert_resource(Self::soldier(asset_server));
         } else {
             error!("player model did not load; rounds will show no players");
@@ -408,6 +458,9 @@ pub fn setup_player_model(
     asset_server: Res<AssetServer>,
     use_cs2: Res<UseCs2Models>,
 ) {
+    if use_cs2.0 {
+        commands.insert_resource(PendingActions(asset_server.load(CS2_ACTIONS)));
+    }
     commands.insert_resource(if use_cs2.0 {
         PendingPlayerModel::cs2(&asset_server)
     } else {

@@ -54,7 +54,7 @@ def _render(cs2_models):
 
 
 def test_models_are_used_when_both_files_are_there():
-    with _Models(["t.glb", "ct.glb"]):
+    with _Models(["t_rig2.glb", "ct_rig2.glb"]):
         assert replay3d.cs2_models_enabled()
 
 
@@ -65,17 +65,17 @@ def test_a_fresh_clone_without_the_files_gets_the_soldier():
 
 def test_one_missing_file_gets_the_soldier():
     # a half-built folder would leave one whole side without bodies
-    with _Models(["t.glb"]):
+    with _Models(["t_rig2.glb"]):
         assert not replay3d.cs2_models_enabled()
 
 
 def test_the_flag_turns_the_models_off_without_touching_the_files():
-    with _Models(["t.glb", "ct.glb"], flag="0"):
+    with _Models(["t_rig2.glb", "ct_rig2.glb"], flag="0"):
         assert not replay3d.cs2_models_enabled()
 
 
 def test_any_other_flag_value_leaves_them_on():
-    with _Models(["t.glb", "ct.glb"], flag="1"):
+    with _Models(["t_rig2.glb", "ct_rig2.glb"], flag="1"):
         assert replay3d.cs2_models_enabled()
 
 

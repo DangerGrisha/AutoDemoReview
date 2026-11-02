@@ -7,7 +7,9 @@
 mod coords;
 mod map_material;
 mod orbit;
+mod player_actions;
 mod player_anim;
+mod player_rig;
 mod scene;
 mod state;
 mod textured_map;
@@ -16,22 +18,17 @@ mod weapons_viz;
 
 pub use coords::*;
 
-use bevy::animation::graph::AnimationGraphHandle;
-use bevy::animation::graph::AnimationNodeType;
-use bevy::animation::transition::AnimationTransitions;
-use bevy::animation::AnimationPlayer;
+use bevy::app::AnimationSystems;
 use bevy::asset::AssetMetaCheck;
 use bevy::camera::visibility::RenderLayers;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::gltf::{GltfMaterialExtras, GltfMaterialName};
 use bevy::prelude::*;
-use std::time::Duration;
 use wasm_bindgen::prelude::*;
 
 use state::{
     ang_lerp, lerp, push_control, sample_pos, CamMode, ControlMsg, GreyboxTag, MainCam, MapTag,
-    PlayerAnimSlot, PlayerBody, PlayerClipNodes, PlayerLoco, RoundState, ShotViz, TeamFade, UtilTag,
-    Viewer, XrayCam, CLIP_NODES, QUEUE,
+    PlayerBody, RoundState, ShotViz, TeamFade, UtilTag, Viewer, XrayCam, QUEUE,
 };
 use util::{tracer_frame, util_frame, UtilKind};
 
@@ -91,6 +88,8 @@ pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Opti
             (
                 drain_controls,
                 scene::finish_player_model,
+                scene::finish_action_clips,
+                player_rig::prepare_round_anim,
                 spawn_round_players,
                 advance_clock,
                 update_players,
@@ -108,9 +107,10 @@ pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Opti
             Update,
             (
                 hide_tool_brushes,
-                setup_player_anim,
-                drive_player_anim,
+                player_rig::setup_player_anim,
+                player_rig::drive_player_anim,
                 tint_players,
+                player_rig::update_corpse_layers,
                 fade_team_colour,
                 weapons_viz::finish_real_weapons,
                 weapons_viz::update_weapon_mounts,
@@ -120,6 +120,13 @@ pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Opti
                 textured_map::sky_follow_camera.after(spectator_camera),
                 textured_map::light_players_like_the_map,
             ),
+        )
+        // on top of the clips' pose and before it reaches the skinned mesh
+        .add_systems(
+            PostUpdate,
+            player_rig::apply_player_aim
+                .after(AnimationSystems)
+                .before(bevy::transform::TransformSystems::Propagate),
         )
         .run();
 }
@@ -430,7 +437,7 @@ fn drain_controls(
                 real_weapons.request(&dec.weapon_table, &asset_server);
                 let shots = build_shots(&dec, m);
                 viewer.flash_focus = resolve_focus(viewer.flash_focus_name.as_deref(), &dec);
-                viewer.round = Some(RoundState { dec: *dec, n, rate, duration, utils, shots });
+                viewer.round = Some(RoundState { dec: *dec, n, rate, duration, utils, shots, anim: None });
                 viewer.clock = 0.0;
             }
             ControlMsg::Seek(t) => {
@@ -513,6 +520,10 @@ fn update_players(
     // per-slot interpolated pose (computed once, applied to the model + label + camera)
     // + raw demo-world (x, y, yaw°, present) per slot for the page radar
     let mut poses: Vec<Option<(Vec3, f32)>> = Vec::with_capacity(r.dec.tracks.len());
+    // what the body itself shows: the legs lag behind the eyes, and a corpse stays put
+    let now = viewer.clock as f32;
+    let timeline = |slot: usize| r.anim.as_ref().and_then(|a| a.players.get(slot));
+    let mut bodies: Vec<Option<(Vec3, f32)>> = Vec::with_capacity(r.dec.tracks.len());
     let mut radar: Vec<(f32, f32, f32, bool)> = Vec::with_capacity(r.dec.tracks.len());
     for tr in &r.dec.tracks {
         if r.n == 0 || tr.flags[i0] & c2r3::F_ALIVE == 0 {
@@ -522,6 +533,13 @@ fn update_players(
             radar.push((wx, wy, 0.0, present));
             poses.push(None);
             poses_out.0.push(None);
+            let slot = poses.len() - 1;
+            bodies.push(timeline(slot).filter(|tl| r.n > 0 && tl.dead_at(now).is_some()).map(|tl| {
+                let z = tr.z[i0] - tl.corpse_drop(now);
+                let sc = Vec3::from_array(world_to_scene(tr.x[i0], tr.y[i0], z, s_scale));
+                let yaw = tl.body_yaw(i0, i0, 0.0).unwrap_or(tr.yaw[i0]);
+                (sc, yaw.to_radians() as f32)
+            }));
             continue;
         }
         // never interpolate into a dead/frozen frame
@@ -537,13 +555,15 @@ fn update_players(
         radar.push((x as f32, y as f32, yaw_deg as f32, true));
         poses.push(Some((sc, yaw)));
         poses_out.0.push(Some(PlayerPose { feet: sc, yaw, pitch, crouch }));
+        let body_yaw = timeline(poses.len() - 1).and_then(|tl| tl.body_yaw(i0, i1, g));
+        bodies.push(Some((sc, body_yaw.map_or(yaw, |b| b.to_radians() as f32))));
     }
 
     // The PlayerBody parent carries feet position + yaw; the model child adds the
     // fixed scale + forward offset (see scene::spawn_players). Model origin is at
     // the feet, so it sits directly at `sc` (no capsule half-height offset).
     for (body, mut tf, mut vis) in &mut q_body {
-        match poses.get(body.slot).copied().flatten() {
+        match bodies.get(body.slot).copied().flatten() {
             Some((sc, yaw)) => {
                 *tf = Transform::from_translation(sc).with_rotation(Quat::from_rotation_y(yaw));
                 *vis = if self_fp_slot == Some(body.slot) {
@@ -747,7 +767,7 @@ fn hide_tool_brushes(
 }
 
 /// Walk up the parent chain from `e` to the owning PlayerBody's slot, if any.
-fn find_body_slot(
+pub(crate) fn find_body_slot(
     mut e: Entity,
     q_childof: &Query<&ChildOf>,
     q_body: &Query<&PlayerBody>,
@@ -774,113 +794,6 @@ fn spawn_round_players(
     };
     if q_bodies.is_empty() {
         scene::spawn_players(&mut commands, &model, &r.dec);
-    }
-}
-
-/// When a spawned character's `AnimationPlayer` appears, attach its side's animation
-/// graph, start it on Idle, tag it with the owning player slot for `drive_player_anim`,
-/// and hand the weapon mount over to the model's weapon bone if it has one.
-fn setup_player_anim(
-    mut commands: Commands,
-    viewer: Res<Viewer>,
-    model: Option<Res<scene::PlayerModel>>,
-    mut graphs: ResMut<Assets<AnimationGraph>>,
-    mut q_new: Query<(Entity, &mut AnimationPlayer), Added<AnimationPlayer>>,
-    q_childof: Query<&ChildOf>,
-    q_body: Query<&PlayerBody>,
-    q_children: Query<&Children>,
-    q_names: Query<&Name>,
-    mut q_mounts: Query<(Entity, &mut weapons_viz::WeaponMount)>,
-) {
-    let (Some(model), Some(r)) = (model, viewer.round.as_ref()) else {
-        return;
-    };
-    for (e, mut player) in &mut q_new {
-        let Some(slot) = find_body_slot(e, &q_childof, &q_body) else {
-            continue;
-        };
-        let team = r.dec.players.get(slot).map(|p| p.team).unwrap_or(0);
-        let rig = model.for_team(team);
-        let idle = rig.clips.idle();
-        let mut graph = AnimationGraph::new();
-        let root = graph.root;
-        let nodes = std::array::from_fn(|_| graph.add_clip(idle.clone(), 1.0, root));
-        let mut transitions = AnimationTransitions::new();
-        transitions.play(&mut player, nodes[0], Duration::ZERO).repeat();
-        commands.entity(e).insert((
-            AnimationGraphHandle(graphs.add(graph)),
-            transitions,
-            PlayerAnimSlot(slot),
-            PlayerLoco::default(),
-            PlayerClipNodes { nodes, current: 0, clip: idle.id() },
-        ));
-        if rig.spec.weapon_bone {
-            let bone = q_children.iter_descendants(e).find(|b| {
-                q_names.get(*b).is_ok_and(|n| n.as_str() == weapons_viz::WEAPON_BONE)
-            });
-            let mount = q_mounts.iter_mut().find(|(_, m)| m.slot == slot);
-            if let (Some(bone), Some((mount_e, mut mount))) = (bone, mount) {
-                commands.entity(mount_e).insert(ChildOf(bone));
-                mount.on_bone = true;
-                // makes update_weapon_mounts respawn the kit at its bone position
-                mount.current = None;
-            }
-        }
-    }
-}
-
-/// Pick each player's clip from their weapon, crouch and movement relative to where
-/// they face, crossfade to it, and run it on the replay's clock: a paused replay
-/// holds the pose, slow motion slows the legs, and the rate follows the ground speed
-/// so the feet do not slide. Freeze-on-death => speed 0 when not alive.
-fn drive_player_anim(
-    viewer: Res<Viewer>,
-    model: Option<Res<scene::PlayerModel>>,
-    mut graphs: ResMut<Assets<AnimationGraph>>,
-    mut q: Query<(
-        &PlayerAnimSlot,
-        &mut PlayerLoco,
-        &mut PlayerClipNodes,
-        &AnimationGraphHandle,
-        &mut AnimationPlayer,
-        &mut AnimationTransitions,
-    )>,
-) {
-    let (Some(model), Some(r)) = (model, viewer.round.as_ref()) else {
-        return;
-    };
-    if r.n == 0 {
-        return;
-    }
-    let (i0, _i1, _f, _s) = sample_pos(viewer.clock, r.rate, r.n);
-    let playback = if viewer.playing { viewer.speed as f32 } else { 0.0 };
-    for (slot, mut loco, mut clips, graph, mut player, mut transitions) in &mut q {
-        let Some(tr) = r.dec.tracks.get(slot.0) else {
-            continue;
-        };
-        let alive = tr.flags[i0] & c2r3::F_ALIVE != 0;
-        let (speed, dx, dy) = if alive { player_anim::ground_motion(tr, i0, r.n, r.rate) } else { (0.0, 0.0, 0.0) };
-        loco.0.update(speed, player_anim::heading_cw(dx, dy, tr.yaw[i0]));
-
-        let crouch = tr.flags[i0] & c2r3::F_CROUCH != 0;
-        let class = weapons_viz::current_tag(r, slot.0, i0)
-            .map_or(player_anim::WeaponClass::Rifle, player_anim::class_for_tag);
-        let team = r.dec.players.get(slot.0).map(|p| p.team).unwrap_or(0);
-        let target = model.for_team(team).clips.pose(class, crouch, loco.0.gait, loco.0.sector, speed);
-        if clips.clip != target.id() {
-            clips.current = (clips.current + 1) % CLIP_NODES;
-            let node = clips.nodes[clips.current];
-            if let Some(mut graph) = graphs.get_mut(&graph.0) {
-                if let Some(graph_node) = graph.get_mut(node) {
-                    graph_node.node_type = AnimationNodeType::Clip(target.clone());
-                }
-            }
-            clips.clip = target.id();
-            transitions.play(&mut player, node, Duration::from_millis(180)).repeat();
-        }
-        if let Some(active) = player.animation_mut(clips.nodes[clips.current]) {
-            active.set_speed(playback * player_anim::clip_rate(crouch, loco.0.gait, speed));
-        }
     }
 }
 
@@ -911,9 +824,10 @@ fn tint_players(
         };
         // player meshes live on the world layer AND the x-ray layer, so the
         // overlay camera can redraw them on top of walls + smoke.
-        commands
-            .entity(e)
-            .insert(RenderLayers::from_layers(&[0, XRAY_LAYER]));
+        commands.entity(e).insert((
+            RenderLayers::from_layers(&[0, XRAY_LAYER]),
+            player_rig::PlayerMeshOf { slot, on_xray: true },
+        ));
         let team = r.dec.players.get(slot).map(|p| p.team).unwrap_or(0);
         let color = m
             .team_colors

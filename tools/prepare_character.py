@@ -6,7 +6,7 @@ this step and the precompression. By hand:
     Source2Viewer-CLI.exe -i pak01_dir.vpk -f agents/models/ctm_sas/ctm_sas.vmdl_c -d ^
         --gltf_export_format gltf --gltf_export_materials --gltf_textures_adapt ^
         --gltf_export_animations --gltf_animation_list <clips> -o raw/characters/ctm_sas
-    python tools/prepare_character.py raw/characters/ctm_sas <out>.glb
+    python tools/prepare_character.py raw/characters/ctm_sas <out>.glb --clips raw/character_clips
 
 What an export holds and what the viewer needs differ a lot, so the output is
 rebuilt from scratch rather than edited in place:
@@ -23,7 +23,12 @@ rebuilt from scratch rather than edited in place:
     own copy of every joint matrix, and players are drawn twice (x-ray), so five
     materials cost a third of the frame rate on ten players;
   * clips are limited to the viewer's clip list. A track holding one value in every
-    clip moves nothing, so it is baked into the rest pose and dropped;
+    clip, tools/prepare_actions.py's included, moves nothing, so it is baked into the
+    rest pose and dropped;
+  * the weapon bones move from root_motion to the chest, with their tracks rewritten to
+    match. CS2 keeps the hands on the gun with IK, which we do not have, so a gun hanging
+    off root_motion left the hands whenever the upper body played anything the legs did
+    not. Under the chest it stays in the hands whatever blends with what;
   * textures become JPEGs (the viewer's Bevy build decodes png and jpeg only).
 
 The model stays in the export's frame: metres, Y up, facing +Z, feet at Y=0.
@@ -34,6 +39,7 @@ import argparse
 import io
 import json
 import re
+import struct
 import sys
 from pathlib import Path
 
@@ -45,6 +51,17 @@ from prepare_map import _read_accessor, load_gltf, write_glb  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLIP_LIST = REPO_ROOT / "rust" / "viewer" / "src" / "player_clips.txt"
+ACTION_LIST = REPO_ROOT / "rust" / "viewer" / "src" / "player_actions.txt"
+
+# What the skeleton changes get: the page caches these for a week by URL, so a rebuild that
+# changes the bone tree needs a new name, or a browser mixes old models with new clips.
+# rust/viewer/src/scene.rs and web/replay3d.py hold the same names.
+RIG_T_NAME = "t_rig2.glb"
+CT_NAME = "ct_rig2.glb"
+ACTIONS_NAME = "actions_rig2.glb"
+
+_CHEST_CHAIN = ("pelvis", "spine_0", "spine_1", "spine_2", "spine_3")
+_WEAPON_ROOT = "wpnPivot"
 
 # Secondary motion nobody can see at replay distance, and nothing binds to it.
 _STRIP_BONE = re.compile(r"^(jiggle_|eyeball_|eye_target$|scap_(AIMUP|[LR]_AIMAT)$)")
@@ -52,7 +69,7 @@ _WORLD_CLIP = "animation/anims/world/"
 _DEFAULT_SET = "/_default_"
 _KEEP_ATTRS = ("POSITION", "NORMAL", "TANGENT", "TEXCOORD_0", "JOINTS_0", "WEIGHTS_0")
 
-_FLOAT, _USHORT = 5126, 5123
+_FLOAT, _SHORT, _USHORT = 5126, 5122, 5123
 _ARRAY_BUFFER, _ELEMENT_ARRAY_BUFFER = 34962, 34963
 _TYPE_BY_WIDTH = {1: "SCALAR", 2: "VEC2", 3: "VEC3", 4: "VEC4", 16: "MAT4"}
 
@@ -75,6 +92,40 @@ _UV_SLACK = 0.01
 def read_clip_list(path=CLIP_LIST):
     lines = Path(path).read_text(encoding="utf-8").splitlines()
     return [ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")]
+
+
+def read_action_list(path=ACTION_LIST):
+    """[(name, layer, clip under animation/anims/world/)]"""
+    return [tuple(ln.split()) for ln in read_clip_list(path)]
+
+
+def read_glb(path):
+    """(gltf json, binary chunk) of a .glb."""
+    data = Path(path).read_bytes()
+    json_len = struct.unpack_from("<I", data, 12)[0]
+    g = json.loads(data[20:20 + json_len])
+    return g, data[20 + json_len + 8:]
+
+
+def read_clip_tracks(clips_dir, source, index, full_pose=False):
+    """One clip's own export as {(key, path): (times, values)}, where `index` maps a bone's
+    name to its key and bones it does not name are skipped. `full_pose` reads the
+    +non_additive twin of an additive clip."""
+    suffix = ".vnmclip+non_additive" if full_pose else ""
+    path = Path(clips_dir) / "animation" / "anims" / "world" / f"{source}{suffix}.gltf"
+    g = load_gltf(path)
+    blob = (path.parent / g["buffers"][0]["uri"]).read_bytes()
+    tracks = {}
+    anim = g["animations"][0]
+    for ch in anim["channels"]:
+        key = index.get(g["nodes"][ch["target"]["node"]].get("name"))
+        if key is None:
+            continue
+        sampler = anim["samplers"][ch["sampler"]]
+        times = _read_accessor(g, blob, sampler["input"]).astype(np.float32)
+        values = _read_accessor(g, blob, sampler["output"]).astype(np.float32)
+        tracks[(key, ch["target"]["path"])] = (times, values)
+    return tracks
 
 
 def find_character_gltf(raw_dir):
@@ -130,6 +181,21 @@ class _Output:
             acc["min"] = np.atleast_1d(arr.min(axis=0)).tolist()
             acc["max"] = np.atleast_1d(arr.max(axis=0)).tolist()
         self._anim.extend(data)
+        self.accessors.append(acc)
+        self._anim_accessors.append(acc)
+        self._anim_seen[key] = len(self.accessors) - 1
+        return self._anim_seen[key]
+
+    def anim_rotation(self, quats):
+        """Rotation keys as normalized 16-bit integers, half the size and all a rotation needs."""
+        data = np.round(np.clip(quats, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+        key = (4, data)
+        if key in self._anim_seen:
+            return self._anim_seen[key]
+        acc = {"byteOffset": len(self._anim), "componentType": _SHORT, "normalized": True,
+               "count": len(quats), "type": "VEC4"}
+        self._anim.extend(data)
+        self._anim.extend(b"\0" * (-len(self._anim) % 4))
         self.accessors.append(acc)
         self._anim_accessors.append(acc)
         self._anim_seen[key] = len(self.accessors) - 1
@@ -205,6 +271,73 @@ def simplify_track(times, values, step):
     return times[keep], values[keep]
 
 
+def _quat_conj(q):
+    return q * np.array([-1.0, -1.0, -1.0, 1.0], q.dtype)
+
+
+def _quat_mul(a, b):
+    """Hamilton product of (..., 4) xyzw arrays, a then applied after b."""
+    ax, ay, az, aw = np.moveaxis(a, -1, 0)
+    bx, by, bz, bw = np.moveaxis(b, -1, 0)
+    return np.stack([aw * bx + ax * bw + ay * bz - az * by,
+                     aw * by - ax * bz + ay * bw + az * bx,
+                     aw * bz + ax * by - ay * bx + az * bw,
+                     aw * bw - ax * bx - ay * by - az * bz], axis=-1)
+
+
+def _quat_rotate(q, v):
+    u = q[..., :3]
+    return v + 2.0 * np.cross(u, np.cross(u, v) + q[..., 3:] * v)
+
+
+def _sample_track(times, values, at):
+    """`values` at the times `at`, clamped at the ends. Quaternions blend the short way."""
+    if len(times) == 1:
+        return np.repeat(values[:1], len(at), axis=0)
+    upper = np.clip(np.searchsorted(times, at), 1, len(times) - 1)
+    lower = upper - 1
+    span = times[upper] - times[lower]
+    frac = np.clip((at - times[lower]) / np.where(span > 0, span, 1.0), 0.0, 1.0)[:, None]
+    a, b = values[lower], values[upper]
+    if values.shape[1] == 4:
+        b = np.where((a * b).sum(axis=1, keepdims=True) < 0.0, -b, b)
+        out = a + (b - a) * frac
+        return out / np.linalg.norm(out, axis=1, keepdims=True)
+    return a + (b - a) * frac
+
+
+def weapon_under_chest(tracks, index, nodes):
+    """Rewrite the weapon root's tracks from root_motion-relative to chest-relative, so that
+    it can hang off the chest (see the module docstring). `index` gives a bone's key in
+    `tracks` and in `nodes`. Rest values stand in for a chain bone the clip does not move."""
+    chain = [index[name] for name in _CHEST_CHAIN]
+    weapon = index[_WEAPON_ROOT]
+    if (weapon, "rotation") not in tracks and (weapon, "translation") not in tracks:
+        return
+
+    def rest(node, path):
+        fallback = [0.0, 0.0, 0.0, 1.0] if path == "rotation" else [0.0, 0.0, 0.0]
+        return np.array(nodes[node].get(path, fallback), np.float32)
+
+    def at(node, path, when):
+        if (node, path) in tracks:
+            return _sample_track(*tracks[(node, path)], when)
+        return np.repeat(rest(node, path)[None, :], len(when), axis=0)
+
+    relevant = [k for k in tracks if k[0] in chain or k[0] == weapon]
+    when = np.unique(np.concatenate([tracks[k][0] for k in relevant if k[1] != "scale"]))
+    chest_pos = np.zeros((len(when), 3), np.float32)
+    chest_rot = np.tile(np.array([0.0, 0.0, 0.0, 1.0], np.float32), (len(when), 1))
+    for node in chain:
+        chest_pos = chest_pos + _quat_rotate(chest_rot, at(node, "translation", when))
+        chest_rot = _quat_mul(chest_rot, at(node, "rotation", when))
+    inverse = _quat_conj(chest_rot)
+    tracks[(weapon, "translation")] = (
+        when, _quat_rotate(inverse, at(weapon, "translation", when) - chest_pos).astype(np.float32))
+    tracks[(weapon, "rotation")] = (
+        when, _quat_mul(inverse, at(weapon, "rotation", when)).astype(np.float32))
+
+
 def collect_clips(g, bin_bytes, clip_names, kept_nodes, step):
     """[(clip name, {(node, path): (times, values)})] in `clip_names` order."""
     by_name = {}
@@ -232,17 +365,23 @@ def collect_clips(g, bin_bytes, clip_names, kept_nodes, step):
     return clips
 
 
-def bake_constant_tracks(clips, rest):
+def bake_constant_tracks(clips, rest, others=()):
     """A track holding one value in EVERY clip moves nothing: store the value in the
     rest pose (`rest[node][path]`) and drop it. Bind pose is unaffected, it lives in
     the inverse bind matrices. A track that differs between clips has to stay even
-    when it is constant inside each, or a crossfade would keep the old clip's value."""
+    when it is constant inside each, or a crossfade would keep the old clip's value.
+    `others` are the track sets of clips kept elsewhere, which count for this too: Bevy
+    leaves a bone alone when no playing clip has a track for it, so a value only those
+    clips move would stay there after they end."""
     for key in {k for _, tracks in clips for k in tracks}:
         node, path = key
         held = [tracks.get(key) for _, tracks in clips]
         if any(h is None or len(h[0]) > 1 for h in held):
             continue
         first = held[0][1][0]
+        if any(key in other and np.abs(other[key][1] - first).max() >= _TRACK_EPS
+               for other in others):
+            continue
         if all(np.abs(h[1][0] - first).max() < _TRACK_EPS for h in held):
             rest.setdefault(node, {})[path] = first.tolist()
             for _, tracks in clips:
@@ -288,8 +427,26 @@ def _encode_atlas(sources, layout, side, quality, fill):
     return buf.getvalue()
 
 
+def _action_tracks(clips_dir, actions, kept_bones, nodes):
+    """The tracks of tools/prepare_actions.py's replacing clips, on this model's nodes.
+    Upper clips do not touch the legs and added clips are not poses, so neither counts there."""
+    index = {nodes[i]["name"]: i for i in kept_bones}
+    # the weapon is not under the spine yet on the export's nodes
+    upper = set(_subtree(nodes, index["spine_0"])) | set(_subtree(nodes, index[_WEAPON_ROOT]))
+    found = []
+    for _, layer, source in actions:
+        if layer == "add":
+            continue
+        tracks = read_clip_tracks(clips_dir, source, index)
+        weapon_under_chest(tracks, index, nodes)
+        if layer == "upper":
+            tracks = {k: v for k, v in tracks.items() if k[0] in upper}
+        found.append(tracks)
+    return found
+
+
 def build_character(g, bin_bytes, image_dir, clip_names, base_atlas=2048, normal_atlas=1024,
-                    jpeg_quality=82, step=2):
+                    jpeg_quality=82, step=2, clips_dir=None, actions=()):
     """Returns (gltf json, binary blob, stats) for the viewer-ready model."""
     nodes = g["nodes"]
     parents = _parents(nodes)
@@ -408,8 +565,12 @@ def build_character(g, bin_bytes, image_dir, clip_names, base_atlas=2048, normal
 
     # --- clips (the rest pose is settled here, so nodes are written after this)
     clips = collect_clips(g, bin_bytes, clip_names, set(kept_bones), step)
+    index = {nodes[i]["name"]: i for i in kept_bones}
+    for _, tracks in clips:
+        weapon_under_chest(tracks, index, nodes)
     rest = {}
-    bake_constant_tracks(clips, rest)
+    others = _action_tracks(clips_dir, actions, kept_bones, nodes) if clips_dir else ()
+    bake_constant_tracks(clips, rest, others)
     pelvis = next(i for i in kept_bones if nodes[i].get("name") == "pelvis")
     give_still_clips_a_length(clips, (pelvis, "rotation"))
 
@@ -418,7 +579,8 @@ def build_character(g, bin_bytes, image_dir, clip_names, base_atlas=2048, normal
         channels, samplers = [], []
         for (node, path), (times, values) in sorted(tracks.items()):
             samplers.append({"input": out.anim_accessor(times, minmax=True),
-                             "output": out.anim_accessor(values)})
+                             "output": out.anim_rotation(values) if path == "rotation"
+                             else out.anim_accessor(values)})
             channels.append({"sampler": len(samplers) - 1,
                              "target": {"node": new_node[node], "path": path}})
         channel_total += len(channels)
@@ -430,15 +592,25 @@ def build_character(g, bin_bytes, image_dir, clip_names, base_atlas=2048, normal
     # fixed name: both teams' models then hash to the same targets.
     out_nodes = [{"name": "character",
                   "children": [new_node[c] for c in nodes[root].get("children", []) if c in new_node]}]
+    # The weapon hangs off the chest (see the module docstring), and its rest pose only
+    # matters until the first clip applies, so the first clip's first key will do.
+    chest, weapon = index[_CHEST_CHAIN[-1]], index[_WEAPON_ROOT]
+    weapon_rest = {path: clips[0][1][(weapon, path)][1][0].tolist()
+                   for path in ("translation", "rotation")}
     for old in kept_bones:
         src = nodes[old]
         node = {"name": src["name"]}
         trs = {k: src[k] for k in ("translation", "rotation", "scale") if k in src}
         trs.update(rest.get(old, {}))
+        if old == weapon:
+            trs.update(weapon_rest)
         if trs.get("scale") and np.allclose(trs["scale"], 1.0, atol=1e-3):
             del trs["scale"]
         node.update(trs)
-        kids = [new_node[c] for c in src.get("children", []) if c in new_node]
+        kids = [c for c in src.get("children", []) if c != weapon]
+        if old == chest:
+            kids.append(weapon)
+        kids = [new_node[c] for c in kids if c in new_node]
         if kids:
             node["children"] = kids
         out_nodes.append(node)
@@ -479,6 +651,7 @@ def main():
     ap.add_argument("--jpeg-quality", type=int, default=82)
     ap.add_argument("--key-step", type=int, default=2,
                     help="keep every Nth animation key (the export is 30 per second)")
+    ap.add_argument("--clips", help="folder Source2Viewer exported the action clips into")
     args = ap.parse_args()
 
     gltf_path = find_character_gltf(args.raw_dir)
@@ -490,7 +663,8 @@ def main():
     result, blob, stats = build_character(
         g, bin_bytes, gltf_path.parent, read_clip_list(),
         base_atlas=args.base_atlas, normal_atlas=args.normal_atlas,
-        jpeg_quality=args.jpeg_quality, step=args.key_step)
+        jpeg_quality=args.jpeg_quality, step=args.key_step,
+        clips_dir=args.clips, actions=read_action_list() if args.clips else ())
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
