@@ -842,6 +842,9 @@ async function main(){
   run('#canvas', null, cs2Models, cs2Weapons);   // null = page-relative "assets/" root (dev server)
   MANIFEST = JSON.parse(await manifestReq);
   if (qmap) MANIFEST.mapAsset = qmap;
+  // ?mapv2=maps_v2/de_mirage/world.c2map tries the textured map
+  const qmapv2 = q.get('mapv2');
+  if (qmapv2) MANIFEST.mapV2 = qmapv2;
 
   // deep links: ?round=<1-based>&t=<seconds> (seek + pause) &flash=<player name>
   const qr=parseInt(q.get('round')), qt=parseFloat(q.get('t'));

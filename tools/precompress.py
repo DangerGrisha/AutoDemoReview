@@ -20,6 +20,7 @@ emitted (with a warning).
 
 import glob
 import gzip
+import os
 import sys
 import time
 from pathlib import Path
@@ -62,6 +63,14 @@ def is_fresh(src, sibling):
     return sibling.exists() and sibling.stat().st_mtime >= src.stat().st_mtime
 
 
+def write_whole(path, data):
+    """Write through a temporary name. A sibling cut short by a restart would look fresh
+    to is_fresh, stay there on the next run, and the site would serve it."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
 def compress_one(src):
     """Emit .br/.gz siblings for `src`; returns a result row for the table."""
     data = None
@@ -80,7 +89,7 @@ def compress_one(src):
             row["br"] = br_path.stat().st_size
         else:
             t0 = time.perf_counter()
-            br_path.write_bytes(brotli.compress(read(), quality=BR_QUALITY))
+            write_whole(br_path, brotli.compress(read(), quality=BR_QUALITY))
             row["br"] = br_path.stat().st_size
             print(f"  {br_path.name}  ({time.perf_counter() - t0:.1f}s)")
 
@@ -89,7 +98,7 @@ def compress_one(src):
         row["gz"] = gz_path.stat().st_size
     else:
         t0 = time.perf_counter()
-        gz_path.write_bytes(gzip.compress(read(), compresslevel=GZ_LEVEL, mtime=0))
+        write_whole(gz_path, gzip.compress(read(), compresslevel=GZ_LEVEL, mtime=0))
         row["gz"] = gz_path.stat().st_size
         print(f"  {gz_path.name}  ({time.perf_counter() - t0:.1f}s)")
 

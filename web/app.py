@@ -61,12 +61,14 @@ class CompressedStaticFiles(StaticFiles):
     Bevy's own fetch of the same URL becomes a deterministic disk-cache hit).
     """
 
-    COMPRESSIBLE_EXTS = {".wasm", ".glb", ".js", ".3dr"}
+    COMPRESSIBLE_EXTS = {".wasm", ".glb", ".js", ".3dr", ".c2map", ".ktx2"}
     MEDIA_TYPES = {
         ".wasm": "application/wasm",
         ".glb": "model/gltf-binary",
         ".js": "text/javascript",
         ".3dr": "application/octet-stream",
+        ".c2map": "application/octet-stream",
+        ".ktx2": "image/ktx2",
     }
 
     @staticmethod
@@ -417,6 +419,8 @@ def match_replay3d(request: Request, match_id: int):
             return 0
     wasm_size = _size(WEB_DIR / "static" / "replay3d" / "pkg" / "viewer_bg.wasm")
     map_size = _size(WEB_DIR / "static" / "replay3d" / "assets" / Path(map_asset)) if map_asset else 0
+    map_v2 = replay3d.map_v2_rel(row["map_name"])
+    map_v2_size = _size(WEB_DIR / "static" / "replay3d" / "assets" / Path(map_v2)) if map_v2 else 0
     return _page(request, "replay3d.html", {
         "user": user,
         "match_id": match_id,
@@ -424,6 +428,8 @@ def match_replay3d(request: Request, match_id: int):
         "demo_name": row["original_filename"] or "match.dem",
         "has_replay": replay3d.has_replay(match_id),
         "map_asset": map_asset,
+        "map_v2": map_v2,
+        "map_v2_size": map_v2_size,
         "cs2_models": replay3d.cs2_models_enabled(),
         "cs2_weapons": replay3d.cs2_weapons_enabled(),
         "cs2_sounds": replay3d.cs2_sounds_enabled(),

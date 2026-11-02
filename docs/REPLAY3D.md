@@ -277,6 +277,126 @@ themselves are:
    Already-converted exports from the CS2MapViewer project work as input too —
    point `prepare_map.py` at the directory containing the world `.gltf`.
 
+## The textured map (`maps_v2`)
+
+The plain map above is flat colours and baked AO. The textured map is the same world with
+CS2's own textures, baked light and sky. It comes from CS2, so it is **gitignored** and each
+machine that serves it builds it from its own install. The plain map stays needed: it is the
+fallback and the "Лёгкая карта" button.
+
+```powershell
+.\tools\convert_maps.ps1 -Textured             # all nine maps, 5-22 min each
+.\tools\convert_maps.ps1 de_mirage -Textured -Force
+```
+
+This needs **Source2Viewer 20** in `tools\s2v\v20\`, because 19.x cannot read CS2's materials,
+and `etcpak` in the venv. The steps are the export (`Export-Textured`), then
+`tools\prepare_map_textured.py`, then `tools\precompress.py`. The result goes to
+`assets\maps_v2\<map>\`: `world.c2map` (geometry and material list), `lightmap.ktx2`,
+`sky.ktx2` and `tex\*.ktx2`.
+
+What each part does, and why:
+
+- **Textures are KTX2 with BC compression.** No decoding in wasm's only thread, and about a
+  quarter of the video memory of a JPEG. A GPU without BC (phones) gets the plain map, and the
+  page does not offer the button there.
+- **Everything in one `world.c2map`, with meshes merged by material and chunked** keeps the
+  frame to about 570 draws at worst. The viewer parses it itself (`textured_map.rs`).
+- **`map_material.wgsl` is Source 2's own lighting:** `albedo * (irradiance + sun * NdotL *
+  visibility)`. There is **no division by pi**, because Source 2's lights and lightmaps already
+  carry it. Dividing gave a sun a third too dim.
+- **The tone curve is the map's own:** Valve's filmic curve with the numbers from the `.vpost`.
+  On de_mirage they make it a straight line up to the white point, and on de_ancient it bends.
+  `exposure` is the middle of `minexposure` and `maxexposure` on `post_processing_volume`.
+  Bloom, fog and the colour grade are not implemented.
+- **The sun's shadow has its own channel.** `direct_light_shadows` holds up to four lights, and
+  `bakedshadowindex` on `light_environment` names the sun's. de_mirage has the same thing in
+  the first three, which hides a mistake here: mixing them left the other maps grey and without
+  sun. de_train has a sun of zero brightness, so its UVs can't be checked against it.
+- **The lightmap's UV set differs by primitive:** it is the last set, `TEXCOORD_1` on most and
+  `TEXCOORD_2` where the material has a second UV of its own, as on over half of de_ancient.
+- **Source2Viewer 20 exports lightmap UVs already scaled.** Applying `m_vLightmapUvScale`
+  again looks plausible and is random: the sun lands on the wrong surfaces. So
+  `choose_lightmap_scale` lets the data decide (of the surfaces that face the sun under open
+  sky, a right mapping has far more in the sun than the atlas has on average), and **the bake
+  stops** if neither scale fits.
+- **The page hands the map's bytes to Bevy** by answering its first `fetch` of that URL. The
+  page downloads the file itself for the progress bar, and the browser may not keep it: with
+  5 GB free on the disk, Chrome did not cache de_nuke's 33 MB `world.c2map`, though it kept the
+  lightmap. Without the hand-over that file comes down twice on every visit.
+- **Players stand in the map's light.** The bake stores a coarse light grid. `MapLight` sets
+  the viewer's sun and ambient so that Bevy's PBR gives the same pixels as the map's shader,
+  and `fade_team_colour` multiplies a player's material by the light at their position,
+  relative to an open floor.
+
+### What it costs (de_mirage, RTX 3070, 1920x1080)
+
+| | measured |
+|---|---|
+| On the wire | 85 MB: textures 62.5, geometry 15.9, lightmap 7.0 |
+| FPS with vsync off | 89 overview with x-ray, 96 overview, 108-136 following a player |
+| Worst frame | about 570 draws, 1.75 M triangles |
+| Later visits | about 3 s from a local server, more if the browser did not keep `world.c2map` |
+| **First visit** | **about 20 s, of which 15 s is shader compilation** |
+
+Those 15 s are **not the map**. The map's shaders take about 60 ms each. The time goes to three
+variants of Bevy's `StandardMaterial` fragment shader, about 100 KB of GLSL each, at 5 s each
+in ANGLE's D3D11 compiler: effects and primitives, skinned players, and weapons. The tab
+freezes while `getProgramParameter` waits for them, and the plain map has the same pause. Chrome
+keeps the compiled programs on disk, so it happens once per browser, until a shader changes.
+
+### The nine maps
+
+Measured with nothing else running. "First visit" is on a local server and includes those 15 s.
+The site shows the textured map where the last column says so, and `REPLAY3D_CS2_MAPS=all`
+shows them all.
+
+| Map | Triangles | Materials | On the wire | FPS, vsync off | Worst draws | First visit | By default |
+|---|---|---|---|---|---|---|---|
+| de_mirage | 1.29 M | 374 | 85 MB | 89-136 | 567 | 20 s | textured |
+| de_nuke | 3.60 M | 598 | 90 MB | 91-126 | 795 | 21 s | textured |
+| de_vertigo | 1.99 M | 207 | 70 MB | not measured | - | - | plain, no match to check it on |
+| de_anubis | 3.60 M | 367 | 165 MB | 87-140 | 629 | 22 s | plain, size |
+| de_inferno | 8.66 M | 919 | 296 MB | 66-125 | 1496 | 31 s | plain, size |
+| de_dust2 | 4.54 M | 691 | 298 MB | 78+ (*) | 1021 | 22 s | plain, size |
+| de_overpass | 3.98 M | 846 | 305 MB | 74+ (*) | 1084 | 23 s | plain, size |
+| de_ancient | 9.19 M | 297 | 305 MB | 106-123 | 658 | 26 s | plain, size and darkness |
+| de_train | 8.25 M | 1252 | 409 MB | 50+ (*) | 1672 | 30 s | plain, size and darkness |
+
+(*) No local match on this map: the number is the overview, the players are from another map.
+de_vertigo's world sits about 11000 units up, so another map's players see none of it.
+
+What is still wrong on them:
+
+- **Only the first layer of `csgo_environment_blend` is drawn**, and `g_vTexCoordScale*` is not
+  read. This is the material of the newer maps.
+- **Some overlays are solid cards.** On de_inferno a red rectangle and a crest on a brown square
+  sit on walls.
+- **Rooms are very dark** on de_ancient, de_nuke and de_train. The shader uses one fixed exposure
+  and the game adjusts it, which is the likely reason. This has not been checked against the game.
+- **de_train has no sun at all** (`brightness = 0`), and most of it is close to black.
+
+The size is mostly textures, and on the heaviest maps geometry too: brickwork modelled in
+triangles takes de_inferno's `world.c2map` to 104 MB. `-MaxTexture 1024` and simplifying inside
+each material are the untried ways down.
+
+### When it is not used
+
+Each of these has been run in a browser and ends in a working replay:
+
+| Situation | Result |
+|---|---|
+| `REPLAY3D_CS2_MAPS=0`, or no `world.c2map` | plain map |
+| "Лёгкая карта" pressed (remembered per browser) | plain map |
+| No BC support | plain map |
+| Corrupted `world.c2map` | plain map |
+| Corrupted textures | textured map in flat material colours |
+| Corrupted lightmap | textured map without baked light or shadow |
+| Corrupted sky | textured map with the plain background |
+
+**After rebuilding a map, keep the `.br` siblings in step:** `CompressedStaticFiles` trusts them
+blindly. `convert_maps.ps1` does this, and `precompress.py` skips a sibling newer than its source.
+
 ## Maps travel through Git LFS
 
 Converted `world.glb` files are large binaries and would be expensive to
@@ -686,6 +806,7 @@ agent a player actually wore (`agent_skin` in the parser, never extracted).
 | `EXTRACT3D_TIMEOUT_S` | `900` | kill a hung extraction |
 | `REPLAY3D_CS2_MODELS` | `1` | `0` shows the fallback soldier and simple weapons instead of the real CS2 player and weapon models |
 | `REPLAY3D_CS2_SOUNDS` | `1` | `0` synthesizes gunfire instead of playing the real CS2 sounds |
+| `REPLAY3D_CS2_MAPS` | `1` | Textured maps from `assets/maps_v2/`: `1` shows the ones in `TEXTURED_MAPS_READY` (de_mirage, de_nuke), `all` every built one, `0` none |
 | `KEEP_DEMOS` | `1` | `0` discards each demo after parsing instead of keeping a gzipped copy in `web/data/demos/` |
 
 Artifacts live in `web/data/replay3d/<match_id>/`; deleting a directory removes

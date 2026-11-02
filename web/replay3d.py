@@ -25,6 +25,9 @@ ARTIFACT_RE = re.compile(r"^(manifest\.json|r\d{2}\.3dr)$")
 # Map worlds converted via Source2Viewer + tools/prepare_map.py, under the
 # viewer's asset root (everything Bevy loads must live below that root).
 MAPS_DIR = config.WEB_DIR / "static" / "replay3d" / "assets" / "maps"
+# The textured maps from tools/prepare_map_textured.py, built from a local CS2 install
+# and never committed, unlike the plain ones above.
+MAPS_V2_DIR = config.WEB_DIR / "static" / "replay3d" / "assets" / "maps_v2"
 CS2_MODELS_DIR = config.WEB_DIR / "static" / "replay3d" / "assets" / "models" / "cs2_v1"
 CS2_SOUNDS_INDEX = config.WEB_DIR / "static" / "replay3d" / "assets" / "sounds_v1" / "index.json"
 HUD_ICONS_DIR = config.WEB_DIR / "static" / "replay3d" / "assets" / "hud_v1"
@@ -92,6 +95,27 @@ def map_asset_rel(map_name):
     for fname in ("world.glb", "world.gltf"):
         if (MAPS_DIR / map_name / fname).is_file():
             return f"maps/{map_name}/{fname}"
+    return None
+
+
+# Textured maps fit to show by default: within 120 MB and 60 FPS, checked on a real match.
+# The others build too, but weigh up to 409 MB or have no match to check them on (the table
+# in docs/REPLAY3D.md), so they stay on the plain map unless asked for with
+# REPLAY3D_CS2_MAPS=all.
+TEXTURED_MAPS_READY = {"de_mirage", "de_nuke"}
+
+
+def map_v2_rel(map_name):
+    """Asset-root-relative path of the textured map, or None. The page falls back to the
+    plain map without it, or with REPLAY3D_CS2_MAPS=0.
+    """
+    flag = os.environ.get("REPLAY3D_CS2_MAPS", "1")
+    if not map_name or flag == "0":
+        return None
+    if flag != "all" and map_name not in TEXTURED_MAPS_READY:
+        return None
+    if (MAPS_V2_DIR / map_name / "world.c2map").is_file():
+        return f"maps_v2/{map_name}/world.c2map"
     return None
 
 

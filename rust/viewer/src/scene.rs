@@ -92,6 +92,11 @@ pub fn parse_manifest(json: &str) -> Result<ManifestData, String> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
+    let map_v2 = v
+        .get("mapV2")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     Ok(ManifestData {
         scene_scale,
         cal,
@@ -100,6 +105,7 @@ pub fn parse_manifest(json: &str) -> Result<ManifestData, String> {
         ground_y,
         radar_asset,
         map_asset,
+        map_v2,
     })
 }
 
@@ -199,9 +205,13 @@ pub fn build_greybox(
 /// no rotation or recalibration. Children spawn under the root and inherit its
 /// Visibility, so the Map/Radar toggle only touches this entity.
 pub fn spawn_map(commands: &mut Commands, asset_server: &AssetServer, m: &ManifestData) {
-    let Some(path) = m.map_asset.clone() else {
-        return;
-    };
+    if let Some(path) = m.map_asset.clone() {
+        spawn_plain_map(commands, asset_server, path, m.scene_scale as f32);
+    }
+}
+
+/// The untextured map, also what a failed textured map falls back to.
+pub fn spawn_plain_map(commands: &mut Commands, asset_server: &AssetServer, path: String, scene_scale: f32) {
     let scene: Handle<WorldAsset> = asset_server
         .load_builder()
         .with_settings(|s: &mut GltfLoaderSettings| {
@@ -218,7 +228,7 @@ pub fn spawn_map(commands: &mut Commands, asset_server: &AssetServer, m: &Manife
         .load(GltfAssetLabel::Scene(0).from_asset(path));
     commands.spawn((
         WorldAssetRoot(scene),
-        Transform::from_scale(Vec3::splat(m.scene_scale as f32)),
+        Transform::from_scale(Vec3::splat(scene_scale)),
         Visibility::Visible,
         MapTag,
     ));

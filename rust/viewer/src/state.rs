@@ -54,6 +54,9 @@ pub struct ManifestData {
     pub radar_asset: String,
     /// optional glTF/GLB world geometry, relative to the asset root (manifest.mapAsset)
     pub map_asset: Option<String>,
+    /// textured CS2 map, relative to the asset root (manifest.mapV2). The page leaves it
+    /// out for the "light map" choice and on GPUs without BC textures.
+    pub map_v2: Option<String>,
 }
 
 /// One precomputed shot tracer (built at round load from a `weapon_fire` record
@@ -154,6 +157,8 @@ pub struct PlayerLoco(pub crate::player_anim::Locomotion);
 pub struct TeamFade {
     pub team: Color,
     pub level: u8,
+    /// how much of the map's light is on it, in steps of its own
+    pub light_level: u8,
 }
 
 /// Clips one player can be fading between at once. A new clip reuses the oldest node,

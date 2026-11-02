@@ -7,8 +7,8 @@
 {% if has_replay %}
 {# ?v= busts the 7-day static cache when the frame-payload layout changes; keep
    the token in lockstep with the import + fetch URLs below #}
-<link rel="preload" as="fetch" crossorigin href="/static/replay3d/pkg/viewer_bg.wasm?v=5">
-{% if map_asset %}<link rel="preload" as="fetch" crossorigin href="/static/replay3d/assets/{{ map_asset }}">{% endif %}
+<link rel="preload" as="fetch" crossorigin href="/static/replay3d/pkg/viewer_bg.wasm?v=6">
+{% if map_asset and not map_v2 %}<link rel="preload" as="fetch" crossorigin href="/static/replay3d/assets/{{ map_asset }}">{% endif %}
 {% endif %}
 <style>
   :root {
@@ -212,7 +212,7 @@
     <div class="lsub">{{ map_name or demo_name }} · загрузка</div>
     <div class="lrow"><span class="lk">движок</span>
       <div class="lbar" id="barWasm"><i></i></div><span class="lp" id="pctWasm">0%</span></div>
-    {% if map_asset %}
+    {% if map_asset or map_v2 %}
     <div class="lrow"><span class="lk">карта</span>
       <div class="lbar" id="barMap"><i></i></div><span class="lp" id="pctMap">0%</span></div>
     {% endif %}
@@ -242,8 +242,12 @@
   <div class="legend">
     <span><i class="dot" style="background:var(--ct)"></i>CT</span>
     <span><i class="dot" style="background:var(--t)"></i>T</span></div>
-  {% if map_asset %}
+  {% if map_asset or map_v2 %}
   <div class="row"><button id="mapToggle" style="width:100%">Radar view</button></div>
+  {% endif %}
+  {% if map_v2 and map_asset %}
+  <div class="row"><button id="lightMap" style="width:100%"
+    title="Карта без текстур и света: быстрее на слабых компьютерах">Лёгкая карта</button></div>
   {% endif %}
 </div>
 
@@ -281,10 +285,11 @@
  * weapon,worldX,worldY,yawDeg,present} — worldX/worldY/yawDeg are raw demo
  * coords for the live radar. ?v= must match the preload hint above. */
 import init, { run, load_manifest, load_round, seek, set_playing, set_speed, set_flash_focus,
-  set_map_visible, set_camera_follow, set_camera_free, set_xray } from '/static/replay3d/pkg/viewer.js?v=5';
+  set_map_visible, set_camera_follow, set_camera_free, set_xray } from '/static/replay3d/pkg/viewer.js?v=6';
 
 const BASE = '/matches/{{ match_id }}/replay3d/';
 const MAP_ASSET = {{ (map_asset or "")|tojson }};
+const MAP_V2 = {{ (map_v2 or "")|tojson }};
 const CS2_MODELS = {{ (cs2_models or false)|tojson }};
 const CS2_WEAPONS = {{ (cs2_weapons or false)|tojson }};
 const CS2_SOUNDS = {{ (cs2_sounds or false)|tojson }};
@@ -293,6 +298,24 @@ const HUD_ICONS = {{ (hud_icons or false)|tojson }};
 // on-wire Content-Length is the compressed size, so it is the wrong one).
 const WASM_SIZE = {{ wasm_size or 0 }};
 const MAP_SIZE = {{ map_size or 0 }};
+const MAP_V2_SIZE = {{ map_v2_size or 0 }};
+// Textured map or plain one. The textures are BC blocks, and without these extensions (phones)
+// they cannot be shown at all. wgpu only turns BC on when all three are there. The choice lives
+// in this browser, because whether a PC is too weak is not something the server can know.
+const LIGHT_MAP_KEY = 'replay3d.lightMap';
+function bcSupported(){
+  try {
+    const gl = document.createElement('canvas').getContext('webgl2');
+    if (!gl) return false;
+    const ok = ['WEBGL_compressed_texture_s3tc','WEBGL_compressed_texture_s3tc_srgb','EXT_texture_compression_bptc']
+      .every(e=>gl.getExtension(e));
+    const lose = gl.getExtension('WEBGL_lose_context'); if (lose) lose.loseContext();
+    return ok;
+  } catch(e){ return false; }
+}
+function lightMapChosen(){ try { return localStorage.getItem(LIGHT_MAP_KEY)==='1'; } catch(e){ return false; } }
+const BC_OK = !!MAP_V2 && bcSupported();
+const USE_MAP_V2 = BC_OK && !(lightMapChosen() && MAP_ASSET);
 
 // ---- first-load overlay ----
 function hideLoading(){
@@ -816,15 +839,26 @@ addEventListener('keydown', e=>{
   else if (k===' '){ set_playing(!lastPlaying); e.preventDefault(); }
 });
 
+// Bevy asks for the map itself once it runs. Hand it the bytes already here: the browser may
+// not have kept a big file in its cache, and de_nuke's world.c2map was downloaded twice.
+function handMapToBevy(url, bytes){
+  const realFetch = window.fetch;
+  window.fetch = function(input, init){
+    if (input !== url) return realFetch.call(window, input, init);
+    window.fetch = realFetch;
+    return Promise.resolve(new Response(bytes));
+  };
+}
+
 async function main(){
   // Everything big starts IN PARALLEL: the wasm streams straight into the
-  // compiler (init accepts a Promise<Response>), the map warm-fetch fills the
-  // HTTP cache (Cache-Control makes Bevy's later fetch of the SAME URL a
-  // deterministic disk-cache hit), and the manifest rides along.
+  // compiler (init accepts a Promise<Response>), the map's bytes wait for Bevy
+  // (handMapToBevy), and the manifest rides along.
   const wasmReady = init({ module_or_path:
-    fetchWithProgress('/static/replay3d/pkg/viewer_bg.wasm?v=5', WASM_SIZE, barSetter('barWasm','pctWasm')) });
-  const mapWarm = MAP_ASSET
-    ? fetchWithProgress('/static/replay3d/assets/'+MAP_ASSET, MAP_SIZE, barSetter('barMap','pctMap'))
+    fetchWithProgress('/static/replay3d/pkg/viewer_bg.wasm?v=6', WASM_SIZE, barSetter('barWasm','pctWasm')) });
+  const mapFile = USE_MAP_V2 ? MAP_V2 : MAP_ASSET;
+  const mapWarm = mapFile
+    ? fetchWithProgress('/static/replay3d/assets/'+mapFile, USE_MAP_V2 ? MAP_V2_SIZE : MAP_SIZE, barSetter('barMap','pctMap'))
         .then(r=>r.arrayBuffer())
     : Promise.resolve(null);
   // player models too: without this Bevy only starts on them after the map,
@@ -838,11 +872,12 @@ async function main(){
   const manifestReq = fetch(BASE + 'manifest.json', {cache:'no-cache'}).then(r=>r.text());
 
   await wasmReady;
-  await mapWarm;
+  if (mapFile) handMapToBevy('/static/replay3d/assets/'+mapFile, await mapWarm);
   await modelsWarm;
   run('#canvas', '/static/replay3d/assets', CS2_MODELS, CS2_WEAPONS);
   MANIFEST = JSON.parse(await manifestReq);
   if (MAP_ASSET) MANIFEST.mapAsset = MAP_ASSET;
+  if (USE_MAP_V2) MANIFEST.mapV2 = MAP_V2;
 
   // deep links: ?round=<1-based>&t=<seconds> (seek + pause) &flash=<player name>
   const q=new URLSearchParams(location.search);
@@ -861,6 +896,17 @@ async function main(){
     let mapOn = true;
     mapBtn.onclick = ()=>{ mapOn = !mapOn; set_map_visible(mapOn);
       mapBtn.textContent = mapOn ? 'Radar view' : 'Map view'; };
+  }
+  const lightBtn = $('#lightMap');
+  if (lightBtn){
+    if (!BC_OK) lightBtn.style.display='none';   // nothing to choose from: already the plain map
+    else {
+      lightBtn.textContent = USE_MAP_V2 ? 'Лёгкая карта' : 'Полная карта';
+      lightBtn.onclick = ()=>{
+        try { localStorage.setItem(LIGHT_MAP_KEY, USE_MAP_V2 ? '1' : '0'); } catch(e){}
+        location.reload();
+      };
+    }
   }
 
   const sel=$('#roundSel');

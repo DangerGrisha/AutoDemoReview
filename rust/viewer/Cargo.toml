@@ -15,14 +15,16 @@ crate-type = ["cdylib", "rlib"]
 # WebGL2, PBR StandardMaterial, glTF scenes with skeletal animation, gizmos,
 # PNG loading for the radar texture and JPEG for the player model's embedded
 # Mixamo textures (dropping "jpeg" makes player.glb fail to load entirely —
-# no player models). Safe to extend if a compile error names a missing feature.
+# no player models). "ktx2" reads the textured map's block-compressed textures, without
+# zstd: Brotli on the server does that better and the wasm has only one thread.
+# Safe to extend if a compile error names a missing feature.
 bevy = { version = "0.19", default-features = false, features = [
     "std", "async_executor", "web", "webgl2",
     "bevy_winit", "bevy_window", "bevy_asset", "bevy_state", "bevy_log",
     "bevy_render", "bevy_core_pipeline", "bevy_pbr",
     "bevy_gltf", "bevy_animation", "gltf_animation",
     "bevy_gizmos", "bevy_gizmos_render",
-    "bevy_scene", "reflect_auto_register", "png", "jpeg",
+    "bevy_scene", "reflect_auto_register", "png", "jpeg", "ktx2",
 ] }
 c2r3 = { path = "../codec" }
 serde_json = { version = "1", features = ["preserve_order"] }

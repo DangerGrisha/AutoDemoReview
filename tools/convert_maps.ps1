@@ -19,10 +19,18 @@
   decimation (-FallbackSimplify units) -- de_ancient needs this (212 -> 52 MB),
   de_mirage does not.
 
+  -Textured builds the real-looking map instead: Source2Viewer 20 with materials,
+  lightmaps and the sky -> tools\prepare_map_textured.py -> assets\maps_v2\<map>\.
+  These files come from CS2 and are gitignored, so never commit them. The site
+  uses them when they exist and keeps the plain map as its fallback, so the plain
+  maps stay needed too. See docs/REPLAY3D.md.
+
 .EXAMPLE
   .\tools\convert_maps.ps1 de_inferno
   .\tools\convert_maps.ps1                      # the whole active pool
   .\tools\convert_maps.ps1 de_nuke -Force -KeepRaw
+  .\tools\convert_maps.ps1 -Textured            # all nine maps, textured
+  .\tools\convert_maps.ps1 de_mirage -Textured -Force
 #>
 [CmdletBinding()]
 param(
@@ -44,7 +52,13 @@ param(
     [int]$MaxMB = 80,
 
     # Vertex-clustering cell size (world units) used by that rebuild.
-    [double]$FallbackSimplify = 5.0
+    [double]$FallbackSimplify = 5.0,
+
+    # Build the textured map into assets\maps_v2 instead of the plain one.
+    [switch]$Textured,
+
+    # Largest texture side for -Textured. Smaller saves download at the cost of detail.
+    [int]$MaxTexture = 2048
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,6 +68,7 @@ $ErrorActionPreference = 'Stop'
 $Maps = $Maps | ForEach-Object { $_ -split '\s*,\s*' } | Where-Object { $_ }
 
 $repo = Split-Path -Parent $PSScriptRoot
+. "$PSScriptRoot\cs2_paths.ps1"
 $s2v = Join-Path $repo 'tools\s2v\Source2Viewer-CLI.exe'
 $assets = Join-Path $repo 'web\static\replay3d\assets\maps'
 
@@ -88,6 +103,102 @@ if (-not $MapsDir -or -not (Test-Path $MapsDir)) {
 }
 if (-not (Test-Path $s2v)) {
     throw "Source2Viewer-CLI not found at $s2v -- see docs/REPLAY3D.md (unzip cli-windows-x64.zip into tools\s2v\)."
+}
+
+function Export-Textured {
+    # Everything prepare_map_textured.py reads, into one folder. Throws on a failed step.
+    param([string]$Map, [string]$Vpk, [string]$Out)
+    $s2v20 = Join-Path $repo 'tools\s2v\v20\Source2Viewer-CLI.exe'
+    if (-not (Test-Path $s2v20)) {
+        throw "Source2Viewer 20 not found at $s2v20 -- 19.x cannot read CS2's materials, see docs/REPLAY3D.md."
+    }
+    & $s2v20 -i $Vpk -e 'vwrld_c' -d --gltf_export_format gltf --gltf_export_materials --gltf_export_extras -o $Out | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "world export failed (exit $LASTEXITCODE)" }
+
+    # With one file picked by -f, -o names the file itself and not a folder.
+    & $s2v20 -i $Vpk -f "maps/$Map/lightmaps/irradiance.vtex_c" -d -o (Join-Path $Out 'irradiance.exr') | Out-Null
+    & $s2v20 -i $Vpk -f "maps/$Map/lightmaps/direct_light_shadows.vtex_c" -d -o (Join-Path $Out 'direct_light_shadows.png') | Out-Null
+    foreach ($f in 'irradiance.exr', 'direct_light_shadows.png') {
+        if (-not (Test-Path (Join-Path $Out $f))) { throw "$f did not export: does this map have baked light?" }
+    }
+
+    & $s2v20 -i $Vpk -f "maps/$Map/world.vwrld_c" -a 2>$null | Out-File (Join-Path $Out 'world.txt') -Encoding utf8
+
+    # The sky is named by the map's env_sky and its material, and lives in the game's main archive.
+    $ents = (& $s2v20 -i $Vpk -f "maps/$Map/entities/default_ents.vents_c" -a 2>$null) -join "`n"
+    $sky = [regex]::Match($ents, 'skyname\s*=\s*resource_name:"([^"]+\.vmat)"').Groups[1].Value
+    if ($sky) {
+        $pak = Resolve-Pak01
+        $vmat = (& $s2v20 -i $pak -f ($sky + '_c') -a 2>$null) -join "`n"
+        $tex = [regex]::Match($vmat, 'resource:"([^"]+\.vtex)"').Groups[1].Value
+        if ($tex) {
+            & $s2v20 -i $pak -f ($tex + '_c') -d -o (Join-Path $Out 'sky.exr') | Out-Null
+        }
+    }
+    if (-not (Test-Path (Join-Path $Out 'sky.exr'))) { Write-Warning "$Map`: no sky texture, the viewer will show its plain background" }
+
+    # Exposure is in the entities, the tone curve in the post-processing file they name. A
+    # map keeps that file in its own archive or in the game's. Only its top is needed: most
+    # of it is the colour grade, 400 KB of hex.
+    $ents | Out-File (Join-Path $Out 'ents.txt') -Encoding utf8
+    $post = [regex]::Match($ents, 'postprocessing\s*=\s*resource_name:"([^"]+\.vpost)"').Groups[1].Value
+    if ($post) {
+        foreach ($archive in $Vpk, (Resolve-Pak01)) {
+            $lines = @(& $s2v20 -i $archive -f ($post + '_c') -a 2>$null)
+            if ($lines -match 'm_flWhitePoint') {
+                $lines[0..119] | Out-File (Join-Path $Out 'post.txt') -Encoding utf8
+                break
+            }
+        }
+    }
+}
+
+if ($Textured) {
+    # the plain batch's default list lacks de_mirage and de_ancient, which were converted first
+    if (-not $PSBoundParameters.ContainsKey('Maps')) {
+        $Maps = @('de_mirage', 'de_inferno', 'de_dust2', 'de_nuke', 'de_anubis',
+                  'de_overpass', 'de_vertigo', 'de_train', 'de_ancient')
+    }
+    $assetsV2 = Join-Path $repo 'web\static\replay3d\assets\maps_v2'
+    $py = Join-Path $repo '.venv\Scripts\python.exe'
+    if (-not (Test-Path $py)) { $py = 'python' }
+    $results = @()
+    foreach ($map in $Maps) {
+        $start = Get-Date
+        Write-Host "=== $map (textured) ===" -ForegroundColor Cyan
+        $vpk = Join-Path $MapsDir "$map.vpk"
+        $rawDir = Join-Path $repo "raw\${map}_v2"
+        $outDir = Join-Path $assetsV2 $map
+        if (-not (Test-Path $vpk)) {
+            Write-Warning "$map.vpk not found in $MapsDir -- skipped"
+            $results += [pscustomobject]@{ Map = $map; MB = $null; Status = 'no vpk'; Minutes = 0 }
+            continue
+        }
+        if ((Test-Path (Join-Path $outDir 'world.c2map')) -and -not $Force) {
+            Write-Host "  already built -- skipping (use -Force to rebuild)"
+            $results += [pscustomobject]@{ Map = $map; MB = $null; Status = 'kept'; Minutes = 0 }
+            continue
+        }
+        try {
+            if (Test-Path $rawDir) { Remove-Item $rawDir -Recurse -Force }
+            Export-Textured -Map $map -Vpk $vpk -Out $rawDir
+            & $py -u (Join-Path $repo 'tools\prepare_map_textured.py') $rawDir $map --max-size $MaxTexture
+            if ($LASTEXITCODE -ne 0) { throw "prepare_map_textured.py failed (exit $LASTEXITCODE)" }
+            # a glob: 350 textures named one by one would not fit on a Windows command line
+            & $py (Join-Path $repo 'tools\precompress.py') (Join-Path $outDir 'world.c2map') (Join-Path $outDir 'lightmap.ktx2') (Join-Path $outDir 'sky.ktx2') (Join-Path $outDir 'tex\*.ktx2') | Out-Null
+            if (-not $KeepRaw) { Remove-Item $rawDir -Recurse -Force -ErrorAction SilentlyContinue }
+            $wire = (Get-ChildItem $outDir -Recurse -File -Filter '*.br' | Measure-Object Length -Sum).Sum
+            $mb = [math]::Round($wire / 1MB, 1)
+            $mins = [math]::Round(((Get-Date) - $start).TotalMinutes, 1)
+            Write-Host "  done: $mb MB on the wire in $mins min`n" -ForegroundColor Green
+            $results += [pscustomobject]@{ Map = $map; MB = $mb; Status = 'built'; Minutes = $mins }
+        } catch {
+            Write-Warning "$map failed: $_"
+            $results += [pscustomobject]@{ Map = $map; MB = $null; Status = 'failed'; Minutes = 0 }
+        }
+    }
+    $results | Format-Table -AutoSize
+    return
 }
 
 Write-Host "CS2 maps:  $MapsDir"

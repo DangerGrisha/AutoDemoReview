@@ -5,10 +5,12 @@
 //! JS <-> WASM control interface documentation.
 
 mod coords;
+mod map_material;
 mod orbit;
 mod player_anim;
 mod scene;
 mod state;
+mod textured_map;
 mod util;
 mod weapons_viz;
 
@@ -76,6 +78,9 @@ pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Opti
                     ..default()
                 }),
         )
+        .add_plugins(map_material::MapMaterialPlugin)
+        .init_asset::<textured_map::MapGeo>()
+        .init_asset_loader::<textured_map::MapGeoLoader>()
         .init_gizmo_group::<TracerGizmos>()
         .add_systems(
             Startup,
@@ -110,6 +115,10 @@ pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Opti
                 weapons_viz::finish_real_weapons,
                 weapons_viz::update_weapon_mounts,
                 weapons_viz::update_viewmodel,
+                textured_map::finish_map_load,
+                textured_map::apply_map_textures,
+                textured_map::sky_follow_camera.after(spectator_camera),
+                textured_map::light_players_like_the_map,
             ),
         )
         .run();
@@ -312,12 +321,15 @@ fn setup(mut commands: Commands) {
     ));
     commands.spawn((
         DirectionalLight {
-            illuminance: 4200.0,
+            illuminance: DEFAULT_SUN,
             ..default()
         },
         Transform::from_xyz(40.0, 80.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 }
+
+/// The sun for the greybox and the plain map. The textured map brings its own.
+pub(crate) const DEFAULT_SUN: f32 = 4200.0;
 
 /// Render layer the player models (and the x-ray camera) live on, in addition to
 /// the default world layer 0. Nothing else is on this layer.
@@ -347,6 +359,7 @@ fn drain_controls(
     mut q_ambient: Query<&mut AmbientLight, With<MainCam>>,
     mut q_xray_cam: Query<&mut Camera, With<XrayCam>>,
     mut real_weapons: ResMut<weapons_viz::RealWeapons>,
+    formats: Option<Res<bevy::image::CompressedImageFormatSupport>>,
 ) {
     let msgs: Vec<ControlMsg> = std::mem::take(&mut *QUEUE.lock().unwrap());
     for msg in msgs {
@@ -356,11 +369,13 @@ fn drain_controls(
                     for e in q_greybox.iter().chain(&q_map) {
                         commands.entity(e).despawn();
                     }
-                    let show_map = m.map_asset.is_some();
+                    let show_map = m.map_asset.is_some() || m.map_v2.is_some();
                     let center = scene::build_greybox(
                         &mut commands, &mut meshes, &mut materials, &asset_server, &m, !show_map,
                     );
-                    scene::spawn_map(&mut commands, &asset_server, &m);
+                    if !textured_map::begin(&mut commands, &asset_server, formats.as_deref(), &m) {
+                        scene::spawn_map(&mut commands, &asset_server, &m);
+                    }
                     for mut amb in &mut q_ambient {
                         amb.brightness = if show_map { AMBIENT_MAP } else { AMBIENT_GREYBOX };
                     }
@@ -924,7 +939,7 @@ fn tint_players(
             let h = materials.add(StandardMaterial { base_color, emissive, ..base });
             commands.entity(e).insert(MeshMaterial3d(h));
             if !painted {
-                commands.entity(e).insert(TeamFade { team: color, level: 0 });
+                commands.entity(e).insert(TeamFade { team: color, level: 0, light_level: u8::MAX });
             }
         }
     }
@@ -948,8 +963,15 @@ fn team_look(team: Color, paint: f32) -> (Color, LinearRgba) {
 /// Real textures where they can be seen, the team colour where they cannot: from the
 /// overview a sand-coloured T is a few pixels on a sand-coloured map. Levels rather than
 /// a smooth value, so a moving camera does not rewrite ten materials every frame.
+///
+/// On the textured map a player also takes the colour of the light under their feet, or
+/// they would stay sunlit in a dark room. The painted look ignores it: from far away the
+/// colour is there to be read, not to look real.
+#[allow(clippy::type_complexity)]
 fn fade_team_colour(
     q_cam: Query<&GlobalTransform, With<MainCam>>,
+    viewer: Res<Viewer>,
+    map_light: Option<Res<textured_map::MapLight>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut q: Query<(&GlobalTransform, &MeshMaterial3d<StandardMaterial>, &mut TeamFade)>,
 ) {
@@ -957,17 +979,34 @@ fn fade_team_colour(
     const TEXTURES_UP_TO: f32 = 6.0;
     const PAINTED_FROM: f32 = 20.0;
     const LEVELS: f32 = 8.0;
+    const LIGHT_LEVELS: f32 = 16.0;
+    /// Hammer units, so that feet exactly on a cell border still read the floor they are on.
+    const ABOVE_FEET: f32 = 32.0;
     let Ok(cam) = q_cam.single() else { return };
+    let scale = viewer.manifest.as_ref().map_or(1.0, |m| m.scene_scale as f32);
     for (mesh, material, mut fade) in &mut q {
         let dist = cam.translation().distance(mesh.translation());
         let paint = ((dist - TEXTURES_UP_TO) / (PAINTED_FROM - TEXTURES_UP_TO)).clamp(0.0, 1.0);
         let level = (paint * LEVELS).round() as u8;
-        if level == fade.level {
+        let light = match &map_light {
+            Some(l) if viewer.show_map => l.at(mesh.translation() / scale + Vec3::Y * ABOVE_FEET),
+            _ => Vec3::ONE,
+        };
+        // on a root, because most of the steps a dark room needs are near zero
+        let light_level = (light.max_element().sqrt() * LIGHT_LEVELS).round() as u8;
+        if level == fade.level && light_level == fade.light_level {
             continue;
         }
         fade.level = level;
+        fade.light_level = light_level;
         if let Some(mut mat) = materials.get_mut(&material.0) {
-            (mat.base_color, mat.emissive) = team_look(fade.team, level as f32 / LEVELS);
+            let paint = level as f32 / LEVELS;
+            let (base, emissive) = team_look(fade.team, paint);
+            let lin = base.to_linear();
+            let lit = Vec3::ONE.lerp(light, 1.0 - paint);
+            mat.base_color = Color::linear_rgb(lin.red * lit.x, lin.green * lit.y, lin.blue * lit.z);
+            // the self-lit share dims too: in a dark room it would otherwise be all you see
+            mat.emissive = emissive * lit.max_element();
         }
     }
 }

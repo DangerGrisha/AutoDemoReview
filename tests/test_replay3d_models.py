@@ -151,3 +151,113 @@ def test_wasm_cache_buster_is_the_same_everywhere_on_the_page():
 
     tokens = set(re.findall(r"viewer(?:_bg\.wasm|\.js)\?v=(\d+)", _render(True)))
     assert len(tokens) == 1, f"a stale wasm would break run()'s new signature: {tokens}"
+
+
+class _MapsV2:
+    """replay3d looking at a temporary maps_v2 folder, with or without a built de_mirage."""
+
+    def __init__(self, built=True, flag=None):
+        self.built, self.flag = built, flag
+
+    def __enter__(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        if self.built:
+            folder = Path(self._tmp.name) / "de_mirage"
+            folder.mkdir()
+            (folder / "world.c2map").write_bytes(b"map")
+        self._dir = replay3d.MAPS_V2_DIR
+        replay3d.MAPS_V2_DIR = Path(self._tmp.name)
+        self._env = os.environ.pop("REPLAY3D_CS2_MAPS", None)
+        if self.flag is not None:
+            os.environ["REPLAY3D_CS2_MAPS"] = self.flag
+        return self
+
+    def __exit__(self, *exc):
+        replay3d.MAPS_V2_DIR = self._dir
+        os.environ.pop("REPLAY3D_CS2_MAPS", None)
+        if self._env is not None:
+            os.environ["REPLAY3D_CS2_MAPS"] = self._env
+        self._tmp.cleanup()
+
+
+def _render_map(map_v2, map_asset="maps/de_mirage/world.glb"):
+    env = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=True)
+    return env.get_template("replay3d.html").render(
+        match_id=7, map_name="de_mirage", demo_name="m.dem", has_replay=True,
+        map_asset=map_asset, map_v2=map_v2, map_v2_size=5, cs2_models=False, wasm_size=1, map_size=1)
+
+
+def test_textured_map_is_used_when_it_is_built():
+    with _MapsV2():
+        assert replay3d.map_v2_rel("de_mirage") == "maps_v2/de_mirage/world.c2map"
+
+
+def test_a_map_without_the_files_stays_plain():
+    with _MapsV2(built=False):
+        assert replay3d.map_v2_rel("de_mirage") is None
+    with _MapsV2():
+        assert replay3d.map_v2_rel("de_nuke") is None
+        assert replay3d.map_v2_rel("") is None
+
+
+def test_the_flag_turns_the_textured_map_off_without_touching_the_files():
+    with _MapsV2(flag="0"):
+        assert replay3d.map_v2_rel("de_mirage") is None
+    with _MapsV2(flag="1"):
+        assert replay3d.map_v2_rel("de_mirage") is not None
+
+
+def test_a_built_map_that_is_not_ready_stays_plain_unless_asked_for():
+    with _MapsV2():
+        folder = replay3d.MAPS_V2_DIR / "de_inferno"
+        folder.mkdir()
+        (folder / "world.c2map").write_bytes(b"map")
+        assert replay3d.map_v2_rel("de_inferno") is None
+        assert replay3d.map_v2_rel("de_mirage") is not None
+    with _MapsV2(flag="all"):
+        folder = replay3d.MAPS_V2_DIR / "de_inferno"
+        folder.mkdir()
+        (folder / "world.c2map").write_bytes(b"map")
+        assert replay3d.map_v2_rel("de_inferno") == "maps_v2/de_inferno/world.c2map"
+
+
+def test_page_without_a_textured_map_has_no_switch_and_preloads_the_plain_one():
+    page = _render_map(None)
+    assert 'id="lightMap"' not in page
+    assert 'rel="preload" as="fetch" crossorigin href="/static/replay3d/assets/maps/de_mirage/world.glb"' in page
+    assert 'const MAP_V2 = "";' in page
+
+
+def test_page_with_a_textured_map_does_not_also_download_the_plain_one():
+    page = _render_map("maps_v2/de_mirage/world.c2map")
+    assert 'id="lightMap"' in page
+    assert "assets/maps/de_mirage/world.glb" not in page
+    assert 'const MAP_V2 = "maps_v2/de_mirage/world.c2map";' in page
+
+
+def test_the_light_map_switch_needs_a_plain_map_to_switch_to():
+    page = _render_map("maps_v2/de_mirage/world.c2map", map_asset=None)
+    assert 'id="lightMap"' not in page
+    assert '<button id="mapToggle"' in page
+
+
+def test_textured_map_files_go_out_compressed():
+    # nothing looks wrong when they don't: the map just costs 186 MB instead of 85
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+    from starlette.testclient import TestClient
+
+    from web.app import CompressedStaticFiles
+
+    with tempfile.TemporaryDirectory() as root:
+        for name in ("world.c2map", "sky.ktx2"):
+            (Path(root) / name).write_bytes(b"the whole file")
+            (Path(root) / (name + ".br")).write_bytes(b"small")
+        client = TestClient(Starlette(routes=[Mount("/s", CompressedStaticFiles(directory=root))]))
+        for name, media_type in (("world.c2map", "application/octet-stream"), ("sky.ktx2", "image/ktx2")):
+            # HEAD, so the client doesn't try to unpack the fake brotli
+            got = client.head(f"/s/{name}", headers={"Accept-Encoding": "br"})
+            assert got.status_code == 200
+            assert got.headers["content-encoding"] == "br"
+            assert got.headers["content-type"] == media_type
+            assert got.headers["content-length"] == str(len(b"small"))
