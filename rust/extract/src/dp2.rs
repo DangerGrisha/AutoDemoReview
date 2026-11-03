@@ -483,6 +483,7 @@ impl DemoSource for Dp2Source {
                 tick: e.tick as i64,
                 attacker_name: v_string(field(e, "attacker_name")),
                 victim_name: v_string(field(e, "user_name")),
+                assister_name: v_string(field(e, "assister_name")),
                 attacker_team: v_i64(field(e, "attacker_team_num")),
                 total_rounds_played: v_i64(field(e, "total_rounds_played")).unwrap_or(0),
                 is_warmup: v_bool(field(e, "is_warmup_period")).unwrap_or(false),

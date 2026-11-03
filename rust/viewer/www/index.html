@@ -752,7 +752,7 @@ window.__replayFrame = (d) => {
   drawRadar(d, nP);
   updateFeed(clock);
   updateBomb(clock);
-  if (SFX) SFX.frame(d, nP);          // procedural audio (no-op until enabled)
+  if (SFX) SFX.frame(d, nP, HDR);          // procedural audio (no-op until enabled)
 
   const seen=new Set();
   for (let k=0;k<nT;k++){

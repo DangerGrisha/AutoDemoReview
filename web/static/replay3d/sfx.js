@@ -25,7 +25,8 @@
  *     kills[]    {sample, atk, vic, w, hs, ...}               -> kill sounds, C4 blast
  *     bomb       {plant, defused, exploded}                   -> bomb beeps and blast
  *     durationS / winner                                      -> round start/end stings
- *   per-frame payload (PSTRIDE = 10 floats/player)
+ *   per-frame payload (PSTRIDE = 10 floats/player, after the page's HDR header floats,
+ *   which frame() is told: a header that grew by one shifted every player read before)
  *     worldX/worldY  -> footsteps (travelled distance) + 3D placement
  *     health         -> bullet impacts / own "hurt"
  *     alive          -> death sound
@@ -167,6 +168,7 @@
 
   // round data + playback bookkeeping
   let R = null;                        // {rate, dur, names, teams, wtab, winner}
+  let HDR = 7;                         // floats before the players in the frame payload
   let events = [];                     // sorted [{t, k, ...}]
   let evCur = 0;
   let loops = [];                      // [{t0,t1,type,x,y,nodes,nextFake}]
@@ -604,7 +606,7 @@
   function updateEar(d, nP) {
     if (camSlot >= 0 && camSlot < nP && curPresent[camSlot]) {
       earX = curX[camSlot]; earY = curY[camSlot];
-      earYaw = d[6 + camSlot * 10 + 8] * Math.PI / 180;
+      earYaw = d[HDR + camSlot * 10 + 8] * Math.PI / 180;
       earOk = true; return;
     }
     let sx = 0, sy = 0, n = 0;
@@ -630,7 +632,7 @@
     }
     return { pan, dist, delay: cfg.propagation ? dist / SOUND_U_PER_S : 0, own: false };
   }
-  const atSlot = (i, d) => at(curX[i], curY[i], d ? d[6 + i * 10] : null);
+  const atSlot = (i, d) => at(curX[i], curY[i], d ? d[HDR + i * 10] : null);
   const AT_EAR = () => ({ pan: 0, dist: 0, delay: 0, own: true });
 
   // =============================================================== scheduling
@@ -822,7 +824,7 @@
   // ==================================================================== frame
   function readPlayers(d, nP) {
     for (let i = 0; i < nP; i++) {
-      const o = 6 + i * 10;
+      const o = HDR + i * 10;
       curPresent[i] = d[o + 9] > 0.5;
       curAlive[i] = d[o + 3] > 0.5;
       curWpn[i] = d[o + 5] | 0;
@@ -832,7 +834,7 @@
   }
   function snapshot(d, nP) {
     for (let i = 0; i < nP; i++) {
-      const o = 6 + i * 10;
+      const o = HDR + i * 10;
       prevX[i] = d[o + 6]; prevY[i] = d[o + 7]; prevHP[i] = d[o + 4] | 0;
       prevAlive[i] = d[o + 3] > 0.5; prevWpn[i] = d[o + 5] | 0;
     }
@@ -874,7 +876,7 @@
           }
         } else stepAcc[i] = Math.min(stepAcc[i] || 0, STEP_LEN);
       }
-      const hp = d[6 + i * 10 + 4] | 0;
+      const hp = d[HDR + i * 10 + 4] | 0;
       const lost = prevHP[i] - hp;
       if (lost > 0 && curAlive[i]) {
         if (own) {
@@ -921,7 +923,8 @@
   }
 
   /** Called once per rendered frame with the raw wasm payload. */
-  function frame(d, nP) {
+  function frame(d, nP, hdr) {
+    if (hdr > 0) HDR = hdr;
     if (!cfg.on || !ctx || !R || ctx.state !== 'running') return;
     const clock = d[0], playing = d[2] > 0.5, flashOp = d[3];
     const now = ctx.currentTime + 0.02;              // small scheduling lead
@@ -1029,7 +1032,8 @@
     addEventListener('keydown', e => {
       if (cfg.on) ensureCtx();
       if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
-      if (e.key === 'm' || e.key === 'M') { setEnabled(!cfg.on); label(); }
+      // by where the key sits, so a Russian layout mutes too
+      if (e.code === 'KeyM' && !e.ctrlKey && !e.metaKey && !e.altKey) { setEnabled(!cfg.on); label(); }
     });
   }
 

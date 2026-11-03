@@ -30,7 +30,7 @@ ARTIFACT_RE = re.compile(r"^(manifest\.json|r\d{2}\.3dr)$")
 
 # What a replay should hold, kept equal to DATA_VERSION in rust/extract/src/lib.rs (a test
 # checks). Older replays get replaced on a re-upload and by tools/rebuild_replays.py.
-DATA_VERSION = 2
+DATA_VERSION = 3
 
 # A replay being built, next to the final directories. ARTIFACT_RE and the numeric match id
 # keep it unreachable.
@@ -81,6 +81,16 @@ def is_stale(match_id):
     """True when extracting again would give this match more than it has."""
     version = data_version(match_id)
     return version is None or version < DATA_VERSION
+
+
+def pov_sids(viewer_sid, report_sid):
+    """Whose eyes the replay opens in "as in CS2", first found in a round wins: the viewer's
+    own, then the player the match report is about."""
+    out = []
+    for sid in (viewer_sid, report_sid):
+        if sid and str(sid) not in out:
+            out.append(str(sid))
+    return out
 
 
 def artifact_path(match_id, fname):

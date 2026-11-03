@@ -7,7 +7,7 @@
 {% if has_replay %}
 {# ?v= busts the 7-day static cache when the frame-payload layout changes; keep
    the token in lockstep with the import + fetch URLs below #}
-<link rel="preload" as="fetch" crossorigin href="/static/replay3d/pkg/viewer_bg.wasm?v=11">
+<link rel="preload" as="fetch" crossorigin href="/static/replay3d/pkg/viewer_bg.wasm?v=12">
 {% if map_asset and not map_v2 %}<link rel="preload" as="fetch" crossorigin href="/static/replay3d/assets/{{ map_asset }}">{% endif %}
 {% endif %}
 <style>
@@ -103,6 +103,8 @@
   #spec .hint { color:var(--dim); font-size:11px; line-height:1.7; margin-top:9px;
     border-top:1px solid var(--line); padding-top:8px; }
   #spec .hint b { color:var(--muted); font-weight:700; }
+  /* a short window has no room for it under ten players: the bar would cover it */
+  @media (max-height:900px) { #spec .hint { display:none; } }
 
   /* CS2-style top score bar (CT score · round/clock · T score) */
   #score { position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:11;
@@ -115,7 +117,43 @@
   #score .dots i { width:9px; height:4px; border-radius:2px; background:#2a3342; }
   #score .mid { display:flex; flex-direction:column; align-items:center; justify-content:center;
     min-width:86px; padding:8px 14px 7px; border-left:1px solid var(--line); border-right:1px solid var(--line); }
-  #score .clk { font-size:17px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.2; }
+  #score .clk { font-size:17px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.2;
+    min-height:20px; display:flex; align-items:center; justify-content:center; }
+  /* after the plant CS2 shows the bomb where the round time was */
+  #score .clk.c4 { color:#ff5a4a; }
+  #score .clk.c4.armed { animation:c4blink 1s ease-in-out infinite; }
+  #score .clk.c4.safe { color:var(--good); }
+  /* the game's icon as a mask, so it takes the colour of the text */
+  #score .clk .ico { width:30px; height:18px; background:currentColor;
+    -webkit-mask:var(--icon) center/contain no-repeat; mask:var(--icon) center/contain no-repeat; }
+  @keyframes c4blink { 0%,100%{ opacity:1; } 50%{ opacity:.35; } }
+
+  /* the scoreboard while Tab is held */
+  #board { position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); z-index:13; display:none;
+    width:min(640px, calc(100vw - 32px)); max-height:calc(100vh - 32px); overflow:auto; padding:14px 16px 12px; }
+  #board .bh { display:flex; align-items:baseline; justify-content:space-between; margin:0 2px 8px; }
+  #board .bh b { font-size:14px; }
+  #board .bh span { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.07em; }
+  #board table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  #board th { color:var(--dim); font-size:10px; font-weight:700; letter-spacing:.07em; text-transform:uppercase;
+    text-align:right; padding:3px 8px; }
+  #board th:first-child, #board td:first-child { text-align:left; }
+  #board td { padding:5px 8px; text-align:right; border-top:1px solid var(--line); font-weight:600; }
+  #board td.nm { max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #board td.nm i { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:8px; }
+  #board td.money { color:#7fd96b; }
+  #board tr.dead td { opacity:.45; }
+  #board tr.dead td.nm { text-decoration:line-through; text-decoration-color:rgba(255,255,255,.35); }
+  #board tr.on td { background:rgba(43,108,255,.16); }
+  #board .team td { border-top:none; padding-top:12px; font-size:12px; font-weight:800; letter-spacing:.06em; }
+  #board .team td .sc { float:right; font-size:15px; }
+  #board .note { color:var(--dim); font-size:11px; margin-top:9px; }
+
+  /* the two looks: as CS2 shows a demo, or with everything an analyst wants */
+  .seg { display:inline-flex; }
+  .seg button { border-radius:0; }
+  .seg button:first-child { border-radius:8px 0 0 8px; }
+  .seg button:last-child { border-radius:0 8px 8px 0; margin-left:-1px; }
   #score .rnd { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.07em; margin-top:1px; }
 
   /* live radar (top-left, CS2-style) */
@@ -263,6 +301,7 @@
     <span class="sc" id="scT">0</span><span class="dots" id="dotsT"></span></div>
 </div>
 <div id="radar" class="panel"><canvas id="radarcv"></canvas></div>
+<div id="board" class="panel"></div>
 <div id="feed"></div>
 <div id="hud" class="panel">
   <a class="back" href="/matches/{{ match_id }}">&#8592; Back to the match report</a>
@@ -293,6 +332,10 @@
     <button class="spd" data-s="4">4×</button>
     <span id="time">0:00 / 0:00</span>
     <span class="spacer"></span>
+    <span class="seg" title="C: как в CS2 или для разбора">
+      <button id="modeCs2" title="От первого лица, без подсветки сквозь стены, подписей и цвета команд (C)">Как в CS2</button>
+      <button id="modeAna" title="Свободная камера над картой, игроки сквозь стены, подписи и цвет команд (C)">Анализ</button>
+    </span>
     <button id="xray" class="on" title="Players visible through walls &amp; smoke (V)">X-ray</button>
   </div>
   <div id="track">
@@ -306,7 +349,7 @@
 
 <!-- procedural match audio (gunfire / footsteps / utility / hits); defines
      window.ReplaySfx and mounts its own button + mixer into the bottom bar -->
-<script src="/static/replay3d/sfx.js?v=6"></script>
+<script src="/static/replay3d/sfx.js?v=7"></script>
 
 <script type="module">
 /* Same JS <-> WASM control interface as rust/viewer/www/index.html (the dev
@@ -317,7 +360,8 @@
  * weapon,worldX,worldY,yawDeg,present} — worldX/worldY/yawDeg are raw demo
  * coords for the live radar. ?v= must match the preload hint above. */
 import init, { run, load_manifest, load_round, seek, set_playing, set_speed, set_flash_focus,
-  set_map_visible, set_camera_follow, set_camera_free, set_xray } from '/static/replay3d/pkg/viewer.js?v=11';
+  set_map_visible, set_camera_follow, set_camera_free, set_camera_orbit, set_camera_fly,
+  set_camera_overview, set_fly_input, set_analysis_look, set_xray } from '/static/replay3d/pkg/viewer.js?v=12';
 
 const BASE = '/matches/{{ match_id }}/replay3d/';
 const MAP_ASSET = {{ (map_asset or "")|tojson }};
@@ -329,6 +373,8 @@ const CS2_FX = {{ (cs2_fx or false)|tojson }};
 const SPACE_ASSET = {{ (space_asset or "")|tojson }};
 const CS2_SOUNDS = {{ (cs2_sounds or false)|tojson }};
 const HUD_ICONS = {{ (hud_icons or false)|tojson }};
+// Whose eyes "as in CS2" opens in, first found wins: the viewer's own, the report's player.
+const POV_SIDS = {{ (pov_sids or [])|tojson }};
 // UNCOMPRESSED sizes injected by the server (progress denominators; the
 // on-wire Content-Length is the compressed size, so it is the wrong one).
 const WASM_SIZE = {{ wasm_size or 0 }};
@@ -479,6 +525,70 @@ let curMeta=null, lastSCT=null, lastST=null, advanceTimer=null;
 const C4_FUSE = 40;                                  // CS2 fuse length, seconds
 let bombInfo=null, bombEls=null;
 
+// ---- the two looks. "As in CS2": through a player's eyes, nothing seen through walls, no
+// names over heads, no team paint, no grenade lines, no fuse countdown. "Analysis": the
+// free camera over the map with all of that. The choice lives in this browser; ?mode=cs2
+// or ?mode=analysis overrides it for one visit. ----
+const MODE_KEY = 'replay3d.mode';
+function modeChosen(){
+  const q = new URLSearchParams(location.search).get('mode');
+  if (q==='cs2' || q==='analysis') return q;
+  try { return localStorage.getItem(MODE_KEY)==='analysis' ? 'analysis' : 'cs2'; } catch(e){ return 'cs2'; }
+}
+let cs2Mode = modeChosen()==='cs2';
+let camSid = null;            // whom the user chose to follow, by SteamID: kept across rounds
+let freeFly = false;          // the free camera flies on WASD rather than orbits
+let deadSince = null;         // when the followed player died, for "as in CS2" to move on
+let roundsLoaded = 0;
+// "As in CS2", the camera moves on to a living teammate this long after its player dies.
+const NEXT_AFTER_DEATH_S = 2.5;
+// The round's time from the end of the freeze, as the game's top timer counts it down, and
+// the seconds the replay runs on past the round's end (PAD_SECONDS in rust/extract).
+const ROUND_PAD = 3;
+let roundSecs = 115;
+
+const esc = s => String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const sidOf = slot => state && state.header && state.header.players[slot] && state.header.players[slot].sid;
+
+function slotOfSid(sid){
+  const pl = (state && state.header && state.header.players) || [];
+  return sid ? pl.findIndex(p=>p.sid===sid) : -1;
+}
+// Whom "as in CS2" looks through: the user's last choice, else the viewer, else the report's
+// player, else the first slot. While they are dead the frame handler shows someone else.
+function povSlot(){
+  for (const sid of [camSid, ...POV_SIDS]){
+    const slot = slotOfSid(sid);
+    if (slot>=0) return slot;
+  }
+  return 0;
+}
+// The next living player of `slot`'s team after it, else anyone living, else `fallback`.
+function aliveMate(slot, fallback){
+  const n = teamBySlot.length;
+  for (const sameTeam of [true, false])
+    for (let k=1;k<=n;k++){
+      const s=(slot+k)%n;
+      if (lastVis[s] && (!sameTeam || teamBySlot[s]===teamBySlot[slot])) return s;
+    }
+  return fallback;
+}
+
+function setXray(on){ xrayOn=on; set_xray(on); $('#xray').classList.toggle('on', on); }
+
+function applyMode(cs2, persist){
+  cs2Mode = cs2;
+  if (persist){ try { localStorage.setItem(MODE_KEY, cs2 ? 'cs2' : 'analysis'); } catch(e){} }
+  $('#modeCs2').classList.toggle('on', cs2);
+  $('#modeAna').classList.toggle('on', !cs2);
+  setXray(!cs2);
+  set_analysis_look(!cs2);
+  $('#labels').style.display = cs2 ? 'none' : '';
+  if (!state) return;
+  if (cs2){ const slot=povSlot(); camSid=camSid||sidOf(slot)||null; camFirst=true; follow(slot, true); }
+  else { camSlot=-1; freeFly=false; set_camera_overview(); applyCam(); }
+}
+
 function buildLabels(header){
   const layer=$('#labels');
   playerLabels.forEach(el=>el.remove());
@@ -559,20 +669,80 @@ function radarInit(){
   radarImg.onload=()=>{ radarOk=true; };
   radarImg.src='/static/replay3d/assets/'+(MANIFEST.radarAsset||'');
 }
-function drawRadar(d,nP){
+// "As in CS2", while in a player's eyes the radar is theirs: centred on them, turning with
+// their view, showing this share of the map across.
+const RADAR_ZOOM = 2;
+// Floats per mark after the players and tracers (rust/viewer/src/radar.rs MARK_STRIDE).
+const MSTRIDE = 5;
+// Hammer units across what a grenade covers on the radar, when the header has no radius.
+const UTIL_REACH = { smoke:144, molotov:120, he:200, flash:120, decoy:24 };
+let radarC4=null;
+function drawRadar(d, nP, nT){
   if(!radarCtx) return;
   const cal=MANIFEST.calibration, size=cal.size||1024;
   const W=radarCv.width, k=W/(size*cal.scale), u=W/220, ctx=radarCtx;
+  const base = (x,y)=>[(x-cal.pos_x)*k, (cal.pos_y-y)*k];
+  const me = HDR+camSlot*PSTRIDE;
+  const turn = cs2Mode && camSlot>=0 && camSlot<nP && d[me+3]>0.5;
+  let zoom=1, angle=0, toScreen=(x,y)=>base(x,y);
   ctx.clearRect(0,0,W,W);
-  if(radarOk){ ctx.drawImage(radarImg,0,0,W,W);
-    ctx.fillStyle='rgba(8,10,16,.32)'; ctx.fillRect(0,0,W,W); }
-  else { ctx.fillStyle='#0c101a'; ctx.fillRect(0,0,W,W); }
+  ctx.fillStyle='#0c101a'; ctx.fillRect(0,0,W,W);
+  if (turn){
+    const [cx,cy]=base(d[me+6], d[me+7]);
+    // the player's view, -yaw on the canvas, ends up pointing up
+    angle=d[me+8]*Math.PI/180-Math.PI/2; zoom=RADAR_ZOOM;
+    const c=Math.cos(angle), s=Math.sin(angle);
+    toScreen=(x,y)=>{ const [px,py]=base(x,y), dx=px-cx, dy=py-cy;
+      return [W/2+zoom*(dx*c-dy*s), W/2+zoom*(dx*s+dy*c)]; };
+    if (radarOk){ ctx.save(); ctx.translate(W/2,W/2); ctx.rotate(angle); ctx.scale(zoom,zoom);
+      ctx.translate(-cx,-cy); ctx.drawImage(radarImg,0,0,W,W); ctx.restore(); }
+  } else if (radarOk) ctx.drawImage(radarImg,0,0,W,W);
+  if (radarOk){ ctx.fillStyle='rgba(8,10,16,.32)'; ctx.fillRect(0,0,W,W); }
+  const px1 = zoom*k;                               // canvas pixels per Hammer unit
+  const off = (x,y,r)=>x<-r||y<-r||x>W+r||y>W+r;
+
+  // grenades and the bomb, under the players
+  const util=(state&&state.header&&state.header.utility)||[];
+  let bomb=null;
+  for (let m=HDR+nP*PSTRIDE+nT*4; m+MSTRIDE<=d.length; m+=MSTRIDE){
+    const kind=d[m], what=d[m+1]|0, v=d[m+4];
+    const [x,y]=toScreen(d[m+2], d[m+3]);
+    if (kind===3){ bomb={x, y, state:what, carrier:v|0}; continue; }
+    const g=util[what]||{}, type=g.type||'';
+    const col=UTIL_COLOR[type]||'#9aa4b2';
+    if (kind===1){                                  // in the air
+      if (off(x,y,4*u)) continue;
+      ctx.fillStyle=col; ctx.strokeStyle='rgba(0,0,0,.7)'; ctx.lineWidth=1*u;
+      ctx.beginPath(); ctx.arc(x,y,2.4*u,0,7); ctx.fill(); ctx.stroke();
+      continue;
+    }
+    if (kind!==2) continue;                         // a kind this page does not know yet
+    const reach=(type==='he'||type==='flash' ? UTIL_REACH[type] : (g.radius||UTIL_REACH[type]||60))*px1;
+    if (off(x,y,reach)) continue;
+    if (type==='smoke' || type==='molotov'){
+      // in over the first moments, out over the last
+      const env=Math.min(1, v/0.06, (1-v)/0.15);
+      ctx.globalAlpha=Math.max(0,env)*(type==='smoke'?0.7:0.5);
+      ctx.fillStyle=type==='smoke'?'#c9ced8':'#ff6a1a';
+      ctx.beginPath(); ctx.arc(x,y,reach,0,7); ctx.fill();
+      ctx.globalAlpha=1;
+    } else if (type==='he' || type==='flash'){       // a ring racing out and fading
+      ctx.globalAlpha=Math.max(0,1-v); ctx.strokeStyle=col; ctx.lineWidth=1.8*u;
+      ctx.beginPath(); ctx.arc(x,y,Math.max(1,reach*(0.3+0.7*v)),0,7); ctx.stroke();
+      ctx.globalAlpha=1;
+    } else {                                        // a decoy: a small pulsing dot
+      ctx.globalAlpha=0.5+0.5*Math.sin(performance.now()/120);
+      ctx.fillStyle=col; ctx.beginPath(); ctx.arc(x,y,2*u,0,7); ctx.fill(); ctx.globalAlpha=1;
+    }
+  }
+  if (bomb && bomb.state!==1) drawC4(ctx, bomb.x, bomb.y, u, bomb.state);
+
   for(let i=0;i<nP;i++){
     const o=HDR+i*PSTRIDE;
     if(d[o+9]<0.5) continue;                       // not in this round
     const alive=d[o+3]>0.5;
-    const px=(d[o+6]-cal.pos_x)*k, py=(cal.pos_y-d[o+7])*k;
-    if(px<0||py<0||px>W||py>W) continue;
+    const [px,py]=toScreen(d[o+6], d[o+7]);
+    if(off(px,py,8*u)) continue;
     const col=TEAM_HEX[teamBySlot[i]]||'#9aa4b2';
     if(!alive){                                    // ✕ frozen at the death spot
       const r=3.5*u; ctx.strokeStyle=col; ctx.globalAlpha=.5; ctx.lineWidth=1.6*u;
@@ -580,13 +750,35 @@ function drawRadar(d,nP){
       ctx.moveTo(px+r,py-r); ctx.lineTo(px-r,py+r); ctx.stroke(); ctx.globalAlpha=1;
       continue;
     }
-    const yaw=d[o+8]*Math.PI/180, dx=Math.cos(yaw), dy=-Math.sin(yaw);
+    const a=-d[o+8]*Math.PI/180+angle, dx=Math.cos(a), dy=Math.sin(a);
     ctx.strokeStyle='rgba(255,255,255,.8)'; ctx.lineWidth=1.4*u;   // view direction
-    ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(px+dx*9*u,py+dy*9*u); ctx.stroke();
-    ctx.fillStyle=col; ctx.beginPath(); ctx.arc(px,py,4*u,0,7); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(px+dx*10*u,py+dy*10*u); ctx.stroke();
+    ctx.fillStyle=col; ctx.beginPath(); ctx.arc(px,py,5*u,0,7); ctx.fill();
     if(i===camSlot){ ctx.strokeStyle='#fff'; ctx.lineWidth=1.5*u;  // followed highlight
-      ctx.beginPath(); ctx.arc(px,py,6*u,0,7); ctx.stroke(); }
+      ctx.beginPath(); ctx.arc(px,py,7*u,0,7); ctx.stroke(); }
+    // the key that follows them: 1-9, then 0
+    ctx.fillStyle='#0b0e14'; ctx.font='800 '+(6.5*u).toFixed(1)+'px Segoe UI,Roboto,sans-serif';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(String((i+1)%10), px, py+0.4*u);
+    if (bomb && bomb.state===1 && bomb.carrier===i) drawC4(ctx, px+7*u, py-7*u, u*0.8, 1);
   }
+}
+// The bomb on the radar: carried (1) beside its carrier, dropped (2), planted (3) with a
+// pulse, defused (4) in green. The game's icon when the HUD icons are there.
+function drawC4(ctx, x, y, u, st){
+  if (HUD_ICONS && !radarC4){ radarC4=new Image(); radarC4.src='/static/replay3d/assets/hud_v1/c4.svg'; }
+  const w=10*u, h=10*u;                              // the icon is square
+  if (st===3){
+    const p=0.5+0.5*Math.sin(performance.now()/160);
+    ctx.globalAlpha=0.35+0.4*p; ctx.fillStyle='#ff3b30';
+    ctx.beginPath(); ctx.arc(x,y,(7+3*p)*u,0,7); ctx.fill(); ctx.globalAlpha=1;
+  }
+  ctx.fillStyle = st===4 ? '#2f9e5a' : st===3 ? '#c0281e' : '#8a2a22';
+  ctx.strokeStyle='rgba(0,0,0,.75)'; ctx.lineWidth=1*u;
+  ctx.beginPath(); ctx.rect(x-w/2-1*u, y-h/2-1*u, w+2*u, h+2*u); ctx.fill(); ctx.stroke();
+  if (radarC4 && radarC4.complete && radarC4.naturalWidth) ctx.drawImage(radarC4, x-w/2, y-h/2, w, h);
+  else { ctx.fillStyle='#fff'; ctx.font='800 '+(6*u).toFixed(1)+'px Segoe UI,sans-serif';
+    ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText('C4', x, y+0.3*u); }
 }
 
 // ---- kill feed (top-right): manifest kills within the last FEED_S seconds of
@@ -643,7 +835,8 @@ function bombUi(){
 }
 function updateBomb(clock){
   const el=$('#bomb'); if(!el) return;
-  if(!bombInfo || clock < bombInfo.plant){ el.style.display='none'; return; }
+  // CS2 shows no fuse: its timer is the beeps
+  if(!bombInfo || clock < bombInfo.plant || cs2Mode){ el.style.display='none'; return; }
   const u=bombUi();
   const defused = bombInfo.defused!=null && clock>=bombInfo.defused;
   const blown   = bombInfo.exploded!=null && clock>=bombInfo.exploded;
@@ -725,11 +918,13 @@ function buildSpec(header){
     specGroups.push({cnt,slots});
   });
   const free=document.createElement('button'); free.className='free';
-  free.textContent='◾ Free camera'; free.onclick=freeCam; box.appendChild(free);
+  free.textContent='◾ Свободная камера'; free.onclick=toggleFree; box.appendChild(free);
+  free.title='F: полёт ↔ орбита · WASD полёт, E/Q выше и ниже, Shift быстрее · мышь с зажатой кнопкой: обзор';
   const hint=document.createElement('div'); hint.className='hint';
-  hint.innerHTML='<b>1–0</b> spectate · <b>←/→</b> cycle · <b>X</b> 1st/3rd · <b>V</b> x-ray · <b>F</b> free';
+  hint.innerHTML='<b>1–0</b> игрок · <b>←/→</b> следующий · <b>X</b> 1-е/3-е лицо<br>'
+    +'<b>WASD</b> полёт, <b>E/Q</b> выше/ниже, <b>Shift</b> быстрее<br>'
+    +'<b>F</b> полёт ↔ орбита · <b>Tab</b> счёт · <b>C</b> CS2/анализ · <b>V</b> x-ray · <b>M</b> звук';
   box.appendChild(hint);
-  camSlot=-1; applyCam();   // new round starts in free cam
 }
 
 function applyCam(){
@@ -747,8 +942,20 @@ function applyCam(){
   // the audio "ear" follows the camera: spectated player, or the free-cam fallback
   if (SFX) SFX.setListener(camSlot, camFirst);
 }
-function follow(slot){ if(slot<0 || slot>=playerLabels.length) return; camSlot=slot; applyCam(); }
-function freeCam(){ camSlot=-1; applyCam(); }
+// `auto`: the page moved the camera, not the user, so their choice stays for the next round.
+function follow(slot, auto){
+  if(slot<0 || slot>=playerLabels.length) return;
+  camSlot=slot; deadSince=null;
+  if (!auto) camSid=sidOf(slot)||null;
+  applyCam();
+}
+// Off a player the view flies on from where it is, as CS2's free camera does.
+function freeCam(){ if (camSlot>=0) freeFly=true; camSlot=-1; deadSince=null; applyCam(); }
+function toggleFree(){
+  if (camSlot>=0){ freeCam(); return; }
+  freeFly=!freeFly;
+  if (freeFly) set_camera_fly(); else set_camera_orbit();
+}
 function togglePov(){ if(camSlot>=0){ camFirst=!camFirst; applyCam(); } }
 function cycle(dir){                                  // next/prev ALIVE player
   const n=playerLabels.length; if(!n) return;
@@ -784,6 +991,105 @@ async function loadRound(meta, bufPromise){
     exploded: bm.exploded!=null ? bm.exploded/meta.sampleRate : null } : null;
   Object.values(feedShown).forEach(el=>el.remove()); feedShown={};
   $('#scrub').max = state.duration;
+  // wingman plays 1:30 rounds, five a side 1:55
+  roundSecs = header.players.length<=4 ? 90 : 115;
+  prevStats = statsBefore(MANIFEST.rounds.indexOf(meta));
+  boardKey = '';
+  // The camera keeps its player across rounds and stays free when free. "As in CS2" opens
+  // in someone's eyes.
+  const keep = camSlot>=0 || (cs2Mode && roundsLoaded===0);
+  lastVis = [];
+  camSlot = keep ? povSlot() : -1;
+  if (camSlot>=0 && !camSid) camSid = sidOf(camSlot) || null;
+  deadSince = null;
+  applyCam();
+  roundsLoaded++;
+}
+
+// ---- the scoreboard (hold Tab): kills, deaths and assists up to this moment, counted from
+// the manifest's kill lists, so scrubbing anywhere gives that moment's table. Assists came
+// with data version 3. ----
+let prevStats={}, boardOn=false, boardKey='', boardAt=0;
+function addKill(stats, k){
+  const st = n => stats[n] || (stats[n] = {k:0, d:0, a:0, hs:0});
+  if (k.vic) st(k.vic).d++;
+  if (k.atk && k.atk!=='world' && k.atk!==k.vic){ const a=st(k.atk); a.k++; if (k.hs) a.hs++; }
+  if (k.as) st(k.as).a++;
+}
+function statsBefore(idx){
+  const stats={};
+  for (let i=0;i<idx;i++) for (const k of (MANIFEST.rounds[i].kills||[])) addKill(stats, k);
+  return stats;
+}
+function showBoard(on){
+  boardOn=on; boardKey='';
+  setShown($('#board'), on, 'block');
+  if (on) renderBoard(window.__clock||0);
+}
+function renderBoard(clock){
+  if (!boardOn || !state || !curMeta) return;
+  const stats={};
+  for (const n in prevStats) stats[n]={...prevStats[n]};
+  for (const k of (curMeta.kills||[])) if (k.sample/curMeta.sampleRate <= clock) addKill(stats, k);
+  const header=state.header, sample=clock*state.rate;
+  const assists = (MANIFEST.dataVersion||1) >= 3;
+  const money = slot => {
+    const st = header.state && header.state[slot];
+    return st ? valueAt(st.money, sample) : null;
+  };
+  const rows = header.players.map((pl,slot)=>({pl, slot, s:stats[pl.name]||{k:0,d:0,a:0,hs:0}, m:money(slot)}));
+  const hasMoney = rows.some(r=>r.m!=null);
+  const key = JSON.stringify([rows.map(r=>[r.s,r.m,lastVis[r.slot]]), camSlot, lastSCT, lastST]);
+  if (key===boardKey) return;
+  boardKey=key;
+  const cols = '<tr><th>Игрок</th>'+(hasMoney?'<th>$</th>':'')+'<th>K</th><th>D</th><th>A</th><th>HS%</th></tr>';
+  let html='<div class="bh"><b>'+esc(MANIFEST.map||'')+'</b><span>раунд '+esc(curMeta.n)+' · '+fmt(clock)+'</span></div><table>';
+  for (const team of [3,2]){
+    const mine = rows.filter(r=>r.pl.team===team).sort((a,b)=>b.s.k-a.s.k || a.s.d-b.s.d);
+    if (!mine.length) continue;
+    const score = team===3 ? lastSCT : lastST;
+    html += '<tr class="team"><td colspan="'+(hasMoney?6:5)+'" style="color:'+teamCol(team)+'">'
+      +(team===3?'CT':'T')+'<span class="sc">'+esc(score==null?'–':score)+'</span></td></tr>'+cols;
+    for (const r of mine){
+      const cls=[lastVis[r.slot]?'':'dead', r.slot===camSlot?'on':''].join(' ');
+      html += '<tr class="'+cls+'"><td class="nm"><i style="background:'+teamCol(team)+'"></i>'+esc(r.pl.name||'?')+'</td>'
+        +(hasMoney?'<td class="money">'+(r.m!=null?'$'+r.m:'')+'</td>':'')
+        +'<td>'+r.s.k+'</td><td>'+r.s.d+'</td><td>'+(assists?r.s.a:'–')+'</td>'
+        +'<td>'+(r.s.k?Math.round(100*r.s.hs/r.s.k):0)+'</td></tr>';
+    }
+  }
+  html+='</table>';
+  if (!assists) html+='<div class="note">Передачи есть только в реплеях, собранных после 3 ноября 2026.</div>';
+  $('#board').innerHTML=html;
+}
+
+// ---- the round's time, counted down as CS2's top timer does; after the plant the bomb
+// stands in its place, blinking until it is defused or blows ----
+let clkKey='';
+function updateClock(clock, duration){
+  const el=$('#clk');
+  let key, cls;
+  if (bombInfo && clock>=bombInfo.plant){
+    const safe = bombInfo.defused!=null && clock>=bombInfo.defused;
+    const blown = bombInfo.exploded!=null && clock>=bombInfo.exploded;
+    cls = 'clk c4'+(safe?' safe':blown?'':' armed');
+    key = 'c4'+cls;
+    if (key!==clkKey){
+      el.className=cls;
+      if (HUD_ICONS){
+        const ico=document.createElement('span'); ico.className='ico';
+        ico.style.setProperty('--icon', 'url(/static/replay3d/assets/hud_v1/c4.svg)');
+        el.replaceChildren(ico);
+      } else el.textContent='💣';
+    }
+  } else {
+    const end = Math.max(0, duration-ROUND_PAD);
+    const left = Math.max(0, roundSecs-Math.min(clock, end));
+    const s = Math.ceil(left-1e-6);
+    key = (s/60|0)+':'+String(s%60).padStart(2,'0');
+    if (key!==clkKey){ el.className='clk'; el.textContent=key; }
+  }
+  clkKey=key;
 }
 
 function syncPlayBtn(playing){ $('#play').textContent = playing ? '⏸ Pause' : '▶ Play'; }
@@ -844,8 +1150,23 @@ window.__replayFrame = (d) => {
   for (const g of specGroups){ let a=0; for(const s of g.slots) if(lastVis[s]) a++;
     g.cnt.textContent = a+' alive'; }
 
+  // "As in CS2" the camera stays with the player the user chose. While they are dead it
+  // watches a living teammate: a moment after the death while playing, at once when paused
+  // or scrubbed there; when a scrub brings them back to life, it goes back to them.
+  if (cs2Mode && camSlot>=0 && camSlot<nP){
+    const want=slotOfSid(camSid);
+    if (want>=0 && lastVis[want]){ if (camSlot!==want) follow(want, true); deadSince=null; }
+    else if (!lastVis[camSlot]){
+      if (deadSince==null || clock<deadSince) deadSince=clock;
+      if (!playing || clock-deadSince>=NEXT_AFTER_DEATH_S){
+        const next=aliveMate(want>=0 ? want : camSlot, -1);
+        if (next>=0) follow(next, true);
+      }
+    } else deadSince=null;
+  }
+
   // HUD: score-bar clock + alive dots, radar, kill feed
-  $('#clk').textContent = fmt(clock);
+  updateClock(clock, duration);
   // the score counts up the moment the round ends: winner side +1, team-tinted
   if (curMeta){
     const ended = curMeta.winner && duration>0 && clock>=duration-0.05;
@@ -862,10 +1183,11 @@ window.__replayFrame = (d) => {
     if(teamBySlot[i]===3) aCT++; else if(teamBySlot[i]===2) aT++; }
   dotEls.ct.forEach((el,j)=>{ el.style.background = j<aCT ? TEAM_HEX[3] : '#2a3342'; });
   dotEls.t.forEach((el,j)=>{ el.style.background = j<aT ? TEAM_HEX[2] : '#2a3342'; });
-  drawRadar(d, nP);
+  drawRadar(d, nP, nT);
   updateFeed(clock);
   updateBomb(clock);
-  if (SFX) SFX.frame(d, nP);          // procedural audio (no-op until enabled)
+  if (boardOn && now-boardAt>200){ boardAt=now; renderBoard(clock); }
+  if (SFX) SFX.frame(d, nP, HDR);     // procedural audio (no-op until enabled)
 
   const seen=new Set();
   for (let k=0;k<nT;k++){
@@ -900,23 +1222,63 @@ scrub.addEventListener('input',()=>{
 if (SFX && CS2_SOUNDS) SFX.useSamples('/static/replay3d/assets/sounds_v1/');
 if (SFX) SFX.mountUI($('#bar .ctl'));
 
-// x-ray (see players through walls + smoke); default on, matches the wasm default
+// x-ray (see players through walls + smoke); on for analysis, off as in CS2
 const xrayBtn=$('#xray'); let xrayOn=true;
-xrayBtn.onclick=()=>{ xrayOn=!xrayOn; set_xray(xrayOn); xrayBtn.classList.toggle('on',xrayOn); };
+xrayBtn.onclick=()=>setXray(!xrayOn);
+$('#modeCs2').onclick=()=>applyMode(true, true);
+$('#modeAna').onclick=()=>applyMode(false, true);
+
+// Flight keys, by where they sit rather than what they type, so a Russian layout flies too:
+// [forward, right, up].
+const FLY_KEYS = { KeyW:[1,0,0], KeyS:[-1,0,0], KeyD:[0,1,0], KeyA:[0,-1,0], KeyE:[0,0,1], KeyQ:[0,0,-1] };
+const flyHeld = new Set(); let shiftHeld=false;
+function sendFly(){
+  if (!MANIFEST) return;                              // wasm not running yet
+  let f=0, r=0, up=0;
+  for (const c of flyHeld){ const v=FLY_KEYS[c]; f+=v[0]; r+=v[1]; up+=v[2]; }
+  set_fly_input(f, r, up, shiftHeld);
+}
+function releaseKeys(){ flyHeld.clear(); shiftHeld=false; sendFly(); if (boardOn) showBoard(false); }
 
 // spectator hotkeys (CS2-demo style): 1-0 pick, arrows cycle, X 1st/3rd, V x-ray, F free
+// camera, WASD fly, Tab scoreboard, C the look (M is sfx.js's mute). Keys by code, so any keyboard layout works.
 addEventListener('keydown', e=>{
-  if (e.target && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(e.target.tagName)) return;
-  const k=e.key;
-  if (k>='1' && k<='9'){ follow(+k-1); e.preventDefault(); }
-  else if (k==='0'){ follow(9); e.preventDefault(); }
-  else if (k==='ArrowRight' || k==='ArrowUp'){ cycle(1); e.preventDefault(); }
-  else if (k==='ArrowLeft' || k==='ArrowDown'){ cycle(-1); e.preventDefault(); }
-  else if (k==='x' || k==='X'){ togglePov(); e.preventDefault(); }
-  else if (k==='v' || k==='V'){ xrayOn=!xrayOn; set_xray(xrayOn); xrayBtn.classList.toggle('on',xrayOn); e.preventDefault(); }
-  else if (k==='f' || k==='F' || k==='Escape'){ freeCam(); e.preventDefault(); }
-  else if (k===' '){ set_playing(!lastPlaying); e.preventDefault(); }
+  if (!state) return;                                 // nothing to drive yet
+  const t=e.target, tag=t && t.tagName;
+  // typing somewhere, or the timeline's own arrow keys
+  if (tag==='TEXTAREA' || tag==='SELECT' || (tag==='INPUT' && (t.type!=='range' || e.code.startsWith('Arrow')))) return;
+  const c=e.code;
+  if (c==='Tab'){ e.preventDefault(); if (!e.repeat) showBoard(true); return; }
+  if (c==='ShiftLeft' || c==='ShiftRight'){ shiftHeld=true; sendFly(); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;     // the browser's own shortcuts
+  if (FLY_KEYS[c]){
+    e.preventDefault();
+    if (e.repeat) return;
+    if (camSlot>=0) freeCam();                        // flying takes the camera off the player
+    freeFly=true; flyHeld.add(c); sendFly();
+    return;
+  }
+  if (tag==='BUTTON' && (c==='Space' || c==='Enter')) return;   // the button's own click
+  const digit=/^(?:Digit|Numpad)(\d)$/.exec(c);
+  if (digit){ const n=+digit[1]; follow(n===0 ? 9 : n-1); e.preventDefault(); }
+  else if (c==='ArrowRight' || c==='ArrowUp'){ cycle(1); e.preventDefault(); }
+  else if (c==='ArrowLeft' || c==='ArrowDown'){ cycle(-1); e.preventDefault(); }
+  else if (c==='KeyX'){ togglePov(); e.preventDefault(); }
+  else if (c==='KeyV'){ setXray(!xrayOn); e.preventDefault(); }
+  else if (c==='KeyF'){ toggleFree(); e.preventDefault(); }
+  else if (c==='Escape'){ if (camSlot>=0) freeCam(); e.preventDefault(); }
+  else if (c==='KeyC'){ applyMode(!cs2Mode, true); e.preventDefault(); }   // M is the sound's
+  else if (c==='Space'){ set_playing(!lastPlaying); e.preventDefault(); }
 });
+addEventListener('keyup', e=>{
+  const c=e.code;
+  if (c==='Tab'){ showBoard(false); e.preventDefault(); }
+  else if (c==='ShiftLeft' || c==='ShiftRight'){ shiftHeld=false; sendFly(); }
+  else if (FLY_KEYS[c] && flyHeld.delete(c)) sendFly();
+});
+// a key let go in another window never comes back as a keyup here
+addEventListener('blur', releaseKeys);
+document.addEventListener('visibilitychange', ()=>{ if (document.hidden) releaseKeys(); });
 
 // Bevy asks for the map itself once it runs. Hand it the bytes already here: the browser may
 // not have kept a big file in its cache, and de_nuke's world.c2map was downloaded twice.
@@ -934,7 +1296,7 @@ async function main(){
   // compiler (init accepts a Promise<Response>), the map's bytes wait for Bevy
   // (handMapToBevy), and the manifest rides along.
   const wasmReady = init({ module_or_path:
-    fetchWithProgress('/static/replay3d/pkg/viewer_bg.wasm?v=11', WASM_SIZE, barSetter('barWasm','pctWasm')) });
+    fetchWithProgress('/static/replay3d/pkg/viewer_bg.wasm?v=12', WASM_SIZE, barSetter('barWasm','pctWasm')) });
   const mapFile = USE_MAP_V2 ? MAP_V2 : MAP_ASSET;
   const mapWarm = mapFile
     ? fetchWithProgress('/static/replay3d/assets/'+mapFile, USE_MAP_V2 ? MAP_V2_SIZE : MAP_SIZE, barSetter('barMap','pctMap'))
@@ -970,6 +1332,7 @@ async function main(){
   load_manifest(JSON.stringify(MANIFEST));
   $('#title').textContent = MANIFEST.map || '3D replay';
   radarInit();
+  applyMode(cs2Mode, false);        // the look; the first round then picks the camera
 
   const mapBtn = $('#mapToggle');
   if (mapBtn){

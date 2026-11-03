@@ -38,7 +38,7 @@ pub const TARGET_HZ: f64 = 64.0;
 /// What the replay files hold. Raise it, together with DATA_VERSION in web/replay3d.py,
 /// when extraction starts giving files something older ones lack: a re-upload and
 /// tools/rebuild_replays.py then replace older replays. A manifest without the key is 1.
-pub const DATA_VERSION: i64 = 2;
+pub const DATA_VERSION: i64 = 3;
 pub const PAD_SECONDS: i64 = 3;
 pub const FLASH_FULL_S: f64 = 5.1;
 /// A >1 s gap in an entity's trajectory (raw ticks, NOT tick-rate scaled) = reused id.
@@ -183,6 +183,8 @@ pub struct KillEvent {
     pub tick: i64,
     pub attacker_name: Option<String>,
     pub victim_name: Option<String>,
+    /// Who helped: did damage, or flashed the victim (data version 3).
+    pub assister_name: Option<String>,
     pub attacker_team: Option<i64>,
     pub total_rounds_played: i64,
     pub is_warmup: bool,

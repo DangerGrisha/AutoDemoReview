@@ -378,6 +378,19 @@ pub fn util_frame(item: &UtilItem, s: f64) -> UtilFrame {
     UtilFrame { in_window, p }
 }
 
+/// Where along its flight a grenade is at sample `s`, in scene space: the points are at even
+/// times from the throw to the detonation, and before or after it is at the first or last.
+pub fn along_flight(tr: &Tracer, s: f64) -> Vec3 {
+    let k = ((s - tr.tf) / (tr.df - tr.tf).max(1e-6)).clamp(0.0, 1.0) as f32;
+    let n = tr.pts.len().saturating_sub(1);
+    if n == 0 {
+        return tr.pts.first().copied().unwrap_or(Vec3::ZERO);
+    }
+    let at = k * n as f32;
+    let i = (at.floor() as usize).min(n - 1);
+    tr.pts[i].lerp(tr.pts[i + 1], at - i as f32)
+}
+
 /// Tracer per-frame state: (visible, draw_count, opacity, tip). Mirrors updateTracer().
 pub fn tracer_frame(tr: &Tracer, s: f64) -> Option<(usize, f32, Vec3)> {
     if s < tr.tf || s > tr.fade {

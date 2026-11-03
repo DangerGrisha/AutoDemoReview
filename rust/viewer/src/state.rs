@@ -21,15 +21,27 @@ pub enum ControlMsg {
     SetShowMap(bool),
     /// Toggle the x-ray overlay (players drawn through walls + smoke, wallhack-style).
     SetXray(bool),
-    /// Release the camera back to free orbit.
+    /// Release the camera: a followed player's view flies on from where it is, a free
+    /// camera stays as it is.
     SetCamFree,
+    /// Free camera, orbiting what the view on screen looks at.
+    SetCamOrbit,
+    /// Free camera, flying on from the view on screen.
+    SetCamFly,
+    /// Free camera, back at the first view of the map.
+    SetCamOverview,
+    /// What the page holds down for flight: forward, right and up, each -1 to 1, and Shift.
+    SetFlyInput { input: [f32; 3], fast: bool },
+    /// Players painted in their team's colour from afar and grenade flights drawn as
+    /// coloured lines, for analysis (true), or everything as CS2 shows it (false).
+    SetAnalysisLook(bool),
     /// Put the free camera at a place in Source units, looking along pitch and yaw in degrees.
     SetCamLook { pos: [f32; 3], pitch: f32, yaw: f32 },
     /// Lock the camera to a player slot in first- (true) or third-person (false).
     SetCamFollow { slot: usize, first_person: bool },
 }
 
-/// Spectator camera mode. `Free` = the orbit controls; `Follow` locks onto a
+/// Spectator camera mode. `Free` = the orbit or flight controls (orbit.rs); `Follow` locks onto a
 /// player slot and drives the camera from their interpolated eye pose — the
 /// CS2-demo POV feature (first-person through their eyes, or a third-person chase).
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -134,6 +146,8 @@ pub struct Viewer {
     pub cam_mode: CamMode,
     /// x-ray overlay active: players drawn on top of walls + smoke (wallhack-style)
     pub xray: bool,
+    /// team colours from afar and grenade flight lines, which CS2 itself does not draw
+    pub analysis_look: bool,
 }
 
 impl Default for Viewer {
@@ -149,6 +163,7 @@ impl Default for Viewer {
             show_map: false,
             cam_mode: CamMode::Free,
             xray: true,
+            analysis_look: true,
         }
     }
 }
@@ -191,6 +206,8 @@ pub struct PlayerLoco(pub crate::player_anim::Locomotion);
 pub struct TeamFade {
     pub team: Color,
     pub level: u8,
+    /// whether it was painted for analysis or shown as in CS2
+    pub analysis: bool,
     /// how much of the map's light is on it, in steps of its own
     pub light_level: u8,
 }

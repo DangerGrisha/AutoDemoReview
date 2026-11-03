@@ -13,6 +13,7 @@ mod orbit;
 mod player_actions;
 mod player_anim;
 mod player_rig;
+mod radar;
 mod scene;
 mod space;
 mod state;
@@ -74,6 +75,7 @@ pub fn run(
         .insert_resource(LabelsOut::default())
         .insert_resource(PlayerPoses::default())
         .insert_resource(TracersOut::default())
+        .init_resource::<radar::RadarOut>()
         .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
@@ -120,6 +122,7 @@ pub fn run(
                 spectator_camera,
                 viewmodel::sync_fp_view,
                 sync_xray_camera,
+                radar::radar_marks,
                 report_frame,
             )
                 .chain(),
@@ -216,10 +219,44 @@ pub fn set_camera_follow(slot: u32, first_person: bool) {
     push_control(ControlMsg::SetCamFollow { slot: slot as usize, first_person });
 }
 
-/// Release the spectator camera back to free orbit.
+/// Release the spectator camera: a followed player's view flies on from where it is, as
+/// CS2's free camera does; a free camera stays as it is.
 #[wasm_bindgen]
 pub fn set_camera_free() {
     push_control(ControlMsg::SetCamFree);
+}
+
+/// Free camera orbiting what the view on screen looks at: drag turns around it, the wheel
+/// zooms, right-drag pans.
+#[wasm_bindgen]
+pub fn set_camera_orbit() {
+    push_control(ControlMsg::SetCamOrbit);
+}
+
+/// Free camera flying on from the view on screen: drag looks around, `set_fly_input` moves.
+#[wasm_bindgen]
+pub fn set_camera_fly() {
+    push_control(ControlMsg::SetCamFly);
+}
+
+/// Free camera back at the first view of the map: its middle from above.
+#[wasm_bindgen]
+pub fn set_camera_overview() {
+    push_control(ControlMsg::SetCamOverview);
+}
+
+/// What the page holds down for flight, each -1 to 1: forward along the view (W/S), right
+/// (D/A), up (E/Q); `fast` for Shift. Anything held takes the camera into flight.
+#[wasm_bindgen]
+pub fn set_fly_input(forward: f32, right: f32, up: f32, fast: bool) {
+    push_control(ControlMsg::SetFlyInput { input: [forward, right, up], fast });
+}
+
+/// True: players painted in their team's colour from afar and grenade flights drawn as
+/// coloured lines, for analysis (the default). False: everything as CS2 shows it.
+#[wasm_bindgen]
+pub fn set_analysis_look(on: bool) {
+    push_control(ControlMsg::SetAnalysisLook(on));
 }
 
 /// Put the free camera where the game's `setpos x y z; setang pitch yaw 0` would, so a view
@@ -257,7 +294,8 @@ const PLAYER_SHADOW_REACH: f32 = 24.0;
 //         weapon table idx; worldX/worldY/yawDeg are RAW demo coords for the
 //         page radar — dead players hold their death spot; present=0 -> no
 //         radar marker at all)
-//  {utilIdx, x, y, opacity} * nTracers]
+//  {utilIdx, x, y, opacity} * nTracers,
+//  {kind, what, x, y, value} * the rest (radar.rs: grenades and the bomb, raw demo x, y)]
 // KEEP THE PER-PLAYER STRIDE (10) IN LOCKSTEP with both HTML readers
 // (rust/viewer/www/index.html + web/templates/replay3d.html, PSTRIDE const).
 // ---------------------------------------------------------------------------
@@ -457,10 +495,8 @@ fn drain_controls(
                         amb.brightness = if show_map { AMBIENT_MAP } else { AMBIENT_GREYBOX };
                     }
                     map_space.0 = m.space_asset.clone().map(|path| asset_server.load(path));
-                    orbit_cam.target = center;
-                    orbit_cam.yaw = 0.0;
-                    orbit_cam.pitch = std::f32::consts::FRAC_PI_4;
-                    orbit_cam.dist = 58.0 * std::f32::consts::SQRT_2;
+                    orbit_cam.home = center;
+                    orbit_cam.go_home();
                     viewer.show_map = show_map;
                     viewer.manifest = Some(m);
                 }
@@ -539,10 +575,24 @@ fn drain_controls(
                     cam.is_active = on;
                 }
             }
-            ControlMsg::SetCamFree => viewer.cam_mode = CamMode::Free,
+            ControlMsg::SetCamFree => {
+                // a switch already asked for this frame says where the camera goes
+                if viewer.cam_mode != CamMode::Free && orbit_cam.pending.is_none() {
+                    orbit_cam.pending = Some(orbit::Switch::Fly);
+                }
+            }
+            ControlMsg::SetCamOrbit => orbit_cam.pending = Some(orbit::Switch::Orbit),
+            ControlMsg::SetCamFly => orbit_cam.pending = Some(orbit::Switch::Fly),
+            ControlMsg::SetCamOverview => orbit_cam.pending = Some(orbit::Switch::Home),
+            ControlMsg::SetFlyInput { input, fast } => {
+                orbit_cam.input = Vec3::from_array(input).clamp(Vec3::NEG_ONE, Vec3::ONE);
+                orbit_cam.fast = fast;
+            }
+            ControlMsg::SetAnalysisLook(on) => viewer.analysis_look = on,
             ControlMsg::SetCamLook { pos, pitch, yaw } => {
                 let s = viewer.manifest.as_ref().map(|m| m.scene_scale as f32).unwrap_or(0.02);
                 orbit_cam.look_from(Vec3::new(pos[0], pos[2], -pos[1]) * s, pitch.to_radians(), yaw.to_radians());
+                orbit_cam.flying = true;
                 viewer.cam_mode = CamMode::Free;
             }
             ControlMsg::SetCamFollow { slot, first_person } => {
@@ -718,7 +768,8 @@ fn update_utility(
     };
 
     for (idx, item) in r.utils.iter().enumerate() {
-        if let Some(tr) = &item.tracer {
+        // the coloured flight line is for analysis: CS2 draws none
+        if let Some(tr) = item.tracer.as_ref().filter(|_| viewer.analysis_look) {
             if let Some((count, op, tip)) = tracer_frame(tr, s) {
                 gizmos.linestrip(
                     tr.pts[..count.min(tr.pts.len())].iter().copied(),
@@ -934,24 +985,26 @@ fn tint_players(
             .unwrap_or(Color::srgb_u8(0xcc, 0xcc, 0xcc));
         if let Some(base) = materials.get(&mat_handle.0).cloned() {
             let painted = model.for_team(team).spec.team_paint;
-            let (base_color, emissive) = team_look(color, if painted { 1.0 } else { 0.0 });
+            let (base_color, emissive) = team_look(color, if painted { 1.0 } else { 0.0 }, painted || viewer.analysis_look);
             let h = materials.add(StandardMaterial { base_color, emissive, ..base });
             commands.entity(e).insert(MeshMaterial3d(h));
             if !painted {
-                commands.entity(e).insert(TeamFade { team: color, level: 0, light_level: u8::MAX });
+                // a level it cannot have, so the first fade writes the material
+                commands.entity(e).insert(TeamFade { team: color, level: u8::MAX, analysis: viewer.analysis_look, light_level: u8::MAX });
             }
         }
     }
 }
 
-/// `paint` 0 is the model's own textures, 1 is the team colour over them. Both keep a
-/// self-lit share of the colour so players stay legible through walls, but a dark texture
-/// up close washes out quickly, so it gets little.
-fn team_look(team: Color, paint: f32) -> (Color, LinearRgba) {
+/// `paint` 0 is the model's own textures, 1 is the team colour over them. For analysis both
+/// keep a self-lit share of the colour so players stay legible through walls, but a dark
+/// texture up close washes out quickly, so it gets little. As in CS2 (`glow` false) there is
+/// none.
+fn team_look(team: Color, paint: f32, glow: bool) -> (Color, LinearRgba) {
     const GLOW_TEXTURED: f32 = 0.05;
     const GLOW_PAINTED: f32 = 0.16;
     let lin = team.to_linear();
-    let glow = GLOW_TEXTURED + (GLOW_PAINTED - GLOW_TEXTURED) * paint;
+    let glow = if glow { GLOW_TEXTURED + (GLOW_PAINTED - GLOW_TEXTURED) * paint } else { 0.0 };
     let base = |channel: f32| 1.0 + (channel - 1.0) * paint;
     (
         Color::linear_rgb(base(lin.red), base(lin.green), base(lin.blue)),
@@ -965,7 +1018,7 @@ fn team_look(team: Color, paint: f32) -> (Color, LinearRgba) {
 ///
 /// On the textured map a player also takes the colour of the light under their feet, or
 /// they would stay sunlit in a dark room. The painted look ignores it: from far away the
-/// colour is there to be read, not to look real.
+/// colour is there to be read, not to look real. As in CS2 nobody is painted at all.
 #[allow(clippy::type_complexity)]
 fn fade_team_colour(
     q_cam: Query<&GlobalTransform, With<MainCam>>,
@@ -983,24 +1036,26 @@ fn fade_team_colour(
     const ABOVE_FEET: f32 = 32.0;
     let Ok(cam) = q_cam.single() else { return };
     let scale = viewer.manifest.as_ref().map_or(1.0, |m| m.scene_scale as f32);
+    let analysis = viewer.analysis_look;
     for (mesh, material, mut fade) in &mut q {
         let dist = cam.translation().distance(mesh.translation());
         let paint = ((dist - TEXTURES_UP_TO) / (PAINTED_FROM - TEXTURES_UP_TO)).clamp(0.0, 1.0);
-        let level = (paint * LEVELS).round() as u8;
+        let level = if analysis { (paint * LEVELS).round() as u8 } else { 0 };
         let light = match &map_light {
             Some(l) if viewer.show_map => l.at(mesh.translation() / scale + Vec3::Y * ABOVE_FEET),
             _ => Vec3::ONE,
         };
         // on a root, because most of the steps a dark room needs are near zero
         let light_level = (light.max_element().sqrt() * LIGHT_LEVELS).round() as u8;
-        if level == fade.level && light_level == fade.light_level {
+        if level == fade.level && light_level == fade.light_level && analysis == fade.analysis {
             continue;
         }
         fade.level = level;
         fade.light_level = light_level;
+        fade.analysis = analysis;
         if let Some(mut mat) = materials.get_mut(&material.0) {
             let paint = level as f32 / LEVELS;
-            let (base, emissive) = team_look(fade.team, paint);
+            let (base, emissive) = team_look(fade.team, paint, analysis);
             let lin = base.to_linear();
             let lit = Vec3::ONE.lerp(light, 1.0 - paint);
             mat.base_color = Color::linear_rgb(lin.red * lit.x, lin.green * lit.y, lin.blue * lit.z);
@@ -1367,6 +1422,7 @@ fn report_frame(
     viewer: Res<Viewer>,
     labels: Res<LabelsOut>,
     tracers: Res<TracersOut>,
+    radar_marks: Res<radar::RadarOut>,
     real_arms: Res<viewmodel::FpState>,
     q_cam: Query<(&Camera, &GlobalTransform), With<MainCam>>,
 ) {
@@ -1428,6 +1484,9 @@ fn report_frame(
             Some(v) => data.extend([*idx as f32, v.x, v.y, *op]),
             None => data.extend([*idx as f32, 0.0, 0.0, 0.0]),
         }
+    }
+    for mark in &radar_marks.0 {
+        data.extend(mark);
     }
     replay_frame(&data);
 }

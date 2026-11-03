@@ -132,11 +132,7 @@ fn wanted(r: &RoundState, m: &crate::state::ManifestData, real: &RealWeapons, cl
         if sample > df && !(lies && sample <= item.s1) {
             continue;
         }
-        let k = ((sample - tf) / (df - tf).max(1e-6)).clamp(0.0, 1.0) as f32;
-        let n = tracer.pts.len() - 1;
-        let at = k * n as f32;
-        let i = (at.floor() as usize).min(n.saturating_sub(1));
-        let p = tracer.pts[i].lerp(tracer.pts[(i + 1).min(n)], at - i as f32) / s;
+        let p = crate::util::along_flight(tracer, sample) / s;
         let flying = sample <= df;
         let turn = if flying {
             let age = ((sample - tf) / r.rate) as f32;

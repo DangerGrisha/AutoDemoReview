@@ -64,6 +64,10 @@ fixtures stay byte-identical, because everything new is optional.
 | Bomb | plant time | also `bomb.pos`, and `bomb.site` from the planter's place name |
 | Header `events`, `state`, flags `0x20`, `0x40` | no | yes |
 
+**Version 3** (2026-11-03) adds one manifest key: `as` on a kill mark, the name of who
+helped (did damage or flashed the victim), for the scoreboard's assists. Nothing in the
+`.3dr` files changed. Matches 1, 2 and 27 are rebuilt; on others the A column says "–".
+
 **Header keys, each present only when non-empty:**
 
 - `state`: index-aligned with `players`. Each entry holds flat `[sample, value, sample,
@@ -538,12 +542,34 @@ under `rust/viewer/www/assets/`.
 
 ## Spectator camera (per-player POV, CS2-demo style)
 
-Besides the free orbit cam, the viewer can lock onto any player and watch from
+Besides the free camera, the viewer can lock onto any player and watch from
 their POV, like a CS2 demo. Pick a player in the right-side panel (or **1–0**),
 **←/→** cycles through living players, **X** toggles first-/third-person, **F**
-(or Esc) returns to free cam. First-person shows a crosshair and hides the
+(or Esc) lets go of the player. First-person shows a crosshair and hides the
 followed player's own model + nametag, and is drawn as the section "First person"
-says.
+says. The camera keeps its player from one round to the next (by SteamID) and stays
+free when it was free.
+
+**The free camera moves two ways** (`orbit.rs`), kept as one orbit (a point, the angles
+around it, a distance) so that switching never moves the camera:
+
+- **Flight**, as CS2's free camera: **W/S** along the view (up and down with it), **A/D**
+  level to the side, **E/Q** straight up and down, **Shift** 2.5 times faster (700 Hammer
+  units a second without it), a held mouse button turns the view on the spot, the wheel
+  moves along the view. Letting go of a player (**F**, Esc, or any of those keys while
+  following) flies on from the view on screen.
+- **Orbit**, as the page always had: drag turns around a point, the wheel zooms,
+  right-drag pans. **F** in flight orbits what the view looks at: the first solid cell
+  of the map's grid along the view (`.c2space`, see Effects), else the ground, else a
+  point 1000 units ahead.
+
+The page sends what is held with `set_fly_input(forward, right, up, fast)` rather than
+letting Bevy read the keyboard, so typing in a field never flies and a key let go in
+another window is released (`blur`, `visibilitychange`). All keys go by `KeyboardEvent.code`,
+so a Russian layout works: `e.key` for W is "ц" there. `set_camera_orbit()`,
+`set_camera_fly()` and `set_camera_overview()` (the first view, from above) switch on the
+next frame, where the camera's place is known; `set_camera_free()` only lets go of a
+player, and never overrides a switch asked for in the same frame.
 
 - **Rust (`viewer`):** `Viewer.cam_mode: CamMode::{Free, Follow{slot, first_person}}`
   (state.rs), driven from JS via the `set_camera_follow(slot, first_person)` /
@@ -568,14 +594,59 @@ says.
   for the page's live radar — dead players hold their frozen death coords,
   `present=0` means "not in this round, draw nothing". They come after a header of
   7 floats, `{clock, duration, playing, flashOpacity, nPlayers, nTracers, scopeUp}`, and
-  tracer records follow at `HDR + nPlayers*PSTRIDE`. Both the wasm writer (`report_frame`)
+  tracer records follow at `HDR + nPlayers*PSTRIDE`, 4 floats each, and the radar's marks
+  fill the rest, `MSTRIDE`=5 floats each (`radar.rs`, below). Both the wasm writer (`report_frame`)
   and the two HTML readers (`www/index.html`, `web/templates/replay3d.html`, `HDR` and
   `PSTRIDE` consts) share this layout — bump the prod page's `?v=` cache-buster on the pkg URLs
   whenever it changes (the static pkg is cached for 7 days).
 
+## As in CS2, or for analysis (the two looks)
+
+Two buttons in the bottom bar, **C** on the keyboard. The choice is kept in this browser
+(`localStorage` `replay3d.mode`); `?mode=cs2` or `?mode=analysis` overrides it for one visit.
+
+| | As in CS2 (the default) | Analysis |
+|---|---|---|
+| Camera when the page opens | a player's eyes: the viewer's own, else the report's player (`replay3d.pov_sids`), else the first slot | the free camera over the map |
+| Players through walls and smoke (x-ray, **V**) | off | on |
+| Names over heads, thrower names on grenades | no | yes |
+| Players painted in their team's colour from afar, a little self-lit | no | yes (`set_analysis_look`) |
+| Coloured line along a grenade's flight | no | yes |
+| C4 panel with the fuse counting down | no: in CS2 the beeps are the timer | yes |
+| Radar while in a player's eyes | centred on them, turning with their view, half the map across | the whole map, north up |
+| When the followed player dies | a living teammate, 2.5 s later while playing, at once when paused or scrubbed there; back to the player when a scrub brings them back to life | stays on the spot |
+
+Switching to the CS2 look goes into the chosen player's eyes in first person. Switching to
+analysis goes back to the first view from above. **V** and **F** still work within either.
+
+Not one to one: CS2's spectator HUD has player cards along the bottom and its own radar
+art, here the list stays on the right and the radar is the overview image; the scoreboard
+has no ping, MVPs or score; the 1:30 for four players is the wingman default, not read from
+the demo; and the move to a teammate after a death, and its 2.5 s, are this page's choice.
+
 ## CS2-style HUD (score bar · live radar · kill feed)
 
-All page-side (no new wasm scene work), in both HTMLs:
+All page-side, in `web/templates/replay3d.html` (the dev page has the older HUD):
+
+- **Round timer** counts down as the game's does: 1:55 from the end of the freeze (1:30
+  with four players or fewer, as wingman), whole seconds rounded up, frozen at the round's
+  end (`durationS` less the 3 s the replay runs on). Measured: match 2's round 4 ran out of
+  time and its replay is 118.0 s. After the plant the bomb's icon stands in its place,
+  blinking red until it is defused (green) or blows. The playback clock stays in the bar.
+- **Scoreboard on Tab** (held, as in the game): kills, deaths, assists and headshot share up
+  to this moment of the match, from the manifest's kill lists, and money from the round's
+  `state` (data version 2). Counted every 200 ms while it shows, so scrubbing gives that
+  moment's table. Suicides and the world count a death only; a team kill counts as a kill,
+  since an old round's victims have no team.
+- **Radar marks** (`radar.rs`, one more system before `report_frame`): a grenade in the
+  air as a dot of its type's colour; a smoke and a fire as discs of their radius, coming in
+  and going out with them; an HE or a flash as a ring racing out; the bomb. Who carries the
+  bomb comes from `bombPickup`/`bombDrop` in a 64 Hz replay and from whoever is seen holding
+  it, which is all an old replay has: the bomb is handed out before the replay starts, so
+  the first carrier is the first one seen with it, and when a carrier dies without a drop
+  event it lies where they fell. Planted, it sits at `bomb.pos` (or where its carrier stood)
+  with a pulse; defused, in green; gone once it blows. Each dot carries the key that follows
+  that player, 1–9 then 0.
 
 - **Top-center score bar** — CT/T running score entering the round, round
   number, playback clock, and per-team alive pips driven from the frame
@@ -592,14 +663,14 @@ All page-side (no new wasm scene work), in both HTMLs:
   page also **auto-advances** to the next round ~1.5 s after the round ends
   (pausing or scrubbing cancels it), so a match plays through end-to-end and
   the score keeps counting without touching the dropdown.
-- **Live radar (top-left)** — a 2D canvas drawing the match's radar PNG
+- **Live radar (top-left)** — (marks and turning above) a 2D canvas drawing the match's radar PNG
   (`manifest.radarAsset`, same asset the greybox mode textures) with per-frame
   team-colored dots + white view-direction ticks, an ✕ frozen at each death
   spot, and a highlight ring around the followed player. Projection uses the
   manifest calibration exactly like `mapscal::world_to_radar`:
   `px = (worldX − pos_x)/scale`, `py = (pos_y − worldY)/scale`, scaled to the
   canvas. The #hud panel moved down below it.
-- **C4 panel (top-center, under the score bar)** — "непонятно что бомба
+- **C4 panel (top-center, under the score bar; analysis look only)** — "непонятно что бомба
   запущена": the plant used to be invisible. New per-round manifest key `bomb`
   (emitted only for rounds that had a plant, so old manifests and the synthetic
   fixtures keep their exact shape): `{plant, site?, defused?|exploded?}` in the
@@ -745,6 +816,11 @@ way in third person.
   own clip names ever change, `tools/viewmodel_clips.txt` is the place to fix them.
 
 ## Sound (real CS2 sounds, with a synth behind them; page-side)
+
+`sfx.js` reads the players from the frame report after the header length the page passes,
+`SFX.frame(d, nP, HDR)`. It used to have 6 written in: when the header grew to 7 floats in
+the first-person work, every footstep and the direction of every sound came from the
+neighbouring float until this was found in the HUD work. **M** mutes, by key code too.
 
 `web/static/replay3d/sfx.js` plays the match soundtrack from data the page already
 has. It needs **no wasm work**, so it can be iterated on with nothing but a page

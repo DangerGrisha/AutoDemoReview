@@ -96,6 +96,10 @@ pub fn build_manifest(
                             Value::from(non_empty(k.victim_name.as_deref(), "?")),
                         );
                         m.insert("atkTeam".into(), Value::from(k.attacker_team.unwrap_or(0)));
+                        // the scoreboard's assists; absent before data version 3
+                        if let Some(name) = k.assister_name.as_deref().filter(|n| !n.is_empty()) {
+                            m.insert("as".into(), Value::from(name));
+                        }
                         // kill-feed enrichment; keys present only when meaningful,
                         // so pre-enrichment sources keep the old mark shape
                         if let Some(w) = k.weapon.as_deref() {

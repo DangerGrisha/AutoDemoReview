@@ -351,6 +351,7 @@ impl DemoSource for FakeDemo {
                 tick: 1100,
                 attacker_name: Some("Player9".into()),
                 victim_name: Some("Player10".into()),
+                assister_name: Some("Player8".into()),
                 attacker_team: Some(2),
                 total_rounds_played: 0,
                 is_warmup: false,
@@ -759,6 +760,7 @@ fn manifest_shape() {
     assert_eq!(kills0[0]["sample"], 25);
     assert_eq!(kills0[0]["atk"], "Player9");
     assert_eq!(kills0[0]["atkTeam"], 2);
+    assert_eq!(kills0[0]["as"], "Player8", "who helped, for the scoreboard");
     assert_eq!(man["rounds"][1]["kills"].as_array().unwrap().len(), 0);
     // no winner enrichment -> the pre-winner manifest shape, byte-compatible
     assert!(man["rounds"][0].get("winner").is_none());

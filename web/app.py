@@ -438,6 +438,7 @@ def match_replay3d(request: Request, match_id: int):
         "space_asset": replay3d.space_rel(row["map_name"]),
         "cs2_sounds": replay3d.cs2_sounds_enabled(),
         "hud_icons": replay3d.hud_icons_enabled(),
+        "pov_sids": replay3d.pov_sids(user["steamid64"], row["ref_sid"]),
         "wasm_size": wasm_size,
         "map_size": map_size,
     })
