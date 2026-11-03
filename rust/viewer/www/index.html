@@ -255,7 +255,7 @@
  * JS <-> WASM control interface (the page owns the UI; Bevy owns the scene)
  *
  * JS -> WASM (exported from pkg/viewer.js):
- *   run(canvasSelector, assetRoot, cs2Models, cs2Weapons)  start the Bevy app; returns immediately
+ *   run(canvasSelector, assetRoot, cs2Models, cs2Weapons, cs2Viewmodel, cs2Fx)  start the Bevy app; returns immediately
  *                                      (cs2Models: real player models, not the soldier;
  *                                       cs2Weapons: real weapons, not the simple boxes)
  *   load_manifest(jsonText)            greybox + team colors + camera framing
@@ -840,8 +840,11 @@ async function main(){
   // from the real model's weapon bone, so the soldier never gets them anyway.
   const cs2Weapons = cs2Models
     && await fetch('assets/models/cs2_v1/weapons/ak47.glb', {method:'HEAD'}).then(r=>r.ok).catch(()=>false);
-  run('#canvas', null, cs2Models, cs2Weapons);   // null = page-relative "assets/" root (dev server)
+  // CS2's effect textures (tools/convert_fx.ps1), probed by one file; the map's grid by its name
+  const cs2Fx = await fetch('assets/fx_v1/smoke.ktx2', {method:'HEAD'}).then(r=>r.ok).catch(()=>false);
+  run('#canvas', null, cs2Models, cs2Weapons, undefined, cs2Fx);   // null = page-relative "assets/" root (dev server)
   MANIFEST = JSON.parse(await manifestReq);
+  if (cs2Fx && MANIFEST.map) MANIFEST.spaceAsset = `fx_v1/space/${MANIFEST.map}.c2space`;
   if (qmap) MANIFEST.mapAsset = qmap;
   // ?mapv2=maps_v2/de_mirage/world.c2map tries the textured map
   const qmapv2 = q.get('mapv2');

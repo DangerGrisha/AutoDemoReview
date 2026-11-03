@@ -145,6 +145,43 @@ def cs2_viewmodel_enabled():
         (CS2_MODELS_DIR / "viewmodel" / name).is_file() for name in ("arms_t.glb", "arms_ct.glb"))
 
 
+FX_DIR = config.WEB_DIR / "static" / "replay3d" / "assets" / "fx_v1"
+
+
+def cs2_fx_enabled():
+    """Draw smoke, fire, explosions and shots with CS2's own particle textures? Built from a
+    local CS2 install by tools/convert_fx.ps1 and never committed. The viewer keeps its simple
+    shapes without them, or with REPLAY3D_CS2_FX=0.
+    """
+    if os.environ.get("REPLAY3D_CS2_FX", "1") == "0":
+        return False
+    return all((FX_DIR / f"{name}.ktx2").is_file() for name in FX_SHEETS)
+
+
+def _fx_sheet_names():
+    """The atlases tools/fx_sheets.txt names, which the viewer loads all of."""
+    path = config.REPO_ROOT / "tools" / "fx_sheets.txt"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ()
+    return tuple(l.split()[0] for l in lines if l.strip() and not l.lstrip().startswith("#"))
+
+
+FX_SHEETS = _fx_sheet_names()
+
+
+def space_rel(map_name):
+    """Asset-root-relative path of the map's solid-space grid, or None. Smoke floods it and
+    bullets stop at its walls; it comes with the effects and goes with REPLAY3D_CS2_FX=0.
+    """
+    if not map_name or not cs2_fx_enabled():
+        return None
+    if (FX_DIR / "space" / f"{map_name}.c2space").is_file():
+        return f"fx_v1/space/{map_name}.c2space"
+    return None
+
+
 def cs2_sounds_enabled():
     """Play the real CS2 sounds? Built from a local CS2 install and never committed, like
     the models. Without them, or with REPLAY3D_CS2_SOUNDS=0, the page synthesizes gunfire.

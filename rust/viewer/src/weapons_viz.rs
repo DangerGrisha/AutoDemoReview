@@ -58,6 +58,24 @@ fn bone_mount(class: WeaponClass) -> Transform {
 #[derive(Component)]
 pub struct WeaponPart;
 
+/// A held model that casts a shadow only when what holds it does: a gun in a player's hand
+/// does, the fallback first-person kit at the eye does not.
+#[derive(Component)]
+pub struct ShadowFromParent;
+
+/// Copy the parent's no-shadow mark onto held models as they appear.
+pub fn mark_held_shadows(
+    mut commands: Commands,
+    q_new: Query<(Entity, &ChildOf), Added<ShadowFromParent>>,
+    q_no_shadow: Query<(), With<bevy::light::NotShadowCaster>>,
+) {
+    for (e, parent) in &q_new {
+        if q_no_shadow.contains(parent.parent()) {
+            commands.entity(e).insert(bevy::light::NotShadowCaster);
+        }
+    }
+}
+
 /// The model spawned under a mount.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Held {
@@ -140,6 +158,8 @@ struct RealModel {
     material: Handle<StandardMaterial>,
     /// In the model's frame. None for what has no barrel: knives, grenades, the bomb.
     muzzle: Option<Vec3>,
+    /// The mesh's box in its own frame, in metres, to set it down on a floor.
+    bounds: (Vec3, Vec3),
 }
 
 /// The real weapon models. Each loads when a round's weapon table first names it, and
@@ -197,6 +217,11 @@ impl RealWeapons {
         self.file_for(tag, team).filter(|file| self.ready(file).is_some())
     }
 
+    /// A ready model's mesh, material and box in metres, to place it in the world on its own.
+    pub(crate) fn mesh_of(&self, file: &str) -> Option<(Handle<Mesh>, Handle<StandardMaterial>, (Vec3, Vec3))> {
+        self.ready(file).map(|model| (model.mesh.clone(), model.material.clone(), model.bounds))
+    }
+
     /// The material a ready model has: its first-person rig has the same UVs.
     pub(crate) fn material_of(&self, file: &str) -> Option<Handle<StandardMaterial>> {
         self.ready(file).map(|model| model.material.clone())
@@ -224,6 +249,7 @@ pub fn finish_real_weapons(
     gltf_meshes: Res<Assets<GltfMesh>>,
     gltf_nodes: Res<Assets<GltfNode>>,
     gltf_materials: Res<Assets<GltfMaterial>>,
+    meshes: Res<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     if real.loading == 0 {
@@ -244,6 +270,10 @@ pub fn finish_real_weapons(
                 .and_then(|p| Some((p.mesh.clone(), gltf_materials.get(p.material.as_ref()?)?)));
             match part {
                 Some((mesh, src)) => RealState::Ready(RealModel {
+                    bounds: meshes
+                        .get(&mesh)
+                        .and_then(bevy::camera::primitives::MeshAabb::compute_aabb)
+                        .map_or((Vec3::ZERO, Vec3::ZERO), |b| (b.min().into(), b.max().into())),
                     mesh,
                     // Not metallic: the viewer has no environment map for metal to reflect,
                     // and a metal surface with nothing to reflect renders black.
@@ -462,6 +492,7 @@ fn spawn_held(
                     part.tf,
                     WeaponPart,
                     layers.clone(),
+                    ShadowFromParent,
                 ));
             }
         }
@@ -473,6 +504,7 @@ fn spawn_held(
                     Transform::IDENTITY,
                     WeaponPart,
                     layers,
+                    ShadowFromParent,
                 ));
             }
         }
@@ -562,6 +594,7 @@ pub fn update_viewmodel(
         if let Some(held) = held {
             *tf = viewmodel_transform(held);
             spawn_held(&mut commands, e, &assets, &real, held, RenderLayers::layer(0));
+            commands.entity(e).insert(bevy::light::NotShadowCaster);
         }
     }
 }

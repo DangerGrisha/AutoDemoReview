@@ -1038,8 +1038,9 @@ extracted).
   Toggle from JS via the `set_xray(bool)` wasm export (the **X-ray** button / **V**
   key); default on. Everything else (map, smoke, gizmos) stays on layer 0, so only
   players are ever duplicated.
-- **Dynamic grenades** (`util.rs` build + `lib.rs` `update_utility`, all animated
-  from the playback clock so scrubbing stays correct):
+- **Dynamic grenades, the simple shapes** (`util.rs` build + `lib.rs` `update_utility`,
+  all animated from the playback clock so scrubbing stays correct). Since the effects
+  below, these only show when the CS2 particle textures are missing, turned off or broken:
   - *Smoke* — `SMOKE_PUFFS` lit spheres on a `0.5*r_s` shell (`puff_offset`), each
     `0.5*r_s` across, so the cloud's outer radius is exactly **r_s (144u = CS 1:1)**
     and the big overlapping puffs read as one solid mass, not balloons. Blooms in
@@ -1061,16 +1062,97 @@ extracted).
   - *viewer* (`build_shots`) reconstructs each shot's muzzle ray from the shooter's
     interpolated eye pose (the same `AngleVectors` math as the POV camera) into a
     fixed world-space line; `draw_tracers` renders it as a **travelling streak**:
-    a hot near-white head races the beam in `TRACER_TRAVEL` s (0.045) with a
-    team-tinted trailing dash (`TRACER_STREAK_FRAC`=0.42 of the beam), the whole
-    streak fading out by `TRACER_LIFE` s (0.20), plus a brief muzzle-flash sphere
-    (suppressed in the shooter's own first-person POV). Timing is in playback-
-    clock seconds, so scrubbing lands on the right shots and slo-mo stretches the
-    streaks. Drawn on a dedicated `TracerGizmos` config group (width
-    `TRACER_WIDTH`=3.5 px, slight negative depth bias) so the thin default-group
-    gizmos (grid, throw arcs) are unaffected. Beam length `TRACER_LEN_WU` (3000 u).
+    a hot head races the beam in `TRACER_TRAVEL` s (0.045) with a trailing dash
+    (`TRACER_STREAK_FRAC`=0.42 of the beam), the whole streak fading out by
+    `TRACER_LIFE` s (0.20). It is one warm colour for both sides, as in CS2, and
+    thin (`TRACER_WIDTH`=1.6 px, its own `TracerGizmos` group). A bullet that hit
+    someone (a `hurt` event of the same moment) stops at their chest; any other stops
+    where the map's solid-space grid has a wall, when the effects are on, with dust
+    there. Timing is in playback-clock seconds, so scrubbing lands on the right shots
+    and slo-mo stretches the streaks. Beam length `TRACER_LEN_WU` (3000 u). The
+    muzzle flash is a sprite, see Effects; without them it is a small sphere.
   - Matches analysed before this feature (old `.3dr`) simply have no `shots` key →
     no tracers; re-uploading the demo backfills them.
+
+## Effects (CS2's particle textures)
+
+Smoke, fire, explosions, shots, blood and the bomb drawn with the textures CS2's own
+particles use, and the loose models around them. Nothing of it is committed: like the
+models it is built from a local CS2 and lives in ignored folders.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\convert_fx.ps1
+```
+
+It exports the textures listed in `tools/fx_sheets.txt` with Source2Viewer, and
+`tools/prepare_fx.py` packs each into one atlas: frames spread over each sequence,
+premultiplied in linear light, BC3 sRGB KTX2 with mipmaps, in
+`web/static/replay3d/assets/fx_v1/` (and the dev copy under `rust/viewer/www/`). Then
+`tools/prepare_space.py` writes `fx_v1/space/<map>.c2space` for every built textured
+map, and everything is precompressed. Valve's particle systems themselves do not carry
+over, so all the motion is the viewer's own (`effects.rs`).
+
+**Drawing** (`fx.rs`, `fx.wgsl`). Each sprite is a camera-facing square the vertex shader
+builds from its centre, with its frame, colour and opacity. Colour is premultiplied and
+says how much a sprite covers what is behind it, so one material does both additive
+glow and smoke that hides. Sprites are gathered per frame into one mesh per group and
+sorted back to front; close to the camera a sprite fades instead of filling the screen.
+Smoke and dust take the light a white wall would show at that spot on the textured map
+(the baked light grid through the map's tone curve), so a smoke indoors is as dim as the
+room around it.
+
+**The solid-space grid** (`space.rs`, `.c2space`). 16-unit cells, solid where an opaque
+surface of the textured map passes; glass, leaves and decals do not count. The layout
+is in `tools/prepare_space.py`. A smoke floods the open cells around its centre, nearest
+first, until it has as many cells as a dome 288 units across and 112 up would; so in
+a corridor it runs further along it and never through a wall. Fire floods the floor the
+same way, up to the molotov's radius. Bullets step through it to find the wall they hit.
+Without a grid, smoke is that dome and fire a disc.
+
+**What shows:**
+
+| | |
+|---|---|
+| Smoke | about 50 soft puffs over the flooded cells, blooming out over 1.2 s and thinning over the last 2; a grey veil when the camera is inside one |
+| Molotov / incendiary | flames over the floor cells, dark puffs rising, a warm glow |
+| HE | flash, fireball, dark smoke, a ring of dust along the floor |
+| Flash | a white flash |
+| Shots | muzzle flash (bigger in first person, at the gun in the hands), dust where a bullet stops, blood out the far side of a player who was hit |
+| Bomb | the real C4 lying where it was planted (or, before replays said where, where its carrier stood), its light blinking with the beeps of `sfx.js`, and an explosion three times an HE's when it blows |
+
+**Models in the world** (`world_items.rs`, needs the real weapon models): grenades fly
+their recorded path turning over, and a smoke or decoy lies where it landed while it
+works; the gun a killed player held lies on its side in front of them until someone who
+picks something up stands within 72 units of it (pickups are only in 64 Hz replays, so
+on old ones it lies there to the end of the round); a dropped bomb lies flat until picked
+up; the planted C4 lies flat until it blows. Each is set down by its own bounding box,
+so nothing sinks into the floor. Brass shells fly out of the right of every gun fired
+within 900 units of the camera and lie on the floor for 2 s.
+
+**Player shadows.** Only players and what they hold cast into Bevy's shadow map: one
+cascade, 1200 units from the camera. The map's shader takes the sun away under them,
+only where the bake already has sun, so no spot is shadowed twice. On only while the
+textured map shows; `set_player_shadows(false)` from the page turns them off.
+
+**When it is not used.** `REPLAY3D_CS2_FX=0`, or any atlas missing (`cs2_fx_enabled`),
+and the page tells the viewer to keep the simple shapes. An atlas that fails to load or
+decode does the same on its own. A broken grid only takes the flooding away. (A `.br`
+the browser cannot unpack is different: Bevy's web asset reader panics on any failed
+fetch, for every asset, not only these.)
+
+**What it costs** (de_mirage, RTX 3070, 1936x1231, three alternating pairs each):
+
+| | |
+|---|---|
+| Download | atlases 1.9 MB in brotli (5.8 MB raw); grids 50–215 KB per map in brotli |
+| Memory | a grid is one bit a cell: 1.4 MB on de_mirage, 25 MB on de_vertigo |
+| FPS with effects vs the simple shapes | 101 vs 98 at round start, 84 vs 70 in a fight with smokes (the old shapes were the slower ones) |
+| FPS with player shadows vs without | 102 vs 107 at round start, 86 vs 88 in a fight |
+
+Not one to one: CS2's smoke is a volume that bullets and HEs push open, this one is
+sprites; fire is placed by the floor, not by the game's fire cells, which the demo
+parser does not give; guns fall where their owner died, not where they come to rest;
+shells do not bounce.
 
 ## Env vars (web/.env)
 
@@ -1080,6 +1162,7 @@ extracted).
 | `EXTRACT3D_TIMEOUT_S` | `900` | kill a hung extraction |
 | `REPLAY3D_CS2_MODELS` | `1` | `0` shows the fallback soldier and simple weapons instead of the real CS2 player and weapon models |
 | `REPLAY3D_CS2_SOUNDS` | `1` | `0` synthesizes gunfire instead of playing the real CS2 sounds |
+| `REPLAY3D_CS2_FX` | `1` | `0` keeps the simple smoke, fire and explosion shapes instead of CS2's particle textures |
 | `REPLAY3D_CS2_MAPS` | `1` | Textured maps from `assets/maps_v2/`: `1` shows the ones in `TEXTURED_MAPS_READY` (de_mirage, de_nuke), `all` every built one, `0` none |
 | `KEEP_DEMOS` | `1` | `0` discards each demo after parsing instead of keeping a gzipped copy in `web/data/demos/` |
 

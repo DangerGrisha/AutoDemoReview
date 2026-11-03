@@ -7,6 +7,7 @@
 // looks plausible and leaves the whole map a third too dim against its shade.
 
 #import bevy_pbr::mesh_functions
+#import bevy_pbr::{mesh_view_bindings as view_bindings, mesh_view_types, shadows}
 
 struct MapParams {
     // rgb tint, a opacity
@@ -50,13 +51,16 @@ struct VertexOut {
     @location(1) lm: vec2<f32>,
     @location(2) normal: vec3<f32>,
     @location(3) color: vec4<f32>,
+    @location(4) world: vec3<f32>,
 };
 
 @vertex
 fn vertex(v: Vertex) -> VertexOut {
     var out: VertexOut;
     let world_from_local = mesh_functions::get_world_from_local(v.instance_index);
-    out.clip = mesh_functions::mesh_position_local_to_clip(world_from_local, vec4<f32>(v.position, 1.0));
+    let world = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(v.position, 1.0));
+    out.clip = view_bindings::view.clip_from_world * world;
+    out.world = world.xyz;
     out.uv = v.uv;
     out.lm = v.lm;
     // the map is only ever scaled uniformly, so the normal needs no inverse transpose
@@ -75,6 +79,22 @@ fn tone(c: vec3<f32>) -> vec3<f32> {
     let top = x * (a.x * x + a.z * a.y) + a.w * b.x;
     let bottom = x * (a.x * x + a.y) + a.w * b.y;
     return (top / bottom - b.x / b.y) * b.w;
+}
+
+// Only players cast into the shadow map: the map's own shadows are in the bake. So this
+// takes away the sun where a player blocks it, and nothing where the bake already did.
+fn player_shadow(world: vec3<f32>, n: vec3<f32>, frag: vec2<f32>) -> f32 {
+    if (view_bindings::lights.n_directional_lights == 0u) {
+        return 1.0;
+    }
+    let flags = view_bindings::lights.directional_lights[0].flags;
+    if ((flags & mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) == 0u) {
+        return 1.0;
+    }
+    let p = vec4<f32>(world, 1.0);
+    let v = view_bindings::view.view_from_world;
+    let view_z = dot(vec4<f32>(v[0].z, v[1].z, v[2].z, v[3].z), p);
+    return shadows::fetch_directional_shadow(0u, p, n, view_z, frag);
 }
 
 @fragment
@@ -117,7 +137,11 @@ fn fragment(in: VertexOut, @builtin(front_facing) is_front: bool) -> @location(0
             n = -n;
         }
         let facing = max(dot(n, params.sun_dir.xyz), 0.0);
-        light = irradiance + params.sun_rgb.rgb * facing * sun_seen;
+        var sun = facing * sun_seen;
+        if (sun > 0.001) {
+            sun = sun * player_shadow(in.world, n, in.clip.xy);
+        }
+        light = irradiance + params.sun_rgb.rgb * sun;
     } else {
         // no lightmap on this vertex: the bake put its whole light into the colour
         light = in.color.rgb * in.color.rgb * params.sun_dir.w;

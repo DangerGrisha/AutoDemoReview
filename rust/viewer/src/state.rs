@@ -61,6 +61,21 @@ pub struct ManifestData {
     pub map_v2: Option<String>,
     /// who killed whom in each round, by the round's number (manifest.rounds[].kills)
     pub kills: HashMap<i64, Vec<KillFact>>,
+    /// the bomb of each round it was planted in, by the round's number (manifest.rounds[].bomb)
+    pub bombs: HashMap<i64, BombFact>,
+    /// which parts of the map are solid, relative to the asset root (manifest.spaceAsset);
+    /// without it smoke is a dome and bullets fly the whole tracer length
+    pub space_asset: Option<String>,
+}
+
+/// A planted bomb, as the manifest has it: samples, and world Hammer units.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BombFact {
+    pub plant: f64,
+    /// absent before data version 2
+    pub pos: Option<[f64; 3]>,
+    pub defused: Option<f64>,
+    pub exploded: Option<f64>,
 }
 
 /// One kill, as the manifest has it.
@@ -87,6 +102,8 @@ pub struct ShotViz {
     /// tracer endpoint along the aim (scene space)
     pub b: Vec3,
     pub color: Color,
+    /// whom the bullet hit, from a `hurt` event of the same moment: its tracer ends there
+    pub hit: Option<usize>,
 }
 
 pub struct RoundState {

@@ -462,6 +462,7 @@ pub struct MapLight {
     sun_color: Color,
     sun_illuminance: f32,
     ambient: f32,
+    tone: Tone,
 }
 
 impl MapLight {
@@ -487,6 +488,7 @@ impl MapLight {
             sun_color: Color::linear_rgb(tint.x, tint.y, tint.z),
             sun_illuminance: strongest * std::f32::consts::PI / BEVY_EXPOSURE,
             ambient: SKY_ON_FLOOR * scale / BEVY_EXPOSURE,
+            tone,
         }
     }
 
@@ -499,6 +501,16 @@ impl MapLight {
     pub fn at(&self, p: Vec3) -> Vec3 {
         const DARKEST: f32 = 0.06;
         (self.grid.sample(p) / self.open_player).clamp(Vec3::splat(DARKEST), Vec3::ONE)
+    }
+}
+
+impl MapLight {
+    /// What a white matte surface here shows on screen, in linear light: the light the bake
+    /// left near it, through the map's tone curve as the map's own surfaces go. Smoke and dust
+    /// are lit with it, so a smoke indoors is as light as the walls around it.
+    pub fn on_screen(&self, p: Vec3) -> Vec3 {
+        let l = self.grid.sample(p);
+        Vec3::new(self.tone.apply(l.x), self.tone.apply(l.y), self.tone.apply(l.z))
     }
 }
 
@@ -517,10 +529,14 @@ pub fn light_players_like_the_map(
     } else {
         (Color::WHITE, crate::DEFAULT_SUN)
     };
+    let shadows = viewer.show_map && crate::PLAYER_SHADOWS.load(std::sync::atomic::Ordering::Relaxed);
     for mut sun in &mut q_sun {
         if sun.illuminance != illuminance {
             sun.illuminance = illuminance;
             sun.color = color;
+        }
+        if sun.shadow_maps_enabled != shadows {
+            sun.shadow_maps_enabled = shadows;
         }
     }
     if viewer.show_map {

@@ -84,6 +84,10 @@ pub struct UtilItem {
     /// scene-space detonation center — the anchor puffs/ring animate around
     pub pos: Vec3,
     pub tracer: Option<Tracer>,
+    /// the header's type: smoke, molotov, he, flash or decoy
+    pub utype: &'static str,
+    /// who threw it, by SteamID
+    pub thrower: Option<String>,
 }
 
 /// Deterministic golden-angle point on the UNIT sphere (no RNG, reproducible
@@ -127,6 +131,7 @@ pub fn build_util_item(
     let p = Vec3::from_array(p);
     let r_s = (f(u, "radius").unwrap_or(0.0) * s) as f32;
     let s0 = f(u, "detSample").unwrap_or(0.0);
+    let thrower = u.get("thrower").and_then(Value::as_str).map(str::to_string);
     let dur_s = f(u, "duration").unwrap_or(0.0);
 
     let blend = |color: Color, unlit: bool, double: bool| StandardMaterial {
@@ -164,6 +169,8 @@ pub fn build_util_item(
                 r_s,
                 pos: p,
                 tracer: None,
+                utype: "smoke",
+                thrower: thrower.clone(),
             }
         }
         "molotov" => {
@@ -206,6 +213,8 @@ pub fn build_util_item(
                 r_s,
                 pos: p,
                 tracer: None,
+                utype: "molotov",
+                thrower: thrower.clone(),
             }
         }
         "he" => {
@@ -237,6 +246,8 @@ pub fn build_util_item(
                 r_s,
                 pos: p,
                 tracer: None,
+                utype: "he",
+                thrower: thrower.clone(),
             }
         }
         "flash" => {
@@ -256,6 +267,8 @@ pub fn build_util_item(
                 r_s,
                 pos: p,
                 tracer: None,
+                utype: "flash",
+                thrower: thrower.clone(),
             }
         }
         "decoy" => {
@@ -275,6 +288,8 @@ pub fn build_util_item(
                 r_s,
                 pos: p,
                 tracer: None,
+                utype: "decoy",
+                thrower: thrower.clone(),
             }
         }
         _ => return None,

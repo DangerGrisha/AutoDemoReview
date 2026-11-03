@@ -7,7 +7,7 @@
 {% if has_replay %}
 {# ?v= busts the 7-day static cache when the frame-payload layout changes; keep
    the token in lockstep with the import + fetch URLs below #}
-<link rel="preload" as="fetch" crossorigin href="/static/replay3d/pkg/viewer_bg.wasm?v=10">
+<link rel="preload" as="fetch" crossorigin href="/static/replay3d/pkg/viewer_bg.wasm?v=11">
 {% if map_asset and not map_v2 %}<link rel="preload" as="fetch" crossorigin href="/static/replay3d/assets/{{ map_asset }}">{% endif %}
 {% endif %}
 <style>
@@ -317,7 +317,7 @@
  * weapon,worldX,worldY,yawDeg,present} — worldX/worldY/yawDeg are raw demo
  * coords for the live radar. ?v= must match the preload hint above. */
 import init, { run, load_manifest, load_round, seek, set_playing, set_speed, set_flash_focus,
-  set_map_visible, set_camera_follow, set_camera_free, set_xray } from '/static/replay3d/pkg/viewer.js?v=10';
+  set_map_visible, set_camera_follow, set_camera_free, set_xray } from '/static/replay3d/pkg/viewer.js?v=11';
 
 const BASE = '/matches/{{ match_id }}/replay3d/';
 const MAP_ASSET = {{ (map_asset or "")|tojson }};
@@ -325,6 +325,8 @@ const MAP_V2 = {{ (map_v2 or "")|tojson }};
 const CS2_MODELS = {{ (cs2_models or false)|tojson }};
 const CS2_WEAPONS = {{ (cs2_weapons or false)|tojson }};
 const CS2_VIEWMODEL = {{ (cs2_viewmodel or false)|tojson }};
+const CS2_FX = {{ (cs2_fx or false)|tojson }};
+const SPACE_ASSET = {{ (space_asset or "")|tojson }};
 const CS2_SOUNDS = {{ (cs2_sounds or false)|tojson }};
 const HUD_ICONS = {{ (hud_icons or false)|tojson }};
 // UNCOMPRESSED sizes injected by the server (progress denominators; the
@@ -932,7 +934,7 @@ async function main(){
   // compiler (init accepts a Promise<Response>), the map's bytes wait for Bevy
   // (handMapToBevy), and the manifest rides along.
   const wasmReady = init({ module_or_path:
-    fetchWithProgress('/static/replay3d/pkg/viewer_bg.wasm?v=10', WASM_SIZE, barSetter('barWasm','pctWasm')) });
+    fetchWithProgress('/static/replay3d/pkg/viewer_bg.wasm?v=11', WASM_SIZE, barSetter('barWasm','pctWasm')) });
   const mapFile = USE_MAP_V2 ? MAP_V2 : MAP_ASSET;
   const mapWarm = mapFile
     ? fetchWithProgress('/static/replay3d/assets/'+mapFile, USE_MAP_V2 ? MAP_V2_SIZE : MAP_SIZE, barSetter('barMap','pctMap'))
@@ -951,9 +953,10 @@ async function main(){
   await wasmReady;
   if (mapFile) handMapToBevy('/static/replay3d/assets/'+mapFile, await mapWarm);
   await modelsWarm;
-  run('#canvas', '/static/replay3d/assets', CS2_MODELS, CS2_WEAPONS, CS2_VIEWMODEL);
+  run('#canvas', '/static/replay3d/assets', CS2_MODELS, CS2_WEAPONS, CS2_VIEWMODEL, CS2_FX);
   MANIFEST = JSON.parse(await manifestReq);
   if (MAP_ASSET) MANIFEST.mapAsset = MAP_ASSET;
+  if (SPACE_ASSET) MANIFEST.spaceAsset = SPACE_ASSET;
   if (USE_MAP_V2) MANIFEST.mapV2 = MAP_V2;
 
   // deep links: ?round=<1-based>&t=<seconds> (seek + pause) &flash=<player name>

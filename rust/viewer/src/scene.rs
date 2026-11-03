@@ -100,8 +100,15 @@ pub fn parse_manifest(json: &str) -> Result<ManifestData, String> {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
     let kills = crate::player_actions::parse_kills(&v);
+    let space_asset = v
+        .get("spaceAsset")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     Ok(ManifestData {
         kills,
+        bombs: parse_bombs(&v),
+        space_asset,
         scene_scale,
         cal,
         team_colors,
@@ -111,6 +118,30 @@ pub fn parse_manifest(json: &str) -> Result<ManifestData, String> {
         map_asset,
         map_v2,
     })
+}
+
+/// `manifest.rounds[].bomb`, by round number. A round without a plant has none.
+pub fn parse_bombs(manifest: &Value) -> HashMap<i64, crate::state::BombFact> {
+    let mut out = HashMap::new();
+    for round in manifest.get("rounds").and_then(Value::as_array).into_iter().flatten() {
+        let (Some(number), Some(bomb)) = (round.get("n").and_then(Value::as_i64), round.get("bomb")) else {
+            continue;
+        };
+        let Some(plant) = bomb.get("plant").and_then(Value::as_f64) else { continue };
+        let pos = bomb.get("pos").and_then(Value::as_array).and_then(|p| {
+            Some([p.first()?.as_f64()?, p.get(1)?.as_f64()?, p.get(2)?.as_f64()?])
+        });
+        out.insert(
+            number,
+            crate::state::BombFact {
+                plant,
+                pos,
+                defused: bomb.get("defused").and_then(Value::as_f64),
+                exploded: bomb.get("exploded").and_then(Value::as_f64),
+            },
+        );
+    }
+    out
 }
 
 /// Build the static greybox: radar ground plane, elevation planes, perimeter walls.

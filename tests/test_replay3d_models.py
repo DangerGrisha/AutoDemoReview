@@ -85,7 +85,7 @@ def test_any_other_flag_value_leaves_them_on():
 def test_the_page_passes_the_choice_to_the_viewer():
     assert "const CS2_MODELS = true;" in _render(True)
     assert "const CS2_MODELS = false;" in _render(False)
-    assert "run('#canvas', '/static/replay3d/assets', CS2_MODELS, CS2_WEAPONS, CS2_VIEWMODEL)" in _render(True)
+    assert "run('#canvas', '/static/replay3d/assets', CS2_MODELS, CS2_WEAPONS, CS2_VIEWMODEL, CS2_FX)" in _render(True)
 
 
 def test_first_person_needs_both_sides_arms_and_the_weapons():

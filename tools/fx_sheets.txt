@@ -1,0 +1,21 @@
+# The effect textures the 3D replay takes from CS2, one atlas each.
+# Read by tools/prepare_fx.py, which builds them, and by rust/viewer/src/fx.rs, which
+# finds a frame in them, so both work the layout out the same way: the frames of every
+# sequence one after another, 8 to a row, `cell` pixels square.
+#
+# name      texture in pak01_dir.vpk (no extension; several single pictures joined with +)                                      sequences  frames  cell
+# A grenade's smoke, the sheet CS2's own voxel smoke draws with.
+smoke       materials/particle/smoke/smokeburst/smokeloop_i_0_sc_hardedge                  0          32      128
+# The fireball of an HE, the C4 and a molotov bursting.
+fireball    materials/particle/fire_gas/fire_gas_batch_a_v2                                0,1,2      16      128
+# The smoke an explosion leaves.
+blast_smoke materials/particle/explosion_fireballs/smoke/explosion_fireball_01_smoke       0,1,2      16      128
+# A molotov's flames on the floor.
+fire        materials/particle/fire_small_sim/fire_small_sim_b                             0,1,2,3    16      128
+# A hit on a player.
+blood       materials/particle/fluids/blood/blood_spray_top                                0,1,2      16      64
+# A bullet into a wall, and the haze over a fire.
+dust        materials/particle/smoke/static/static_smoke                                   0,1,2,3,4  1       128
+# Single pictures, one frame each, in this order: two muzzle flashes, a white glow for a
+# flashbang and an orange one for a shot or the bomb's light.
+glow        materials/effects/muzzleflash1_color_tga_b013e2bc+materials/effects/muzzleflash3_color_tga_98b9c972+materials/particle/particle_flares/particle_flare_001+materials/particle/particle_flares/particle_flare_004  -  1  256

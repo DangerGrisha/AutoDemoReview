@@ -5,12 +5,16 @@
 //! JS <-> WASM control interface documentation.
 
 mod coords;
+mod effects;
+mod world_items;
+mod fx;
 mod map_material;
 mod orbit;
 mod player_actions;
 mod player_anim;
 mod player_rig;
 mod scene;
+mod space;
 mod state;
 mod textured_map;
 mod util;
@@ -46,8 +50,16 @@ use util::{tracer_frame, util_frame, UtilKind};
 /// those (never committed) files exist, because a missing model means no players at all.
 /// `cs2_weapons` does the same for the guns, where a missing file only means a simple
 /// box in its place, and a 404 in the console that the page would rather not cause.
+/// `cs2_fx` asks for the effect atlases, without which smoke and fire stay simple shapes.
 #[wasm_bindgen]
-pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Option<bool>, cs2_weapons: Option<bool>, cs2_viewmodel: Option<bool>) {
+pub fn run(
+    canvas_selector: String,
+    asset_root: Option<String>,
+    cs2_models: Option<bool>,
+    cs2_weapons: Option<bool>,
+    cs2_viewmodel: Option<bool>,
+    cs2_fx: Option<bool>,
+) {
     console_error_panic_hook::set_once();
     App::new()
         .insert_resource(ClearColor(util::hex_color("#0b0e14")))
@@ -55,6 +67,9 @@ pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Opti
         .insert_resource(scene::UseCs2Models(cs2_models.unwrap_or(false)))
         .insert_resource(weapons_viz::RealWeapons::new(cs2_weapons.unwrap_or(false)))
         .insert_resource(viewmodel::FpState::new(cs2_viewmodel.unwrap_or(false)))
+        .insert_resource(fx::UseCs2Fx(cs2_fx.unwrap_or(false)))
+        .init_resource::<space::MapSpace>()
+        .init_resource::<effects::FxCache>()
         .insert_resource(orbit::OrbitCam::default())
         .insert_resource(LabelsOut::default())
         .insert_resource(PlayerPoses::default())
@@ -78,12 +93,15 @@ pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Opti
                 }),
         )
         .add_plugins(map_material::MapMaterialPlugin)
+        .add_plugins(fx::FxPlugin)
+        .init_asset::<space::SpaceAsset>()
+        .init_asset_loader::<space::SpaceLoader>()
         .init_asset::<textured_map::MapGeo>()
         .init_asset_loader::<textured_map::MapGeoLoader>()
         .init_gizmo_group::<TracerGizmos>()
         .add_systems(
             Startup,
-            (setup, scene::setup_player_model, setup_tracer_gizmos, weapons_viz::setup_weapon_assets),
+            (setup, scene::setup_player_model, setup_tracer_gizmos, weapons_viz::setup_weapon_assets, fx::setup_fx),
         )
         .add_systems(
             Update,
@@ -117,6 +135,9 @@ pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Opti
                 fade_team_colour,
                 weapons_viz::finish_real_weapons,
                 weapons_viz::update_weapon_mounts,
+                weapons_viz::mark_held_shadows,
+                world_items::update_world_items,
+                world_items::update_shells,
                 viewmodel::setup_fp_rig,
                 viewmodel::drive_first_person.after(viewmodel::setup_fp_rig).before(weapons_viz::update_viewmodel),
                 weapons_viz::update_viewmodel,
@@ -125,6 +146,15 @@ pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Opti
                 textured_map::sky_follow_camera.after(spectator_camera),
                 textured_map::light_players_like_the_map,
             ),
+        )
+        // after everything that pushes sprites, and after the cameras moved
+        .add_systems(
+            Update,
+            (fx::track_fx, effects::draw_utility, effects::draw_hits, effects::draw_round_bomb, fx::flush_fx)
+                .chain()
+                .after(draw_tracers)
+                .after(viewmodel::sync_fp_view)
+                .after(spectator_camera),
         )
         // on top of the clips' pose and before it reaches the skinned mesh
         .add_systems(
@@ -205,6 +235,18 @@ pub fn set_camera_look(x: f32, y: f32, z: f32, pitch: f32, yaw: f32) {
 pub fn set_xray(on: bool) {
     push_control(ControlMsg::SetXray(on));
 }
+
+/// Whether players cast shadows from the sun on the textured map. On by default.
+pub static PLAYER_SHADOWS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Turn the players' sun shadows on or off, for a slow GPU or to measure what they cost.
+#[wasm_bindgen]
+pub fn set_player_shadows(on: bool) {
+    PLAYER_SHADOWS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How far from the camera players' shadows reach, in scene units: 1200 Source units.
+const PLAYER_SHADOW_REACH: f32 = 24.0;
 
 // ---------------------------------------------------------------------------
 // WASM -> JS per-frame report. Flat f32 payload (see index.html for the layout):
@@ -347,6 +389,15 @@ fn setup(mut commands: Commands) {
             illuminance: DEFAULT_SUN,
             ..default()
         },
+        // WebGL2 has one cascade; this keeps its texels small where players are looked at
+        bevy::light::CascadeShadowConfigBuilder {
+            num_cascades: 1,
+            minimum_distance: 0.1,
+            first_cascade_far_bound: PLAYER_SHADOW_REACH,
+            maximum_distance: PLAYER_SHADOW_REACH,
+            ..default()
+        }
+        .build(),
         Transform::from_xyz(40.0, 80.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
         // lights reach a camera only by a shared layer
         RenderLayers::from_layers(&[0, viewmodel::FP_LAYER]),
@@ -385,6 +436,7 @@ fn drain_controls(
     mut q_xray_cam: Query<&mut Camera, With<XrayCam>>,
     mut real_weapons: ResMut<weapons_viz::RealWeapons>,
     formats: Option<Res<bevy::image::CompressedImageFormatSupport>>,
+    mut map_space: ResMut<space::MapSpace>,
 ) {
     let msgs: Vec<ControlMsg> = std::mem::take(&mut *QUEUE.lock().unwrap());
     for msg in msgs {
@@ -404,6 +456,7 @@ fn drain_controls(
                     for mut amb in &mut q_ambient {
                         amb.brightness = if show_map { AMBIENT_MAP } else { AMBIENT_GREYBOX };
                     }
+                    map_space.0 = m.space_asset.clone().map(|path| asset_server.load(path));
                     orbit_cam.target = center;
                     orbit_cam.yaw = 0.0;
                     orbit_cam.pitch = std::f32::consts::FRAC_PI_4;
@@ -636,8 +689,10 @@ fn update_utility(
     mut q_tf: Query<&mut Transform>,
     mut q_vis: Query<&mut Visibility>,
     mut gizmos: Gizmos,
+    fx_assets: Res<fx::FxAssets>,
 ) {
     tracers_out.0.clear();
+    let fancy = fx_assets.ready();
     let Some(r) = viewer.round.as_ref() else {
         return;
     };
@@ -676,6 +731,26 @@ fn update_utility(
         }
         let frame = util_frame(item, s);
         let p = frame.p;
+        // effects.rs draws these with CS2's textures
+        if fancy {
+            match &item.kind {
+                UtilKind::Smoke { puffs, .. } => puffs.iter().for_each(|&e| set_vis(&mut q_vis, e, false)),
+                UtilKind::Molotov { disc, flames } => {
+                    set_vis(&mut q_vis, *disc, false);
+                    flames.iter().for_each(|&e| set_vis(&mut q_vis, e, false));
+                }
+                UtilKind::Burst { mesh, ring, .. } => {
+                    set_vis(&mut q_vis, *mesh, false);
+                    if let Some(re) = ring {
+                        set_vis(&mut q_vis, *re, false);
+                    }
+                }
+                UtilKind::Decoy { .. } => {}
+            }
+            if !matches!(item.kind, UtilKind::Decoy { .. }) {
+                continue;
+            }
+        }
         match &item.kind {
             UtilKind::Smoke { puffs, grow } => {
                 if !frame.in_window {
@@ -991,8 +1066,18 @@ const FLASH_VIEW_SHARE: f32 = 0.011;
 const TRACER_LIFE: f64 = 0.20;
 /// Length of the bright dash trailing the head, as a fraction of the beam length.
 const TRACER_STREAK_FRAC: f32 = 0.42;
-/// Tracer gizmo line width (pixels) — chunkier than the thin map grid so shots pop.
-const TRACER_WIDTH: f32 = 3.5;
+/// Tracer gizmo line width (pixels): thin, as CS2 draws them.
+const TRACER_WIDTH: f32 = 1.6;
+/// Tracers are the colour of a hot bullet, whoever fired it.
+const TRACER_COLOR: Color = Color::srgb(1.0, 0.86, 0.55);
+/// How far in front of a hit surface a bullet's dust sits, in Hammer units: out of the wall.
+const IMPACT_BACK: f32 = 2.0;
+/// The world muzzle flash, in Hammer units, and its least share of the camera distance so
+/// it still shows from the overview.
+const MUZZLE_FLASH_SIZE: f32 = 7.0;
+const MUZZLE_FLASH_VIEW_SHARE: f32 = 0.006;
+/// The first-person flash, as a share of its distance from the camera.
+const FP_MUZZLE_FLASH_SHARE: f32 = 0.3;
 
 /// Dedicated gizmo group for shot tracers, so their line width / depth bias are set
 /// independently of the thin default-group gizmos (map grid, grenade throw arcs).
@@ -1022,6 +1107,16 @@ fn build_shots(dec: &c2r3::DecodedRound, m: &crate::state::ManifestData) -> Vec<
     if n == 0 || rate <= 0.0 {
         return Vec::new();
     }
+    // (sample, attacker, victim) of each hit on a player: those bullets end at the player
+    let hits: Vec<(f64, usize, usize)> = dec
+        .header
+        .get("events")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|e| e.get("k").and_then(|k| k.as_str()) == Some("hurt"))
+        .filter_map(|e| Some((e.get("s")?.as_f64()?, e.get("a")?.as_u64()? as usize, e.get("p")?.as_u64()? as usize)))
+        .collect();
     let mut out = Vec::with_capacity(arr.len());
     for sh in arr {
         let (Some(s), Some(p)) = (
@@ -1057,26 +1152,23 @@ fn build_shots(dec: &c2r3::DecodedRound, m: &crate::state::ManifestData) -> Vec<
         let (sp, cp) = pitch.sin_cos();
         let fwd = Vec3::new(cp * cy, -sp, -cp * sy);
         let b = a + fwd * (TRACER_LEN_WU * s_scale as f32);
-        // bright, team-tinted tracer (lifted toward warm white so it reads as fire)
-        let team = dec.players.get(slot).map(|pl| pl.team).unwrap_or(0);
-        let base = m.team_colors.get(&team).copied().unwrap_or(Color::srgb(1.0, 0.82, 0.35));
-        let l = base.to_linear();
-        let color = Color::LinearRgba(LinearRgba::rgb(
-            (l.red * 0.55 + 0.45).min(1.0),
-            (l.green * 0.55 + 0.45).min(1.0),
-            (l.blue * 0.55 + 0.30).min(1.0),
-        ));
-        out.push(ShotViz { t: s / rate, slot, a, b, color });
+        let hit = hits
+            .iter()
+            .find(|&&(hs, attacker, _)| attacker == slot && hs >= s - 1.0 && hs <= s + rate * 0.05)
+            .map(|&(_, _, victim)| victim);
+        out.push(ShotViz { t: s / rate, slot, a, b, color: TRACER_COLOR, hit });
     }
     out
 }
 
 /// Draw each shot as a travelling tracer streak: a hot-headed dash that flies out
 /// from the muzzle along the aim (crossing the beam in `TRACER_TRAVEL`) and then
-/// fades out by `TRACER_LIFE`, plus a brief muzzle flash at the origin. Keyed to the
-/// playback clock, so scrubbing lands on the right tracers and slo-mo stretches the
-/// streak. Rendered on the dedicated `TracerGizmos` group (thicker than the map grid).
-/// A held real weapon gives the true muzzle as the start; the far end stays on the aim.
+/// fades out by `TRACER_LIFE`. Keyed to the playback clock, so scrubbing lands on the
+/// right tracers and slo-mo stretches the streak. A held real weapon gives the true muzzle
+/// as the start. The far end is the player the bullet hit, or the first wall on the map's
+/// grid, or the full beam without one. With the effect atlases the muzzle flashes and the
+/// bullet throws up dust where it lands.
+#[allow(clippy::too_many_arguments)]
 fn draw_tracers(
     viewer: Res<Viewer>,
     real_weapons: Res<weapons_viz::RealWeapons>,
@@ -1086,22 +1178,31 @@ fn draw_tracers(
     real_arms: Res<viewmodel::FpState>,
     q_tf: Query<&GlobalTransform>,
     mut gizmos: Gizmos<TracerGizmos>,
+    fx_assets: Res<fx::FxAssets>,
+    mut fx_frame: ResMut<fx::FxFrame>,
+    spaces: Res<Assets<space::SpaceAsset>>,
+    map_space: Res<space::MapSpace>,
+    map_light: Option<Res<textured_map::MapLight>>,
 ) {
-    let Some(r) = viewer.round.as_ref() else {
+    let (Some(r), Some(m)) = (viewer.round.as_ref(), viewer.manifest.as_ref()) else {
         return;
     };
+    let scale = m.scene_scale as f32;
     let cam_tf = q_cam.single().ok();
     let cam = cam_tf.map_or(Vec3::ZERO, |c| c.translation());
     let clock = viewer.clock;
-    // hot muzzle-white: the bright core of every tracer, whatever the team tint.
+    let fancy = fx_assets.ready();
+    let space = map_space.get(&spaces);
+    let light = map_light.as_deref().filter(|_| viewer.show_map);
+    let life = if fancy { TRACER_LIFE.max(effects::IMPACT_LIFE_S) } else { TRACER_LIFE };
+    // hot muzzle-white: the bright core of every tracer
     let head_col = Color::srgb(1.0, 0.95, 0.80);
-    for sh in &r.shots {
+    for (index, sh) in r.shots.iter().enumerate() {
         let dt = clock - sh.t;
-        if !(0.0..=TRACER_LIFE).contains(&dt) {
+        if !(0.0..=life).contains(&dt) {
             continue;
         }
-        // in the shooter's OWN first-person view the shot leaves the viewmodel, and no
-        // muzzle flash: it is glued to the camera and would smear across the screen.
+        // in the shooter's OWN first-person view the shot leaves the viewmodel
         let own_fp = matches!(
             viewer.cam_mode,
             CamMode::Follow { slot, first_person: true } if slot == sh.slot
@@ -1117,36 +1218,82 @@ fn draw_tracers(
                 .and_then(|(mount, at)| real_weapons.muzzle_world(mount.current, at))
         };
         let a = muzzle.unwrap_or(sh.a);
-        let seg = sh.b - a;
-        let len = seg.length();
-        if len < 1e-4 {
+        // where the bullet stops, measured along the aim from the eye
+        let beam = sh.b - sh.a;
+        let reach = beam.length();
+        if reach < 1e-4 {
             continue;
         }
-        let dir = seg / len;
-        // head races along the beam over TRACER_TRAVEL, then holds at the far end
-        let head_d = (dt / TRACER_TRAVEL).min(1.0) as f32 * len;
-        // trailing dash grows from the muzzle, then rides at a fixed length behind the head
-        let streak = (TRACER_STREAK_FRAC * len).min(head_d);
-        let tail_d = head_d - streak;
-        // full brightness while travelling, then fade to nothing over the remainder
-        let fade = if dt <= TRACER_TRAVEL {
-            1.0
-        } else {
-            (1.0 - (dt - TRACER_TRAVEL) / (TRACER_LIFE - TRACER_TRAVEL)).clamp(0.0, 1.0) as f32
-        };
-        // dim team-tinted trail -> hot white head
-        gizmos.line_gradient(
-            a + dir * tail_d,
-            a + dir * head_d,
-            sh.color.with_alpha(fade * 0.12),
-            head_col.with_alpha(fade),
-        );
-        // muzzle flash pop
-        if !own_fp && dt < 0.05 {
-            let flash = (1.0 - dt / 0.05) as f32;
-            gizmos
-                .sphere(Isometry3d::from_translation(a), FLASH_VIEW_SHARE * cam.distance(a), head_col.with_alpha(flash))
-                .resolution(8);
+        let aim = beam / reach;
+        let mut stop = reach;
+        let mut landed = false;
+        if let Some(victim) = sh.hit {
+            if let Some((feet, crouch)) = effects::feet_at(r, victim, sh.t * r.rate) {
+                let chest = (feet + Vec3::Y * if crouch { 34.0 } else { 48.0 }) * scale;
+                let d = (chest - sh.a).dot(aim);
+                if d > 0.0 {
+                    stop = d.min(reach);
+                }
+            }
+        } else if let Some(d) = space.and_then(|g| g.ray(sh.a / scale, aim, reach / scale, 24.0)) {
+            stop = d * scale;
+            landed = true;
+        }
+        let end = sh.a + aim * stop;
+
+        if dt <= TRACER_LIFE {
+            let seg = end - a;
+            let len = seg.length();
+            if len > 1e-4 {
+                let dir = seg / len;
+                // head races along the beam over TRACER_TRAVEL, then holds at the far end
+                let head_d = (dt / TRACER_TRAVEL).min(1.0) as f32 * len;
+                // trailing dash grows from the muzzle, then rides at a fixed length behind the head
+                let streak = (TRACER_STREAK_FRAC * len).min(head_d);
+                let tail_d = head_d - streak;
+                let fade = if dt <= TRACER_TRAVEL {
+                    1.0
+                } else {
+                    (1.0 - (dt - TRACER_TRAVEL) / (TRACER_LIFE - TRACER_TRAVEL)).clamp(0.0, 1.0) as f32
+                };
+                gizmos.line_gradient(
+                    a + dir * tail_d,
+                    a + dir * head_d,
+                    sh.color.with_alpha(fade * 0.1),
+                    head_col.with_alpha(fade * 0.85),
+                );
+            }
+        }
+
+        if !fancy {
+            // the simple muzzle flash: a wire ball
+            if !own_fp && dt < 0.05 {
+                let flash = (1.0 - dt / 0.05) as f32;
+                gizmos
+                    .sphere(Isometry3d::from_translation(a), FLASH_VIEW_SHARE * cam.distance(a), head_col.with_alpha(flash))
+                    .resolution(8);
+            }
+            continue;
+        }
+        let shot = index as u32;
+        // dust once the bullet has got there
+        let arrive = TRACER_TRAVEL * f64::from(stop / reach);
+        if landed && dt >= arrive {
+            let at = end - aim * IMPACT_BACK * scale;
+            let lit = light.map_or(Vec3::splat(effects::PLAIN_MAP_LIGHT), |l| l.on_screen(at / scale));
+            effects::push_impact(&mut fx_frame, &fx_assets, at, scale, dt - arrive, shot, lit);
+        }
+        if dt < effects::MUZZLE_LIFE_S {
+            if own_fp {
+                if let (Some(at), Some(c)) = (real_arms.muzzle_in_hands(&real_weapons, &q_tf), cam_tf) {
+                    let size = FP_MUZZLE_FLASH_SHARE * c.translation().distance(at);
+                    let ahead = (at - c.translation()).normalize_or_zero() * size * 0.5;
+                    effects::push_muzzle_flash(&mut fx_frame, &fx_assets, at + ahead, size, dt, shot, true);
+                }
+            } else {
+                let size = (MUZZLE_FLASH_SIZE * scale).max(MUZZLE_FLASH_VIEW_SHARE * cam.distance(a));
+                effects::push_muzzle_flash(&mut fx_frame, &fx_assets, a + aim * size * 0.6, size, dt, shot, false);
+            }
         }
     }
 }

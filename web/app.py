@@ -61,13 +61,14 @@ class CompressedStaticFiles(StaticFiles):
     Bevy's own fetch of the same URL becomes a deterministic disk-cache hit).
     """
 
-    COMPRESSIBLE_EXTS = {".wasm", ".glb", ".js", ".3dr", ".c2map", ".ktx2"}
+    COMPRESSIBLE_EXTS = {".wasm", ".glb", ".js", ".3dr", ".c2map", ".ktx2", ".c2space"}
     MEDIA_TYPES = {
         ".wasm": "application/wasm",
         ".glb": "model/gltf-binary",
         ".js": "text/javascript",
         ".3dr": "application/octet-stream",
         ".c2map": "application/octet-stream",
+        ".c2space": "application/octet-stream",
         ".ktx2": "image/ktx2",
     }
 
@@ -433,6 +434,8 @@ def match_replay3d(request: Request, match_id: int):
         "cs2_models": replay3d.cs2_models_enabled(),
         "cs2_weapons": replay3d.cs2_weapons_enabled(),
         "cs2_viewmodel": replay3d.cs2_viewmodel_enabled(),
+        "cs2_fx": replay3d.cs2_fx_enabled(),
+        "space_asset": replay3d.space_rel(row["map_name"]),
         "cs2_sounds": replay3d.cs2_sounds_enabled(),
         "hud_icons": replay3d.hud_icons_enabled(),
         "wasm_size": wasm_size,

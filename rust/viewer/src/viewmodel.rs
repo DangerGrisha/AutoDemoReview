@@ -464,6 +464,18 @@ impl FpState {
         });
     }
 
+    /// The muzzle of the gun in the hands, where the first-person camera draws it.
+    pub fn muzzle_in_hands(&self, real: &RealWeapons, q_tf: &Query<&GlobalTransform>) -> Option<Vec3> {
+        if !self.active {
+            return None;
+        }
+        let ArmsState::Spawned(rig) = &self.arms[self.active_side] else {
+            return None;
+        };
+        let muzzle = real.muzzle_of(rig.weapon?)?;
+        Some(q_tf.get(rig.wpn?).ok()?.transform_point(muzzle))
+    }
+
     /// Where the shot leaves the gun, in the world, at the spot on screen where the muzzle shows.
     /// The gun is drawn with its own field of view, so its real place in the world is elsewhere.
     pub fn muzzle_on_screen(
@@ -601,7 +613,7 @@ pub fn setup_fp_rig(
     for (e, material) in &q_new_meshes {
         let Some(side) = side_of_entity(e) else { continue };
         let ArmsState::Spawned(rig) = &mut state.arms[side] else { continue };
-        commands.entity(e).insert((RenderLayers::layer(FP_LAYER), NoFrustumCulling));
+        commands.entity(e).insert((RenderLayers::layer(FP_LAYER), NoFrustumCulling, bevy::light::NotShadowCaster));
         rig.material = Some(material.0.clone());
     }
 }
@@ -631,6 +643,7 @@ fn spawn_weapon(commands: &mut Commands, rig: &mut Rig, weapon: &VmWeapon, mater
                 Transform::IDENTITY,
                 WeaponPart,
                 RenderLayers::layer(FP_LAYER),
+                bevy::light::NotShadowCaster,
                 ChildOf(id),
             ));
         }
