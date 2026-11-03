@@ -432,6 +432,7 @@ def match_replay3d(request: Request, match_id: int):
         "map_v2_size": map_v2_size,
         "cs2_models": replay3d.cs2_models_enabled(),
         "cs2_weapons": replay3d.cs2_weapons_enabled(),
+        "cs2_viewmodel": replay3d.cs2_viewmodel_enabled(),
         "cs2_sounds": replay3d.cs2_sounds_enabled(),
         "hud_icons": replay3d.hud_icons_enabled(),
         "wasm_size": wasm_size,

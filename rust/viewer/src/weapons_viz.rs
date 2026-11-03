@@ -159,7 +159,7 @@ impl RealWeapons {
         RealWeapons { files, ..default() }
     }
 
-    fn file_for(&self, tag: &str, team: i64) -> Option<&'static str> {
+    pub(crate) fn file_for(&self, tag: &str, team: i64) -> Option<&'static str> {
         self.files.get(list_tag(tag, team)).copied()
     }
 
@@ -193,8 +193,18 @@ impl RealWeapons {
         }
     }
 
-    fn ready_file(&self, tag: &str, team: i64) -> Option<&'static str> {
+    pub(crate) fn ready_file(&self, tag: &str, team: i64) -> Option<&'static str> {
         self.file_for(tag, team).filter(|file| self.ready(file).is_some())
+    }
+
+    /// The material a ready model has: its first-person rig has the same UVs.
+    pub(crate) fn material_of(&self, file: &str) -> Option<Handle<StandardMaterial>> {
+        self.ready(file).map(|model| model.material.clone())
+    }
+
+    /// A ready model's muzzle in its own frame, which is the `wpn` bone's.
+    pub(crate) fn muzzle_of(&self, file: &str) -> Option<Vec3> {
+        self.ready(file)?.muzzle
     }
 
     /// A held model's muzzle in world space, given where its mount is. None for a kit,
@@ -521,10 +531,13 @@ pub fn update_viewmodel(
     viewer: Res<Viewer>,
     assets: Option<Res<WeaponAssets>>,
     real: Res<RealWeapons>,
+    real_arms: Res<crate::viewmodel::FpState>,
     mut q_vm: Query<(Entity, &mut ViewModel, &mut Transform, &mut Visibility, Option<&Children>)>,
 ) {
     let Some(assets) = assets else { return };
     let fp_slot = match viewer.cam_mode {
+        // the real arms and weapon are up, or a scope covers the screen
+        _ if real_arms.active || real_arms.scope_overlay => None,
         CamMode::Follow { slot, first_person: true } => Some(slot),
         _ => None,
     };

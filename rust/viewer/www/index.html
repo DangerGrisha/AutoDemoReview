@@ -338,6 +338,7 @@ const killMods = k => { const m=[]; if(k.w)m.push(k.w); if(k.hs)m.push('HS');
   if(k.ns)m.push('noscope'); return m.length ? '  ['+m.join(' · ')+']' : ''; };
 const teamCol = t => t===3 ? 'var(--ct)' : t===2 ? 'var(--t)' : '#9aa4b2';
 const hpCol   = hp => hp>66 ? 'var(--good)' : hp>33 ? 'var(--warn)' : 'var(--bad)';
+const HDR = 7;                                       // floats before the players in the frame payload
 const PSTRIDE = 10;                                  // per-player floats in the frame payload
 const SFX = window.ReplaySfx || null;                // audio (sfx.js)
 
@@ -460,7 +461,7 @@ function drawRadar(d,nP){
     ctx.fillStyle='rgba(8,10,16,.32)'; ctx.fillRect(0,0,W,W); }
   else { ctx.fillStyle='#0c101a'; ctx.fillRect(0,0,W,W); }
   for(let i=0;i<nP;i++){
-    const o=6+i*PSTRIDE;
+    const o=HDR+i*PSTRIDE;
     if(d[o+9]<0.5) continue;                       // not in this round
     const alive=d[o+3]>0.5;
     const px=(d[o+6]-cal.pos_x)*k, py=(cal.pos_y-d[o+7])*k;
@@ -703,7 +704,7 @@ window.__replayFrame = (d) => {
   const W=innerWidth, H=innerHeight;
   const wtab=(state&&state.header&&state.header.weaponTable)||[];
   for (let i=0;i<playerLabels.length;i++){
-    const el=playerLabels[i], o=6+i*PSTRIDE;
+    const el=playerLabels[i], o=HDR+i*PSTRIDE;
     const onScreen = i<nP && d[o+2]>0.5;
     const alive    = i<nP && d[o+3]>0.5;
     const hp=d[o+4]|0, wn=wtab[d[o+5]|0]||'';
@@ -755,7 +756,7 @@ window.__replayFrame = (d) => {
 
   const seen=new Set();
   for (let k=0;k<nT;k++){
-    const off=6+nP*PSTRIDE+k*4, idx=d[off]|0, op=d[off+3];
+    const off=HDR+nP*PSTRIDE+k*4, idx=d[off]|0, op=d[off+3];
     const el=tracerLabel(idx); seen.add(idx);
     el.style.display = op>0.06 ? 'block' : 'none';
     el.style.opacity = op.toFixed(2);

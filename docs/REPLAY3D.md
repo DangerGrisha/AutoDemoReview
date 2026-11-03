@@ -542,7 +542,8 @@ Besides the free orbit cam, the viewer can lock onto any player and watch from
 their POV, like a CS2 demo. Pick a player in the right-side panel (or **1–0**),
 **←/→** cycles through living players, **X** toggles first-/third-person, **F**
 (or Esc) returns to free cam. First-person shows a crosshair and hides the
-followed player's own model + nametag.
+followed player's own model + nametag, and is drawn as the section "First person"
+says.
 
 - **Rust (`viewer`):** `Viewer.cam_mode: CamMode::{Free, Follow{slot, first_person}}`
   (state.rs), driven from JS via the `set_camera_follow(slot, first_person)` /
@@ -556,6 +557,7 @@ followed player's own model + nametag.
 - **Empirical constants** (scene.rs / lib.rs, verify by eye, one-liners each):
   `EYE_STAND=64` / `EYE_CROUCH=46` (Source view offsets, world units),
   `PITCH_SIGN` (Source is +pitch = down; flip if a demo reads inverted),
+  `CROUCH_S=0.2` (the eye moves between the two, worked out from the flag's history),
   `CHASE_DIST=135` / `CHASE_UP=35` (third-person framing). The horizontal aim
   reuses the same yaw the player models use, so it tracks the model calibration.
 - **Per-frame payload** is **10 floats/player** — `{x, y, onScreen, alive,
@@ -564,10 +566,11 @@ followed player's own model + nametag.
   the spectator panel shows every player's true state (not just those on
   screen). `worldX/worldY/yawDeg` are RAW demo-world values (pre scene-scale)
   for the page's live radar — dead players hold their frozen death coords,
-  `present=0` means "not in this round, draw nothing". Tracer records follow at
-  `6 + nPlayers*PSTRIDE`. Both the wasm writer (`report_frame`) and the two HTML
-  readers (`www/index.html`, `web/templates/replay3d.html`, `PSTRIDE` const)
-  share this layout — bump the prod page's `?v=` cache-buster on the pkg URLs
+  `present=0` means "not in this round, draw nothing". They come after a header of
+  7 floats, `{clock, duration, playing, flashOpacity, nPlayers, nTracers, scopeUp}`, and
+  tracer records follow at `HDR + nPlayers*PSTRIDE`. Both the wasm writer (`report_frame`)
+  and the two HTML readers (`www/index.html`, `web/templates/replay3d.html`, `HDR` and
+  `PSTRIDE` consts) share this layout — bump the prod page's `?v=` cache-buster on the pkg URLs
   whenever it changes (the static pkg is cached for 7 days).
 
 ## CS2-style HUD (score bar · live radar · kill feed)
@@ -640,10 +643,10 @@ All page-side (no new wasm scene work), in both HTMLs:
 land in `assets/models/cs2_v1/weapons/`, gitignored for the same reason as the
 player models below: 59 MB raw, 30 MB as Brotli, of which a round loads only the
 guns in its `weaponTable` (11 files in round 1 of the test match, 17 by round 13).
-They are static meshes: tracers start at their `muzzle_flash` point, and the
-first-person view holds the same model still until it gets real hands. Dual Berettas
-show one pistol. A file that fails to load falls back to the kit below, and
-`REPLAY3D_CS2_MODELS=0` turns the guns off along with the bodies.
+They are static meshes and tracers start at their `muzzle_flash` point. Dual Berettas
+show one pistol in a player's hands. A file that fails to load falls back to the kit
+below, and `REPLAY3D_CS2_MODELS=0` turns the guns off along with the bodies. First person
+has its own files, see the section "First person".
 
 **The fallback** is the procedural low-poly weapon kits (`viewer/src/weapons_viz.rs`) —
 no external assets, cuboids + a sphere in the same stylized look as the untextured map.
@@ -660,11 +663,86 @@ nothing rather than guessing.
   on layers `[0, x-ray]` like the player meshes, so held weapons show through
   walls too. `tint_players` explicitly skips `WeaponPart` meshes (guns stay
   gunmetal, not team-painted).
-- **First person:** a `ViewModel` anchor child of the main camera (bottom-right:
-  `VM_POS`/`VM_YAW`/`VM_SCALE`), filled with the followed player's current kit
-  only while spectating in 1st person — weapon swaps mid-round show up live.
+- **First person, when the real arms and rigs cannot show:** a `ViewModel` anchor child
+  of the main camera (bottom-right: `VM_POS`/`VM_YAW`/`VM_SCALE`), filled with the followed
+  player's current weapon. It stays hidden while `FpState.active` says the real ones are up.
 - Kits swap only when the weapon CLASS changes (cheap: compare + respawn a few
   cuboids). Dead players hold nothing, and absent ones show nothing (mount inherits the hidden body).
+
+## First person (the arms and a weapon that moves)
+
+```powershell
+.\tools\convert_viewmodel.ps1    # the clips and both sides' arms; about 2 minutes
+.\tools\convert_weapons.ps1      # each weapon's rig along with its model; about 8 minutes
+.\tools\build_replay3d.ps1       # precompresses them
+```
+
+`assets/models/cs2_v1/viewmodel/` is gitignored like the rest of `cs2_v1`. It holds
+`arms_t.glb` and `arms_ct.glb` (about 1.2 MB each) and one rig per weapon, built by
+`tools/prepare_viewmodel.py` from the list in `tools/viewmodel_clips.txt`, which was read off
+CS2's own animation graphs (`animation/graphs/viewmodel/viewmodel_gun.vnmgraph+<weapon>`).
+`rust/viewer/src/viewmodel.rs` asks for a rig the first time someone looks through the eyes
+of a player who will hold that weapon in the round, so a page that never goes first person
+downloads none of it. Any of it missing or broken leaves the still weapon from "Weapon
+models" in its place, and `REPLAY3D_CS2_MODELS=0` turns it off with the rest.
+
+**What it costs:** 46 files, 63 MB raw and 27 MB as Brotli, of which a visit loads the arms and
+the rigs of whoever it looks through. On de_mirage in a fight at 1920x1080 on an RTX 3070, three
+alternating pairs gave 87 FPS against 91 with the still weapon in first person, and 90-91 either
+way in third person.
+
+- **The arms are not `weapons/models/shared/arms/weapon_arms`.** That is the generic pair.
+  Each agent model holds its own `firstperson_default_gloves_arms` and `firstperson_sleeves`,
+  skinned to bones the first-person clips drive: their inverse bind matrices agree with
+  `weapon_arms` on all 68 shared bones. Only the forearm's `*_TWIST` bones are in the models and not in the
+  clips, so they follow their parents rigidly. If a wrist ever looks wrong, that is why.
+- **A clip holds two skeletons**, `viewmodel.vnmskel` (arms and `wpn`) and
+  `weapons/<weapon>.vnmskel` (bolt, magazine), as two scene roots. The second hangs from `wpn`
+  (`m_attachToBoneID`), so a weapon's file nests its bones that way. The weapon's root bone
+  stays at identity with no track, because the value on it is only the export's axis swap.
+- **Weapons are rigid**, so each bone gets a plain static mesh and there is no new shader
+  variant. Vertices go into the bone's frame through the skin's inverse bind matrix, since the
+  model's root sits somewhere else than the clip's. The rigs have no textures: their UVs land on
+  the third-person atlas, and the material is a copy of that one. Exporting the model with
+  `--gltf_export_animations --gltf_animation_list nothing_at_all` is what brings the skeleton.
+- **Bevy finds a bone by the path of names from the root.** The weapon's bones are spawned by
+  hand under the arms' `wpn` with `AnimationTargetId::from_names` and `AnimatedBy`, so a file's
+  node names are part of its format. The arms file needs a clip that moves nothing, because
+  Bevy only hands out targets to a file with an animation.
+- **One small graph per weapon**, swapped when the held weapon changes: Bevy walks every node
+  for every animated bone. Shots take turns on two nodes, one per hand on the Dual Berettas and
+  the same clip twice on any other gun, so a burst can crossfade from shot to shot.
+- **What is on is a function of time**, like the players' clips: only events since the last
+  weapon change count, firing ends a reload, and a pause or a scrub lands on the right pose.
+  A knife only swings when it hits, because the replay keeps gun shots only.
+- **Three cameras.** The arms have their own, `order: 2`, on `FP_LAYER` with its depth cleared,
+  so they never go through a wall. It must keep the main camera's `Msaa` and `Tonemapping` or
+  the first visit compiles new shaders. The sun needs that layer too, since Bevy filters lights
+  by layer, and `AmbientLight` is per camera, so it is copied over. Both materials get
+  `MapLight::at` where the player stands, as player bodies do.
+- **Field of view.** The world is 90 degrees at 4:3, which is 73.7 vertical, in first person
+  only; the rest stay at 55. The arms use `viewmodel_fov` 60 and offset (1, 1, -1), consts at the
+  top of `viewmodel.rs`. Web sources disagree on CS2's stock values, and 68 with (2.5, 0, -1.5) is
+  also common, so these are a choice. A tracer leaves the muzzle's spot on screen and not its
+  place in the world, because the gun is drawn at another angle (`muzzle_on_screen`).
+- **Scopes.** Field of view and whether the gun hides come from the game's
+  `scripts/weapons.vdata` (`m_nZoomFOV1`, `m_nZoomFOV2`, `m_bHideViewModelWhenZoomed`). `F_SCOPED`
+  says when, on old replays too. The second level needs the `zoom` events, so old replays stay at
+  the first. The page draws the scope itself, without any of the game's textures.
+- **Flash.** The channel holds one value per flash from the moment it lands and stays up 1.4
+  times as long as that value says (checked on match 1), so the time left comes from the value.
+  The curve is CS:GO's client as far as memory of it goes, so close and not known to be exact:
+  white while 3 s or more are left, then the square of the share of those 3 s. Only the player looked through flashes the screen.
+- **The gun's trail and sway** are the sums in Source's published `CalcViewModelLag` and
+  `CalcViewmodelBob`, worked out from the track. CS2's own numbers are not public.
+- **Numbers on screen.** Health is in every replay. Armour, money and the magazine come from the
+  header's `state` lists, so old replays show health alone. The demo gives no reserve ammo.
+- **Not like the game yet:** no muzzle flash or shells on the gun (Stage 6), no view kick since
+  `aim_punch_angle` does not read, no `reload_empty` or slide-locked poses, and one model per
+  gun, so the Dual Berettas are the one case where first person shows more than third person.
+  P2000, CZ75, R8, G3SG1, UMP-45, MP5-SD, XM1014, Sawed-Off, M249 and Negev are built, but nobody
+  holds one for long in the three local demos, so they have not been looked at. If a weapon's
+  own clip names ever change, `tools/viewmodel_clips.txt` is the place to fix them.
 
 ## Sound (real CS2 sounds, with a synth behind them; page-side)
 

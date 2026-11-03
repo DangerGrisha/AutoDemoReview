@@ -21,12 +21,12 @@ const ACTION_LIST: &str = include_str!("player_actions.txt");
 /// moment it leaves, so the clip starts this long before it. Read off the hand's path.
 const THROW_RELEASE_S: f32 = 0.30;
 /// A knife connects this far into a swing. Read off the hand's path.
-const KNIFE_HIT_S: f32 = 0.15;
+pub const KNIFE_HIT_S: f32 = 0.15;
 /// A draw or reload the player cuts short by firing ends here after it started at the soonest.
 const CUT_BY_SHOT_AFTER_S: f32 = 0.05;
 /// Moving this far from where a plant started means it was given up. `bomb_abortplant` does
 /// not reach the demos, so this is how a stopped plant shows.
-const PLANT_ABORT_UNITS: f64 = 16.0;
+pub const PLANT_ABORT_UNITS: f64 = 16.0;
 /// Shorter runs of the airborne flag are steps and stairs.
 const MIN_AIR_S: f32 = 0.1;
 /// Airborne this long before landing deserves a landing.
@@ -38,7 +38,7 @@ const JUMP_RISE_WINDOW_S: f64 = 0.1;
 const JUMP_STAND_SPEED: f64 = 60.0;
 /// The flash byte holds seconds * 50 (`flash_byte` in rust/extract), and how long a player is
 /// truly blind is less than it says. Shorter flashes do not raise the arm.
-const FLASH_BYTE_PER_S: f32 = 50.0;
+pub const FLASH_BYTE_PER_S: f32 = 50.0;
 const FLASH_MIN_BYTE: u8 = 50;
 const FLASH_POSE_SHARE: f32 = 0.8;
 /// How fast the aim comes out of the spine, for a death, a plant and a defuse.
@@ -497,6 +497,45 @@ fn death_at(
     Some(Death { t: src.seconds(i as f64), until, clip, drop })
 }
 
+/// When `slot` fired, in samples.
+pub fn shot_samples(dec: &DecodedRound, slot: usize) -> Vec<f64> {
+    dec.header
+        .get("shots")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|s| s.get("p").and_then(Value::as_u64) == Some(slot as u64))
+        .filter_map(|s| s.get("s")?.as_f64())
+        .collect()
+}
+
+/// When a knife swing of `slot`'s connected, in samples. The replay keeps gun shots only, so all
+/// that shows of a knife is the swings that hit: the `hurt` events on new replays, and the kills
+/// on old ones too.
+pub fn knife_hit_samples(dec: &DecodedRound, slot: usize, kills: &[KillFact]) -> Vec<f64> {
+    let hits_dealt = dec.header.get("events").and_then(Value::as_array).into_iter().flatten().filter_map(|e| {
+        let dealt = e.get("k").and_then(Value::as_str) == Some("hurt")
+            && e.get("a").and_then(Value::as_u64) == Some(slot as u64)
+            && e.get("w").and_then(Value::as_str) == Some("🔪");
+        if dealt { e.get("s")?.as_f64() } else { None }
+    });
+    let name = dec.players.get(slot).map(|p| p.name.as_str());
+    let kills_dealt = kills.iter().filter(|k| Some(k.attacker.as_str()) == name && k.weapon == "🔪").map(|k| k.sample as f64);
+    hits_dealt.chain(kills_dealt).collect()
+}
+
+/// When a grenade of `slot`'s left the hand, in samples. Only the utility list says.
+pub fn throw_samples(dec: &DecodedRound, slot: usize) -> Vec<f64> {
+    let Some(sid) = dec.players.get(slot).map(|p| p.sid.as_str()) else {
+        return Vec::new();
+    };
+    dec.utility
+        .iter()
+        .filter(|u| u.get("thrower").and_then(Value::as_str) == Some(sid))
+        .filter_map(|u| u.get("throwSample").and_then(Value::as_f64))
+        .collect()
+}
+
 fn build_player(
     dec: &DecodedRound,
     slot: usize,
@@ -511,19 +550,9 @@ fn build_player(
     let body_yaw = body_yaw_track(tr, n, rate);
     let hits = hits_of(dec, slot);
 
-    let shot_samples: Vec<f64> = dec
-        .header
-        .get("shots")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|s| s.get("p").and_then(Value::as_u64) == Some(slot as u64))
-        .filter_map(|s| s.get("s")?.as_f64())
-        .collect();
-
     let mut upper = Vec::new();
     let mut shots = Vec::new();
-    for &s in &shot_samples {
+    for s in shot_samples(dec, slot) {
         let i = src.sample(s);
         let Some(tag) = src.tag(i) else { continue };
         let t = src.seconds(s);
@@ -535,18 +564,8 @@ fn build_player(
     }
     shots.sort_by(|a: &Once, b: &Once| a.t.total_cmp(&b.t));
 
-    // The replay keeps gun shots only, so all that shows of a knife is the swings that hit:
-    // the `hurt` events on new replays, and the kills on old ones too.
-    let hits_dealt = dec.header.get("events").and_then(Value::as_array).into_iter().flatten().filter_map(|e| {
-        let dealt = e.get("k").and_then(Value::as_str) == Some("hurt")
-            && e.get("a").and_then(Value::as_u64) == Some(slot as u64)
-            && e.get("w").and_then(Value::as_str) == Some("🔪");
-        if dealt { e.get("s")?.as_f64() } else { None }
-    });
-    let name = dec.players.get(slot).map(|p| p.name.as_str());
-    let kills_dealt = kills.iter().filter(|k| Some(k.attacker.as_str()) == name && k.weapon == "🔪").map(|k| k.sample as f64);
     if let Some(first) = src.part("swing_knife", "swing_crouch_knife", false) {
-        for s in hits_dealt.chain(kills_dealt) {
+        for s in knife_hit_samples(dec, slot, kills) {
             let t0 = (src.seconds(s) - KNIFE_HIT_S).max(0.0);
             upper.push(Span { t0, t1: t0 + first.length, first, then: None, cut_by_shot: false, exclusive: false });
         }
@@ -564,13 +583,8 @@ fn build_player(
         }
     }
 
-    // Throws: only the utility list says who threw what when.
-    let sid = dec.players.get(slot).map(|p| p.sid.as_str());
-    for u in &dec.utility {
-        if u.get("thrower").and_then(Value::as_str) != sid || sid.is_none() {
-            continue;
-        }
-        let Some(s) = u.get("throwSample").and_then(Value::as_f64) else { continue };
+    // Throws.
+    for s in throw_samples(dec, slot) {
         if let Some(first) = src.part("throw", "throw_crouch", false) {
             let t0 = (src.seconds(s) - THROW_RELEASE_S).max(0.0);
             upper.push(Span { t0, t1: t0 + first.length, first, then: None, cut_by_shot: false, exclusive: false });

@@ -309,6 +309,8 @@ def build_weapon(g, bin_bytes, image_dir, model_dump, base_size=1024, normal_siz
                 nodes.append({"name": name, "translation": position.tolist()})
                 found[name] = position
 
+    # What tools/prepare_viewmodel.py needs to land on this model's atlas.
+    atlas = (slot_of if use_atlas else None, set(ordered))
     result = {
         "asset": {"version": "2.0", "generator": "tools/prepare_weapon.py"},
         "scene": 0,
@@ -325,7 +327,7 @@ def build_weapon(g, bin_bytes, image_dir, model_dump, base_size=1024, normal_siz
     position = merged["POSITION"]
     stats = {
         "root": root, "verts": vertex_count, "tris": len(merged_indices) // 3,
-        "materials": len(ordered), "attachments": found,
+        "materials": len(ordered), "attachments": found, "atlas": atlas,
         "min": position.min(axis=0) / _METRES_PER_SOURCE_UNIT,
         "max": position.max(axis=0) / _METRES_PER_SOURCE_UNIT,
     }
@@ -339,6 +341,9 @@ def main():
     ap.add_argument("--base-size", type=int, default=1024, help="base colour side, px")
     ap.add_argument("--normal-size", type=int, default=512, help="normal map side, px; 0 drops it")
     ap.add_argument("--jpeg-quality", type=int, default=82)
+    ap.add_argument("--viewmodel", help="also build the first-person rig, to this .glb")
+    ap.add_argument("--viewmodel-file", help="the weapon's name in tools/viewmodel_clips.txt")
+    ap.add_argument("--clips", help="folder Source2Viewer exported the first-person clips into")
     args = ap.parse_args()
 
     gltf_path = find_character_gltf(args.raw_dir)
@@ -364,6 +369,17 @@ def main():
           f"Z {low[2]:.1f}..{high[2]:.1f} Source units; attachments {sorted(stats['attachments'])}")
     if np.abs(np.concatenate([low, high])).max() > _MAX_REACH:
         print("WARNING: the weapon reaches far from its root bone; did the export's frame change?")
+
+    if args.viewmodel:
+        from prepare_viewmodel import build_viewmodel_weapon, read_clip_list, write_output  # noqa: PLC0415
+        kinds = read_clip_list()[args.viewmodel_file]
+        rig, rig_blob, rig_stats = build_viewmodel_weapon(
+            g, bin_bytes, select_primitives(g), stats["atlas"], args.clips, kinds)
+        write_output(args.viewmodel, rig, rig_blob)
+        print(f"  first person: {Path(args.viewmodel).stat().st_size / 1e6:.2f} MB, parts {rig_stats['parts']}, "
+              f"clips { {k: round(v, 2) for k, v in rig_stats['durations'].items()} }")
+        if rig_stats["non_rigid"] > 0.02:
+            print(f"WARNING: {rig_stats['non_rigid']:.0%} of the first-person vertices follow more than one bone")
 
 
 if __name__ == "__main__":

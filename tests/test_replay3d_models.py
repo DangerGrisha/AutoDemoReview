@@ -19,6 +19,7 @@ except ImportError as exc:  # the analysis suite must still run without the web 
     raise unittest.SkipTest(f"needs the web stack: {exc}")
 
 TEMPLATES = Path(__file__).resolve().parent.parent / "web" / "templates"
+BOTH_MODELS = ["t_rig2.glb", "ct_rig2.glb"]
 
 
 class _Models:
@@ -30,7 +31,9 @@ class _Models:
     def __enter__(self):
         self._tmp = tempfile.TemporaryDirectory()
         for name in self.files:
-            (Path(self._tmp.name) / name).write_bytes(b"glb")
+            path = Path(self._tmp.name) / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"glb")
         self._dir = replay3d.CS2_MODELS_DIR
         replay3d.CS2_MODELS_DIR = Path(self._tmp.name)
         self._env = os.environ.pop("REPLAY3D_CS2_MODELS", None)
@@ -82,7 +85,32 @@ def test_any_other_flag_value_leaves_them_on():
 def test_the_page_passes_the_choice_to_the_viewer():
     assert "const CS2_MODELS = true;" in _render(True)
     assert "const CS2_MODELS = false;" in _render(False)
-    assert "run('#canvas', '/static/replay3d/assets', CS2_MODELS, CS2_WEAPONS)" in _render(True)
+    assert "run('#canvas', '/static/replay3d/assets', CS2_MODELS, CS2_WEAPONS, CS2_VIEWMODEL)" in _render(True)
+
+
+def test_first_person_needs_both_sides_arms_and_the_weapons():
+    full = [*BOTH_MODELS, "weapons/ak47.glb", "viewmodel/arms_t.glb", "viewmodel/arms_ct.glb"]
+    with _Models(full):
+        assert replay3d.cs2_viewmodel_enabled()
+    with _Models([f for f in full if f != "viewmodel/arms_ct.glb"]):
+        assert not replay3d.cs2_viewmodel_enabled()
+    with _Models([f for f in full if f != "weapons/ak47.glb"]):
+        assert not replay3d.cs2_viewmodel_enabled()
+
+
+def test_the_flag_turns_first_person_off_without_touching_the_files():
+    full = [*BOTH_MODELS, "weapons/ak47.glb", "viewmodel/arms_t.glb", "viewmodel/arms_ct.glb"]
+    with _Models(full, flag="0"):
+        assert not replay3d.cs2_viewmodel_enabled()
+
+
+def test_the_page_tells_the_viewer_about_first_person():
+    env = Environment(loader=FileSystemLoader(TEMPLATES), autoescape=True)
+    page = env.get_template("replay3d.html")
+    common = dict(match_id=7, map_name="de_mirage", demo_name="m.dem", has_replay=True,
+                  map_asset="maps/de_mirage/world.glb", cs2_models=True, wasm_size=1, map_size=1)
+    assert "const CS2_VIEWMODEL = true;" in page.render(cs2_viewmodel=True, **common)
+    assert "const CS2_VIEWMODEL = false;" in page.render(**common)
 
 
 class _Sounds:

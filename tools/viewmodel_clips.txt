@@ -1,0 +1,49 @@
+# First-person clips of each weapon, from CS2's own animation graphs
+# (animation/graphs/viewmodel/viewmodel_gun.vnmgraph+<weapon>.vnmgraph_c and its siblings).
+# <file in weapon_models.txt> <folder under animation/anims/viewmodel> <kind>=<clip> ...
+# A grenade's reload is pulling the pin and its shoot the throw. A knife's shoot is a swing, and
+# the bomb's is planting it. shoot2 alternates with shoot, for the two guns of the Dual Berettas.
+ak47 rifle/rifle_ak draw=draw_ak idle=idle_ak shoot=shoot1_ak reload=reload_ak
+m4a4 rifle/rifle_m4a4 draw=draw_m4a4 idle=idle_m4a4 shoot=shoot1_m4a4 reload=reload_m4a4
+m4a1s rifle/_default_rifle draw=draw_rifle idle=idle_rifle shoot=shoot1_rifle reload=reload_rifle
+aug rifle/rifle_aug draw=draw_aug idle=idle_aug shoot=shoot1_aug reload=reload_aug
+sg553 rifle/rifle_sg556 draw=draw_sg556 idle=idle_sg556 shoot=shoot1_sg556 reload=reload_sg556
+famas rifle/rifle_famas draw=draw_famas idle=idle_famas shoot=shoot1_famas reload=reload_famas
+galil rifle/rifle_galilar draw=draw_galilar idle=idle_galilar shoot=shoot1_galilar reload=reload_galilar
+awp rifle/rifle_awp draw=draw_awp idle=idle_awp shoot=shoot1_awp reload=reload_awp
+ssg08 rifle/rifle_ssg08 draw=draw_ssg08 idle=idle_ssg08 shoot=shoot1_ssg08 reload=reload_ssg08
+scar20 rifle/rifle_scar20 draw=draw_scar20 idle=idle_scar20 shoot=shoot1_scar20 reload=reload_scar20
+g3sg1 rifle/rifle_g3sg1 draw=draw_g3sg1 idle=idle1_g3sg1 shoot=shoot1_g3sg1 reload=reload_g3sg1
+mp9 rifle/rifle_mp9 draw=draw_mp9 idle=idle_mp9 shoot=shoot1_mp9 reload=reload_mp9
+mp7 rifle/rifle_mp7 draw=draw_mp7 idle=idle_mp7 shoot=shoot1_mp7 reload=reload_mp7
+mp5sd rifle/rifle_mp5sd draw=draw_mp5sd idle=idle_mp5sd shoot=shoot1_mp5sd reload=reload_mp5sd
+mac10 rifle/rifle_mac10 draw=draw_mac10 idle=idle_mac10 shoot=shoot1_mac10 reload=reload_mac10
+ump45 rifle/rifle_ump45 draw=draw_ump45 idle=idle_ump45 shoot=shoot1_ump45 reload=reload_ump45
+p90 rifle/rifle_p90 draw=draw_p90 idle=idle_p90 shoot=shoot1_p90 reload=reload_p90
+bizon rifle/rifle_bizon draw=draw_bizon idle=idle_bizon shoot=shoot1_bizon reload=reload_bizon
+glock18 pistol/pistol_glock18 draw=draw_glock idle=idle_glock shoot=shoot1_glock reload=reload_glock
+usps pistol/_default_pistol draw=draw_pistol idle=idle_pistol shoot=shoot1_pistol reload=reload_pistol
+p2000 pistol/pistol_hkp2000 draw=draw_hkp idle=idle_hkp shoot=shoot1_hkp reload=reload_hkp
+p250 pistol/pistol_p250 draw=draw_p250 idle=idle_p250 shoot=shoot1_p250 reload=reload_p250
+fiveseven pistol/pistol_fiveseven draw=draw_fiveseven idle=idle_fiveseven shoot=shoot1_fiveseven reload=reload_fiveseven
+tec9 pistol/pistol_tec9 draw=draw_tec9 idle=idle_tec9 shoot=shoot1_tec9 reload=reload_tec9
+cz75a pistol/pistol_cz75a draw=draw_cz75a idle=idle_cz75a shoot=shoot1_cz75a reload=reload_cz75a
+elite pistol/pistol_elite draw=draw_elite idle=idle_elite shoot=shoot_right1_elite shoot2=shoot_left1_elite reload=reload_elite
+deagle pistol/pistol_deagle draw=draw_deagle idle=idle_deagle shoot=shoot1_deagle reload=reload_deagle
+revolver pistol/pistol_revolver draw=draw_revolver idle=idle_revolver shoot=shoot1_revolver reload=reload_revolver
+nova rifle/rifle_nova draw=draw_nova idle=idle_nova shoot=shoot1_nova reload=reload_nova
+xm1014 rifle/rifle_xm1014 draw=draw_xm1014 idle=idle_xm1014 shoot=shoot1_xm1014 reload=reload_xm1014
+sawedoff rifle/rifle_sawedoff draw=draw_sawedoff idle=idle_sawedoff shoot=shoot1_sawedoff reload=reload_sawedoff
+mag7 rifle/rifle_mag7 draw=draw_mag7 idle=idle_mag7 shoot=shoot1_mag7 reload=reload_mag7
+m249 rifle/rifle_m249 draw=draw_m249 idle=idle1_m249 shoot=shoot1_m249 reload=reload_m249
+negev rifle/rifle_negev draw=draw_negev idle=idle_negev shoot=shoot1_negev reload=reload_negev
+taser pistol/pistol_taser draw=draw_taser idle=idle_taser shoot=shoot1_taser
+hegrenade grenade/grenade_hegrenade draw=draw_hegrenade idle=idle_hegrenade shoot=throw_overhand_hegrenade reload=pullpin_hegrenade
+flashbang grenade/grenade_flashbang draw=draw_flashbang idle=idle_flashbang shoot=throw_overhand_flashbang reload=pullpin_flashbang
+smokegrenade grenade/grenade_smokegrenade draw=draw_smoke idle=idle_smoke shoot=throw_overhand_smoke reload=pullpin_smoke
+molotov grenade/grenade_molotov draw=draw_molotov idle=idle_molotov shoot=throw_overhand_molotov reload=pullpin_molotov
+incendiary grenade/grenade_incendiary draw=draw_incendiary idle=idle_incendiary shoot=throw_overhand_incendiary reload=pullpin_incendiary
+decoy grenade/_default_grenade draw=draw_grenade idle=idle_grenade shoot=throw_overhand_grenade reload=pullpin_grenade
+c4 equipment/c4 draw=draw_c4 idle=idle_c4 shoot=plant_c4
+knife_t knife/knife_default_t draw=draw_default_t idle=idle_default_t shoot=light_hit1_default_t
+knife_ct knife/_default_knife draw=draw_knife idle=idle_knife shoot=light_hit1_knife

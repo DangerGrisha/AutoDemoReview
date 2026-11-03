@@ -85,7 +85,7 @@ pub struct PlayerMeshOf {
     pub on_xray: bool,
 }
 
-fn held_time(time: f32, length: f32) -> f32 {
+pub(crate) fn held_time(time: f32, length: f32) -> f32 {
     time.min((length - CLIP_END_MARGIN).max(0.0))
 }
 

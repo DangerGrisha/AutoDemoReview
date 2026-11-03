@@ -14,6 +14,7 @@ mod scene;
 mod state;
 mod textured_map;
 mod util;
+mod viewmodel;
 mod weapons_viz;
 
 pub use coords::*;
@@ -46,13 +47,14 @@ use util::{tracer_frame, util_frame, UtilKind};
 /// `cs2_weapons` does the same for the guns, where a missing file only means a simple
 /// box in its place, and a 404 in the console that the page would rather not cause.
 #[wasm_bindgen]
-pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Option<bool>, cs2_weapons: Option<bool>) {
+pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Option<bool>, cs2_weapons: Option<bool>, cs2_viewmodel: Option<bool>) {
     console_error_panic_hook::set_once();
     App::new()
         .insert_resource(ClearColor(util::hex_color("#0b0e14")))
         .insert_resource(Viewer::default())
         .insert_resource(scene::UseCs2Models(cs2_models.unwrap_or(false)))
         .insert_resource(weapons_viz::RealWeapons::new(cs2_weapons.unwrap_or(false)))
+        .insert_resource(viewmodel::FpState::new(cs2_viewmodel.unwrap_or(false)))
         .insert_resource(orbit::OrbitCam::default())
         .insert_resource(LabelsOut::default())
         .insert_resource(PlayerPoses::default())
@@ -98,6 +100,7 @@ pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Opti
                 draw_grid,
                 orbit::orbit_camera,
                 spectator_camera,
+                viewmodel::sync_fp_view,
                 sync_xray_camera,
                 report_frame,
             )
@@ -114,6 +117,8 @@ pub fn run(canvas_selector: String, asset_root: Option<String>, cs2_models: Opti
                 fade_team_colour,
                 weapons_viz::finish_real_weapons,
                 weapons_viz::update_weapon_mounts,
+                viewmodel::setup_fp_rig,
+                viewmodel::drive_first_person.after(viewmodel::setup_fp_rig).before(weapons_viz::update_viewmodel),
                 weapons_viz::update_viewmodel,
                 textured_map::finish_map_load,
                 textured_map::apply_map_textures,
@@ -203,7 +208,7 @@ pub fn set_xray(on: bool) {
 
 // ---------------------------------------------------------------------------
 // WASM -> JS per-frame report. Flat f32 payload (see index.html for the layout):
-// [clock, duration, playing, flashOpacity, nPlayers, nTracers,
+// [clock, duration, playing, flashOpacity, nPlayers, nTracers, scopeUp,
 //  {x, y, onScreen, alive, health, weapon, worldX, worldY, yawDeg, present} * nPlayers,
 //        (x,y normalized viewport coords, valid when onScreen; alive/health are
 //         real per-frame state independent of projection — drives the spec panel;
@@ -271,12 +276,14 @@ struct TracersOut(Vec<(usize, Vec3, f32)>);
 // systems
 // ---------------------------------------------------------------------------
 
+/// Every view but a player's eyes: what the Three.js page had, PerspectiveCamera(55, ..., 0.1, 4000).
+pub(crate) const OVERVIEW_FOV_DEGREES: f32 = 55.0;
+
 fn setup(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
-        // match the Three.js PerspectiveCamera(55, ..., 0.1, 4000)
         Projection::from(PerspectiveProjection {
-            fov: 55.0_f32.to_radians(),
+            fov: OVERVIEW_FOV_DEGREES.to_radians(),
             near: 0.1,
             far: 4000.0,
             ..default()
@@ -303,7 +310,9 @@ fn setup(mut commands: Commands) {
             Visibility::Hidden,
             weapons_viz::ViewModel::default(),
         ));
+        p.spawn((Transform::default(), Visibility::Hidden, viewmodel::FpAnchor));
     });
+    commands.spawn(viewmodel::fp_camera_bundle());
     // X-ray overlay camera: renders ONLY the player layer (1), on top of the main
     // view with no color clear (its own depth buffer starts empty), so players are
     // always drawn over walls + smoke — the "wallhack" look the analyst wants. Its
@@ -316,7 +325,7 @@ fn setup(mut commands: Commands) {
             ..default()
         },
         Projection::from(PerspectiveProjection {
-            fov: 55.0_f32.to_radians(),
+            fov: OVERVIEW_FOV_DEGREES.to_radians(),
             near: 0.1,
             far: 4000.0,
             ..default()
@@ -339,6 +348,8 @@ fn setup(mut commands: Commands) {
             ..default()
         },
         Transform::from_xyz(40.0, 80.0, 20.0).looking_at(Vec3::ZERO, Vec3::Y),
+        // lights reach a camera only by a shared layer
+        RenderLayers::from_layers(&[0, viewmodel::FP_LAYER]),
     ));
 }
 
@@ -957,7 +968,7 @@ fn draw_grid(viewer: Res<Viewer>, mut gizmos: Gizmos) {
 
 // Source view offsets (world units) — eye height above the feet origin, used to
 // place the first/third-person camera. Standing 64, crouched 46 (engine constants).
-const EYE_STAND: f32 = 64.0;
+pub(crate) const EYE_STAND: f32 = 64.0;
 const EYE_CROUCH: f32 = 46.0;
 /// Third-person chase framing: how far behind / above the eye the camera sits (world units).
 const CHASE_DIST: f32 = 135.0;
@@ -1072,12 +1083,15 @@ fn draw_tracers(
     q_mounts: Query<(&weapons_viz::WeaponMount, &GlobalTransform)>,
     q_viewmodel: Query<(&weapons_viz::ViewModel, &GlobalTransform)>,
     q_cam: Query<&GlobalTransform, With<MainCam>>,
+    real_arms: Res<viewmodel::FpState>,
+    q_tf: Query<&GlobalTransform>,
     mut gizmos: Gizmos<TracerGizmos>,
 ) {
     let Some(r) = viewer.round.as_ref() else {
         return;
     };
-    let cam = q_cam.single().map_or(Vec3::ZERO, |c| c.translation());
+    let cam_tf = q_cam.single().ok();
+    let cam = cam_tf.map_or(Vec3::ZERO, |c| c.translation());
     let clock = viewer.clock;
     // hot muzzle-white: the bright core of every tracer, whatever the team tint.
     let head_col = Color::srgb(1.0, 0.95, 0.80);
@@ -1093,7 +1107,9 @@ fn draw_tracers(
             CamMode::Follow { slot, first_person: true } if slot == sh.slot
         );
         let muzzle = if own_fp {
-            q_viewmodel.iter().find_map(|(vm, at)| real_weapons.muzzle_world(vm.current, at))
+            cam_tf
+                .and_then(|c| real_arms.muzzle_on_screen(&real_weapons, &q_tf, c))
+                .or_else(|| q_viewmodel.iter().find_map(|(vm, at)| real_weapons.muzzle_world(vm.current, at)))
         } else {
             q_mounts
                 .iter()
@@ -1159,7 +1175,14 @@ fn spectator_camera(
     let (sp, cp) = pitch.sin_cos();
     let fwd = Vec3::new(cp * cy, -sp, -cp * sy);
 
-    let eye_off = if p.crouch { EYE_CROUCH } else { EYE_STAND } * s;
+    // The eye takes a moment to get down and back up, worked out from the flag's history.
+    let crouch = viewer.round.as_ref().filter(|r| r.n > 0).and_then(|r| {
+        let (i0, _i1, _f, _s) = sample_pos(viewer.clock, r.rate, r.n);
+        let flags = &r.dec.tracks.get(slot)?.flags;
+        Some(viewmodel::flag_share(flags, c2r3::F_CROUCH, i0, r.rate, viewmodel::CROUCH_S, viewer.clock))
+    });
+    let crouch = crouch.unwrap_or(if p.crouch { 1.0 } else { 0.0 });
+    let eye_off = (EYE_STAND + (EYE_CROUCH - EYE_STAND) * crouch) * s;
     let eye = p.feet + Vec3::Y * eye_off;
 
     let Ok(mut tf) = cam.single_mut() else { return };
@@ -1197,6 +1220,7 @@ fn report_frame(
     viewer: Res<Viewer>,
     labels: Res<LabelsOut>,
     tracers: Res<TracersOut>,
+    real_arms: Res<viewmodel::FpState>,
     q_cam: Query<(&Camera, &GlobalTransform), With<MainCam>>,
 ) {
     let Ok((cam, cam_tf)) = q_cam.single() else {
@@ -1212,13 +1236,16 @@ fn report_frame(
         viewer.round.as_ref().map(|r| r.duration).unwrap_or(0.0),
         viewer.playing,
     );
-    // flash overlay opacity from the focus player's flash channel (raw f, like the JS)
-    let flash_opacity = match (viewer.flash_focus, viewer.round.as_ref()) {
-        (Some(slot), Some(r)) if r.n > 0 => {
-            let (i0, i1, f, _s) = sample_pos(clock, r.rate, r.n);
-            let tr = &r.dec.tracks[slot];
-            (lerp(tr.flash[i0] as f64, tr.flash[i1] as f64, f) / 255.0).min(1.0) as f32
-        }
+    // Whose eyes the screen is: the player looked through, or the one the page asked for.
+    let flash_focus = match viewer.cam_mode {
+        CamMode::Follow { slot, first_person: true } => Some(slot),
+        _ => viewer.flash_focus,
+    };
+    let flash_opacity = match (flash_focus, viewer.round.as_ref()) {
+        (Some(slot), Some(r)) if r.n > 0 => r.dec.tracks.get(slot).map_or(0.0, |tr| {
+            let (i0, _i1, _f, _s) = sample_pos(clock, r.rate, r.n);
+            viewmodel::flash_alpha(tr, i0, r.rate, clock)
+        }),
         _ => 0.0,
     };
 
@@ -1229,6 +1256,7 @@ fn report_frame(
         flash_opacity,
         labels.0.len() as f32,
         tracers.0.len() as f32,
+        if real_arms.scope_overlay { 1.0 } else { 0.0 },
     ];
     for li in &labels.0 {
         let (x, y, on_screen) = match (li.draw_nametag, project(li.anchor)) {

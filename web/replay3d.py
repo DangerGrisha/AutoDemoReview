@@ -136,6 +136,15 @@ def cs2_weapons_enabled():
     return cs2_models_enabled() and any((CS2_MODELS_DIR / "weapons").glob("*.glb"))
 
 
+def cs2_viewmodel_enabled():
+    """Show the real arms and weapon in first person? Each side's arms must be there. A
+    weapon's rig missing from the set is not worth checking for: whoever holds it keeps
+    the still weapon.
+    """
+    return cs2_weapons_enabled() and all(
+        (CS2_MODELS_DIR / "viewmodel" / name).is_file() for name in ("arms_t.glb", "arms_ct.glb"))
+
+
 def cs2_sounds_enabled():
     """Play the real CS2 sounds? Built from a local CS2 install and never committed, like
     the models. Without them, or with REPLAY3D_CS2_SOUNDS=0, the page synthesizes gunfire.

@@ -7,7 +7,7 @@
 {% if has_replay %}
 {# ?v= busts the 7-day static cache when the frame-payload layout changes; keep
    the token in lockstep with the import + fetch URLs below #}
-<link rel="preload" as="fetch" crossorigin href="/static/replay3d/pkg/viewer_bg.wasm?v=9">
+<link rel="preload" as="fetch" crossorigin href="/static/replay3d/pkg/viewer_bg.wasm?v=10">
 {% if map_asset and not map_v2 %}<link rel="preload" as="fetch" crossorigin href="/static/replay3d/assets/{{ map_asset }}">{% endif %}
 {% endif %}
 <style>
@@ -167,6 +167,29 @@
   #xhair .h1 { height:2px; width:7px; top:-1px; left:-11px; }
   #xhair .h2 { height:2px; width:7px; top:-1px; left:4px; }
 
+  /* a sniper rifle's scope: black around a circle, with thin lines across the whole screen */
+  #scope { position:fixed; inset:0; z-index:6; pointer-events:none; display:none;
+    background:radial-gradient(circle at center, transparent 0, transparent 46vh, #000 calc(46vh + 1.5px)); }
+  #scope i { position:absolute; background:#000; }
+  #scope .h { left:0; right:0; top:50%; height:1px; }
+  #scope .v { top:0; bottom:0; left:50%; width:1px; }
+
+  /* the followed player's numbers, where CS2 has them, just above the timeline */
+  #vitals, #ammo { position:fixed; bottom:92px; z-index:7; pointer-events:none; display:none;
+    color:#fff; font-weight:700; font-variant-numeric:tabular-nums; text-shadow:0 1px 3px rgba(0,0,0,.9); }
+  #vitals { left:18px; }
+  #vitals .money { color:#7fd96b; font-size:17px; margin-bottom:6px; }
+  #vitals .row { display:flex; align-items:baseline; gap:20px; }
+  #vitals .num { display:flex; align-items:baseline; gap:6px; font-size:32px; line-height:1; }
+  #vitals .num small { font-size:15px; font-weight:600; opacity:.75; }
+  #vitals .num.low { color:#ff5a4a; }
+  #ammo { right:18px; text-align:right; }
+  #ammo .clip { font-size:32px; line-height:1; }
+  #ammo .gun { height:24px; margin-top:6px; font-size:13px; font-weight:600; opacity:.85; }
+  #ammo .gun img { height:100%; filter:drop-shadow(0 1px 2px rgba(0,0,0,.8)); }
+  /* A short window brings the side panels down to these corners. */
+  @media (max-height:700px) { #vitals { left:244px; } #ammo { right:254px; } }
+
   #flash { position:fixed; inset:0; background:#fff; opacity:0; pointer-events:none; z-index:8; }
   #err { position:fixed; inset:0; display:none; place-items:center; padding:40px;
     background:var(--bg); color:#ff8080; z-index:20; text-align:center; }
@@ -220,6 +243,15 @@
 </div>
 <div id="labels"></div>
 <div id="xhair"><i class="v1"></i><i class="v2"></i><i class="h1"></i><i class="h2"></i></div>
+<div id="scope"><i class="h"></i><i class="v"></i></div>
+<div id="vitals">
+  <div class="money" id="vMoney"></div>
+  <div class="row">
+    <div class="num" id="vHealth"><small>HP</small><span></span></div>
+    <div class="num" id="vArmor"><small></small><span></span></div>
+  </div>
+</div>
+<div id="ammo"><div class="clip" id="vClip"></div><div class="gun" id="vGun"></div></div>
 <div id="spec" class="panel"></div>
 <div id="bomb"></div>
 <div id="specbanner"></div>
@@ -285,13 +317,14 @@
  * weapon,worldX,worldY,yawDeg,present} — worldX/worldY/yawDeg are raw demo
  * coords for the live radar. ?v= must match the preload hint above. */
 import init, { run, load_manifest, load_round, seek, set_playing, set_speed, set_flash_focus,
-  set_map_visible, set_camera_follow, set_camera_free, set_xray } from '/static/replay3d/pkg/viewer.js?v=9';
+  set_map_visible, set_camera_follow, set_camera_free, set_xray } from '/static/replay3d/pkg/viewer.js?v=10';
 
 const BASE = '/matches/{{ match_id }}/replay3d/';
 const MAP_ASSET = {{ (map_asset or "")|tojson }};
 const MAP_V2 = {{ (map_v2 or "")|tojson }};
 const CS2_MODELS = {{ (cs2_models or false)|tojson }};
 const CS2_WEAPONS = {{ (cs2_weapons or false)|tojson }};
+const CS2_VIEWMODEL = {{ (cs2_viewmodel or false)|tojson }};
 const CS2_SOUNDS = {{ (cs2_sounds or false)|tojson }};
 const HUD_ICONS = {{ (hud_icons or false)|tojson }};
 // UNCOMPRESSED sizes injected by the server (progress denominators; the
@@ -373,6 +406,7 @@ const killMods = k => { const m=[]; if(k.w)m.push(k.w); if(k.hs)m.push('HS');
   if(k.ns)m.push('noscope'); return m.length ? '  ['+m.join(' · ')+']' : ''; };
 const teamCol = t => t===3 ? 'var(--ct)' : t===2 ? 'var(--t)' : '#9aa4b2';
 const hpCol   = hp => hp>66 ? 'var(--good)' : hp>33 ? 'var(--warn)' : 'var(--bad)';
+const HDR = 7;                                       // floats before the players in the frame payload
 const PSTRIDE = 10;                                  // per-player floats in the frame payload
 const SFX = window.ReplaySfx || null;                // audio (sfx.js)
 
@@ -389,6 +423,43 @@ function showWeapon(el, tag){
   icon.alt = tag;
   icon.onload = () => { if (el._tag===tag) el.replaceChildren(icon); };
   icon.src = '/static/replay3d/assets/hud_v1/'+encodeURIComponent(name)+'.svg';
+}
+
+// A value from one of the header's flat [sample, value, ...] change lists.
+function valueAt(list, sample){
+  if (!list || !list.length) return null;
+  let lo=0, hi=list.length/2;
+  while (lo<hi){ const mid=(lo+hi)>>1; if (list[mid*2]<=sample) lo=mid+1; else hi=mid; }
+  return lo ? list[(lo-1)*2+1] : null;
+}
+function setText(el, text){ if (el._text!==text){ el._text=text; el.textContent=text; } }
+function setShown(el, on, how){ const want=on?how:'none'; if (el._shown!==want){ el._shown=want; el.style.display=want; } }
+
+const NO_MAGAZINE = new Set([...Object.keys(EMOJI_ICONS), 'HE', 'FLASH', 'SMOKE', 'MOLLY', 'INC', 'DECOY']);
+
+// The followed player's numbers. Only health is in every replay: armour, money and ammo came
+// with data version 2, and without them their places stay empty.
+function showVitals(clock, alive, hp, tag){
+  const on = camSlot>=0 && alive;
+  setShown($('#vitals'), on, 'block');
+  setShown($('#ammo'), on, 'block');
+  if (!on) return;
+  const st = state && state.header && state.header.state && state.header.state[camSlot];
+  const sample = state ? clock*state.rate : 0;
+  const armor=valueAt(st&&st.armor, sample), helmet=valueAt(st&&st.helmet, sample);
+  const money=valueAt(st&&st.money, sample), clip=valueAt(st&&st.ammo, sample);
+  const health=$('#vHealth');
+  setText(health.lastElementChild, String(hp));
+  health.classList.toggle('low', hp<=20);
+  setShown($('#vArmor'), armor!=null, 'flex');
+  if (armor!=null){
+    setText($('#vArmor').firstElementChild, helmet ? 'AR+H' : 'AR');
+    setText($('#vArmor').lastElementChild, String(armor));
+  }
+  setText($('#vMoney'), money!=null ? '$ '+money : '');
+  // The demo says 0 for what holds no magazine, which only reads as an empty gun.
+  setText($('#vClip'), clip!=null && clip>=0 && !NO_MAGAZINE.has(tag) ? String(clip) : '');
+  showWeapon($('#vGun'), tag);
 }
 
 // Every seek must tell the audio engine to re-anchor, otherwise the clock jump
@@ -495,7 +566,7 @@ function drawRadar(d,nP){
     ctx.fillStyle='rgba(8,10,16,.32)'; ctx.fillRect(0,0,W,W); }
   else { ctx.fillStyle='#0c101a'; ctx.fillRect(0,0,W,W); }
   for(let i=0;i<nP;i++){
-    const o=6+i*PSTRIDE;
+    const o=HDR+i*PSTRIDE;
     if(d[o+9]<0.5) continue;                       // not in this round
     const alive=d[o+3]>0.5;
     const px=(d[o+6]-cal.pos_x)*k, py=(cal.pos_y-d[o+7])*k;
@@ -662,7 +733,6 @@ function buildSpec(header){
 function applyCam(){
   if (camSlot<0) set_camera_free(); else set_camera_follow(camSlot, camFirst);
   specRows.forEach((r,slot)=>{ if(r) r.row.classList.toggle('on', slot===camSlot); });
-  $('#xhair').style.display = (camSlot>=0 && camFirst) ? 'block' : 'none';
   const b=$('#specbanner');
   if (camSlot>=0){
     const team = state && state.header && state.header.players[camSlot] && state.header.players[camSlot].team;
@@ -734,11 +804,14 @@ window.__replayFrame = (d) => {
     $('#time').textContent=fmt(clock)+' / '+fmt(duration);
   }
   $('#flash').style.opacity = Math.min(1, flashOp).toFixed(3);
+  const scopeUp=d[6]>0.5;
+  setShown($('#scope'), scopeUp, 'block');
+  setShown($('#xhair'), camSlot>=0 && camFirst && !scopeUp, 'block');
 
   const W=innerWidth, H=innerHeight;
   const wtab=(state&&state.header&&state.header.weaponTable)||[];
   for (let i=0;i<playerLabels.length;i++){
-    const el=playerLabels[i], o=6+i*PSTRIDE;
+    const el=playerLabels[i], o=HDR+i*PSTRIDE;
     const onScreen = i<nP && d[o+2]>0.5;
     const alive    = i<nP && d[o+3]>0.5;
     const hp=d[o+4]|0, wn=wtab[d[o+5]|0]||'';
@@ -761,6 +834,10 @@ window.__replayFrame = (d) => {
       row.row.classList.toggle('dead', !alive);
     }
   }
+  if (camSlot>=0 && camSlot<nP){
+    const o=HDR+camSlot*PSTRIDE;
+    showVitals(clock, d[o+3]>0.5, d[o+4]|0, wtab[d[o+5]|0]||'');
+  } else showVitals(clock, false, 0, '');
   // per-team alive counts in the group headers
   for (const g of specGroups){ let a=0; for(const s of g.slots) if(lastVis[s]) a++;
     g.cnt.textContent = a+' alive'; }
@@ -790,7 +867,7 @@ window.__replayFrame = (d) => {
 
   const seen=new Set();
   for (let k=0;k<nT;k++){
-    const off=6+nP*PSTRIDE+k*4, idx=d[off]|0, op=d[off+3];
+    const off=HDR+nP*PSTRIDE+k*4, idx=d[off]|0, op=d[off+3];
     const el=tracerLabel(idx); seen.add(idx);
     el.style.display = op>0.06 ? 'block' : 'none';
     el.style.opacity = op.toFixed(2);
@@ -855,7 +932,7 @@ async function main(){
   // compiler (init accepts a Promise<Response>), the map's bytes wait for Bevy
   // (handMapToBevy), and the manifest rides along.
   const wasmReady = init({ module_or_path:
-    fetchWithProgress('/static/replay3d/pkg/viewer_bg.wasm?v=9', WASM_SIZE, barSetter('barWasm','pctWasm')) });
+    fetchWithProgress('/static/replay3d/pkg/viewer_bg.wasm?v=10', WASM_SIZE, barSetter('barWasm','pctWasm')) });
   const mapFile = USE_MAP_V2 ? MAP_V2 : MAP_ASSET;
   const mapWarm = mapFile
     ? fetchWithProgress('/static/replay3d/assets/'+mapFile, USE_MAP_V2 ? MAP_V2_SIZE : MAP_SIZE, barSetter('barMap','pctMap'))
@@ -874,7 +951,7 @@ async function main(){
   await wasmReady;
   if (mapFile) handMapToBevy('/static/replay3d/assets/'+mapFile, await mapWarm);
   await modelsWarm;
-  run('#canvas', '/static/replay3d/assets', CS2_MODELS, CS2_WEAPONS);
+  run('#canvas', '/static/replay3d/assets', CS2_MODELS, CS2_WEAPONS, CS2_VIEWMODEL);
   MANIFEST = JSON.parse(await manifestReq);
   if (MAP_ASSET) MANIFEST.mapAsset = MAP_ASSET;
   if (USE_MAP_V2) MANIFEST.mapV2 = MAP_V2;
