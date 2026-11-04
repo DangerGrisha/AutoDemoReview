@@ -259,6 +259,22 @@ pub fn set_analysis_look(on: bool) {
     push_control(ControlMsg::SetAnalysisLook(on));
 }
 
+/// The free camera's feel from the page's settings: flight speed and mouse sensitivity as
+/// multiples of the defaults (0.25-4 and 0.25-3), and the mouse's up and down reversed.
+#[wasm_bindgen]
+pub fn set_camera_feel(speed: f32, sensitivity: f32, invert_y: bool) {
+    push_control(ControlMsg::SetCamFeel { speed, sensitivity, invert_y });
+}
+
+/// The first-person arms from the page's settings, as CS2's `viewmodel_fov` (54-68) and
+/// `viewmodel_offset_x/y/z` (right, forward, up), and whether to draw them at all.
+#[wasm_bindgen]
+pub fn set_viewmodel(fov: f32, x: f32, y: f32, z: f32, visible: bool) {
+    if let Ok(mut pending) = viewmodel::PENDING_VM.lock() {
+        *pending = Some(viewmodel::VmSettings { fov_4_3: fov, offset: Vec3::new(x, y, z), visible });
+    }
+}
+
 /// Put the free camera where the game's `setpos x y z; setang pitch yaw 0` would, so a view
 /// can be compared with the same view in CS2.
 #[wasm_bindgen]
@@ -589,6 +605,7 @@ fn drain_controls(
                 orbit_cam.fast = fast;
             }
             ControlMsg::SetAnalysisLook(on) => viewer.analysis_look = on,
+            ControlMsg::SetCamFeel { speed, sensitivity, invert_y } => orbit_cam.set_feel(speed, sensitivity, invert_y),
             ControlMsg::SetCamLook { pos, pitch, yaw } => {
                 let s = viewer.manifest.as_ref().map(|m| m.scene_scale as f32).unwrap_or(0.02);
                 orbit_cam.look_from(Vec3::new(pos[0], pos[2], -pos[1]) * s, pitch.to_radians(), yaw.to_radians());

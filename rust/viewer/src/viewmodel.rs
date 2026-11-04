@@ -46,6 +46,44 @@ const VIEWMODEL_OFFSET: Vec3 = Vec3::new(1.0, 1.0, -1.0);
 /// The arms reach back past the eye, closer than the world camera's near plane.
 const FP_NEAR: f32 = 0.02;
 
+/// What the page's settings may ask for, CS2's own limits: `viewmodel_fov` 54-68,
+/// `viewmodel_offset_x` -2 to 2.5, `_y` and `_z` -2 to 2.
+pub const VIEWMODEL_FOV_RANGE: (f32, f32) = (54.0, 68.0);
+pub const VIEWMODEL_OFFSET_MIN: Vec3 = Vec3::new(-2.0, -2.0, -2.0);
+pub const VIEWMODEL_OFFSET_MAX: Vec3 = Vec3::new(2.5, 2.0, 2.0);
+
+/// The arms as the page's settings want them: field of view at 4:3, offset (right,
+/// forward, up, in Source units) and whether to draw them at all.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VmSettings {
+    pub fov_4_3: f32,
+    pub offset: Vec3,
+    pub visible: bool,
+}
+
+impl Default for VmSettings {
+    fn default() -> Self {
+        Self { fov_4_3: VIEWMODEL_FOV_4_3, offset: VIEWMODEL_OFFSET, visible: true }
+    }
+}
+
+impl VmSettings {
+    /// Within CS2's limits; what is not a number keeps the default.
+    pub fn fitted(self) -> Self {
+        let d = Self::default();
+        let fov = if self.fov_4_3.is_finite() { self.fov_4_3 } else { d.fov_4_3 };
+        let offset = if self.offset.is_finite() { self.offset } else { d.offset };
+        Self {
+            fov_4_3: fov.clamp(VIEWMODEL_FOV_RANGE.0, VIEWMODEL_FOV_RANGE.1),
+            offset: offset.clamp(VIEWMODEL_OFFSET_MIN, VIEWMODEL_OFFSET_MAX),
+            visible: self.visible,
+        }
+    }
+}
+
+/// Set by the page (`set_viewmodel`), taken by `sync_fp_view` on the next frame.
+pub static PENDING_VM: std::sync::Mutex<Option<VmSettings>> = std::sync::Mutex::new(None);
+
 /// The grenade leaves the hand this long after the throw clip starts.
 const THROW_RELEASE_S: f32 = 0.1;
 /// Pulling the pin comes this long before the throw, which is the clip's length.
@@ -418,6 +456,8 @@ pub struct FpState {
     /// A sniper rifle's scope is up, for the page's overlay.
     pub scope_overlay: bool,
     active_side: usize,
+    /// The page's settings for the arms.
+    pub vm: VmSettings,
 }
 
 const SIDE_T: usize = 0;
@@ -447,6 +487,7 @@ impl FpState {
             world_fov: vertical_fov(WORLD_FOV_4_3),
             scope_overlay: false,
             active_side: SIDE_T,
+            vm: VmSettings::default(),
         }
     }
 
@@ -493,7 +534,7 @@ impl FpState {
         let muzzle = real.muzzle_of(rig.weapon?)?;
         let at = q_tf.get(rig.wpn?).ok()?.transform_point(muzzle);
         let view = cam.affine().inverse().transform_point3(at);
-        let spread = (self.world_fov / 2.0).tan() / (vertical_fov(VIEWMODEL_FOV_4_3) / 2.0).tan();
+        let spread = (self.world_fov / 2.0).tan() / (vertical_fov(self.vm.fov_4_3) / 2.0).tan();
         Some(cam.transform_point(Vec3::new(view.x * spread, view.y * spread, view.z)))
     }
 }
@@ -705,7 +746,9 @@ pub fn drive_first_person(
     finish_weapons(state, &asset_server, &gltfs, &gltf_nodes, &gltf_meshes, &clips, &mut graphs);
 
     let followed = match (viewer.cam_mode, viewer.round.as_ref()) {
-        (CamMode::Follow { slot, first_person: true }, Some(r)) if state.enabled && r.n > 0 => Some((slot, r)),
+        (CamMode::Follow { slot, first_person: true }, Some(r)) if state.enabled && state.vm.visible && r.n > 0 => {
+            Some((slot, r))
+        }
         _ => None,
     };
     let mut shown = false;
@@ -832,7 +875,7 @@ pub fn drive_first_person(
             let scale = scale as f32;
             let (moved, turned) =
                 tr.map_or((Vec3::ZERO, Vec3::ZERO), |tr| gun_motion(tr, r.n, i0, r.rate, viewer.clock));
-            let at = VIEWMODEL_OFFSET + moved;
+            let at = state.vm.offset + moved;
             // Source's angles in the camera's frame: pitch is down, yaw is left, roll is clockwise.
             let tilt = Quat::from_rotation_y(turned.y.to_radians())
                 * Quat::from_rotation_x(-turned.x.to_radians())
@@ -888,9 +931,20 @@ pub fn sync_fp_view(
     viewer: Res<Viewer>,
     mut state: ResMut<FpState>,
     q_main: Query<(&Transform, &AmbientLight), (With<MainCam>, Without<FpCam>)>,
-    mut q_fp: Query<(&mut Transform, &mut AmbientLight), (With<FpCam>, Without<MainCam>)>,
+    mut q_fp: Query<(&mut Transform, &mut AmbientLight, &mut Projection), (With<FpCam>, Without<MainCam>, Without<XrayCam>)>,
     mut q_proj: Query<&mut Projection, Or<(With<MainCam>, With<XrayCam>)>>,
 ) {
+    if let Some(vm) = PENDING_VM.lock().ok().and_then(|mut p| p.take()) {
+        state.vm = vm.fitted();
+    }
+    let vm_fov = vertical_fov(state.vm.fov_4_3);
+    for (_, _, mut projection) in &mut q_fp {
+        if let Projection::Perspective(p) = &mut *projection {
+            if p.fov != vm_fov {
+                p.fov = vm_fov;
+            }
+        }
+    }
     let mut scope_overlay = false;
     let world_fov = match (viewer.cam_mode, viewer.round.as_ref()) {
         (CamMode::Follow { slot, first_person: true }, Some(r)) if r.n > 0 => {
@@ -928,7 +982,7 @@ pub fn sync_fp_view(
     if !state.active {
         return;
     }
-    let (Ok((main_tf, main_ambient)), Ok((mut tf, mut ambient))) = (q_main.single(), q_fp.single_mut()) else {
+    let (Ok((main_tf, main_ambient)), Ok((mut tf, mut ambient, _))) = (q_main.single(), q_fp.single_mut()) else {
         return;
     };
     if *tf != *main_tf {
@@ -1188,6 +1242,18 @@ mod tests {
     fn the_views_match_cs2_at_its_defaults() {
         assert!((vertical_fov(WORLD_FOV_4_3).to_degrees() - 73.74).abs() < 0.01);
         assert!((vertical_fov(VIEWMODEL_FOV_4_3).to_degrees() - 46.83).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_settings_for_the_arms_stay_within_cs2s_limits() {
+        assert_eq!(VmSettings::default().fitted(), VmSettings::default(), "the defaults are allowed");
+        let wild = VmSettings { fov_4_3: 90.0, offset: Vec3::new(9.0, -9.0, f32::NAN), visible: false }.fitted();
+        assert_eq!(wild.fov_4_3, VIEWMODEL_FOV_RANGE.1);
+        assert_eq!(wild.offset, VIEWMODEL_OFFSET, "an offset that is not a number keeps the default");
+        let far = VmSettings { fov_4_3: f32::NAN, offset: Vec3::new(9.0, -9.0, 0.5), visible: false }.fitted();
+        assert_eq!(far.fov_4_3, VIEWMODEL_FOV_4_3);
+        assert_eq!(far.offset, Vec3::new(2.5, -2.0, 0.5));
+        assert!(!far.visible);
     }
 
     #[test]

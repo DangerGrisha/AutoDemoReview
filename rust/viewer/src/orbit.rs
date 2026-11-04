@@ -26,6 +26,11 @@ pub struct OrbitCam {
     pub pending: Option<Switch>,
     /// The middle of the map, which the first view looks at.
     pub home: Vec3,
+    /// The page's settings: flight speed and mouse sensitivity as multiples of the
+    /// defaults, and the mouse's up and down the other way round.
+    pub speed: f32,
+    pub sensitivity: f32,
+    pub invert_y: bool,
 }
 
 /// A change of the free camera that needs to know where the camera is now.
@@ -52,6 +57,9 @@ impl Default for OrbitCam {
             fast: false,
             pending: None,
             home: Vec3::ZERO,
+            speed: 1.0,
+            sensitivity: 1.0,
+            invert_y: false,
         }
     }
 }
@@ -63,6 +71,11 @@ const FLY_FAST: f32 = 2.5;
 const FLY_AHEAD: f32 = 5.0;
 /// Scene units one pixel of the wheel moves the camera in flight.
 const FLY_WHEEL: f32 = 0.05;
+/// Radians one pixel of the mouse turns the view.
+const TURN_PER_PIXEL: f32 = 0.005;
+/// What the page may ask for: speed and sensitivity multiples.
+pub const SPEED_RANGE: (f32, f32) = (0.25, 4.0);
+pub const SENSITIVITY_RANGE: (f32, f32) = (0.25, 3.0);
 /// Without anything to look at, the orbit goes around a point this far ahead.
 const ORBIT_FALLBACK: f32 = 20.0;
 const DIST_MIN: f32 = 3.0;
@@ -72,9 +85,17 @@ const PITCH_MAX: f32 = 1.54;
 impl OrbitCam {
     /// The first view of the map: its middle from above at 45 degrees.
     pub fn go_home(&mut self) {
-        let home = self.home;
-        *self = OrbitCam { home, input: self.input, fast: self.fast, ..OrbitCam::default() };
-        self.target = home;
+        let keep = OrbitCam {
+            home: self.home,
+            input: self.input,
+            fast: self.fast,
+            speed: self.speed,
+            sensitivity: self.sensitivity,
+            invert_y: self.invert_y,
+            ..OrbitCam::default()
+        };
+        *self = keep;
+        self.target = self.home;
     }
 
     /// An orbit that puts the camera at `eye`, looking along Source's pitch and yaw.
@@ -112,12 +133,23 @@ impl OrbitCam {
         self.target = eye + self.forward() * dist;
     }
 
+    /// The page's settings, kept within what they may be.
+    pub fn set_feel(&mut self, speed: f32, sensitivity: f32, invert_y: bool) {
+        let fit = |v: f32, (lo, hi): (f32, f32)| if v.is_finite() { v.clamp(lo, hi) } else { 1.0 };
+        self.speed = fit(speed, SPEED_RANGE);
+        self.sensitivity = fit(sensitivity, SENSITIVITY_RANGE);
+        self.invert_y = invert_y;
+    }
+
     /// Turn by a mouse movement in pixels: around the point when orbiting, around the
-    /// camera itself in flight. The mouse to the right turns the view right, down looks down.
+    /// camera itself in flight. The mouse to the right turns the view right, down looks
+    /// down, unless the settings turn that round.
     pub fn turn(&mut self, delta: Vec2) {
         let eye = self.eye();
-        self.yaw -= delta.x * 0.005;
-        self.pitch = (self.pitch + delta.y * 0.005).clamp(-PITCH_MAX, PITCH_MAX);
+        let k = TURN_PER_PIXEL * self.sensitivity;
+        let down = if self.invert_y { -delta.y } else { delta.y };
+        self.yaw -= delta.x * k;
+        self.pitch = (self.pitch + down * k).clamp(-PITCH_MAX, PITCH_MAX);
         if self.flying {
             self.target = eye + self.forward() * self.dist;
         }
@@ -129,7 +161,7 @@ impl OrbitCam {
         if self.input == Vec3::ZERO {
             return;
         }
-        let speed = FLY_SPEED * if self.fast { FLY_FAST } else { 1.0 } * scene_scale;
+        let speed = FLY_SPEED * self.speed * if self.fast { FLY_FAST } else { 1.0 } * scene_scale;
         let way = self.forward() * self.input.x + self.right() * self.input.y + Vec3::Y * self.input.z;
         self.target += way.normalize_or_zero() * speed * dt;
     }
@@ -217,7 +249,7 @@ pub fn orbit_camera(
             MouseScrollUnit::Pixel => ev.y,
         };
         if orbit.flying {
-            let step = orbit.forward() * dy * FLY_WHEEL;
+            let step = orbit.forward() * dy * FLY_WHEEL * orbit.speed;
             orbit.target += step;
         } else {
             orbit.dist = (orbit.dist * (1.0 - dy * 0.002)).clamp(DIST_MIN, DIST_MAX);
@@ -296,6 +328,25 @@ mod tests {
         o.fly(0.5, 0.02);
         let side = o.eye() - before;
         assert!(side.y.abs() < 1e-5 && side.x > 0.0, "right of a view down -z is +x: {side}");
+    }
+
+    #[test]
+    fn the_settings_change_speed_turning_and_up_and_down() {
+        let mut o = OrbitCam::default();
+        o.take_view(Vec3::ZERO, Vec3::NEG_Z, FLY_AHEAD);
+        o.flying = true;
+        o.set_feel(2.0, 0.5, true);
+        o.input = Vec3::new(1.0, 0.0, 0.0);
+        o.fly(1.0, 0.02);
+        assert!((o.eye().length() - 2.0 * FLY_SPEED * 0.02).abs() < 1e-3, "twice as fast");
+        let pitch = o.pitch;
+        o.turn(Vec2::new(0.0, 100.0));
+        assert!((o.pitch - (pitch - 100.0 * TURN_PER_PIXEL * 0.5)).abs() < 1e-5, "half as far, and up");
+        // what the page cannot mean stays sane, and the first view keeps the settings
+        o.set_feel(f32::NAN, 99.0, false);
+        assert_eq!((o.speed, o.sensitivity), (1.0, SENSITIVITY_RANGE.1));
+        o.go_home();
+        assert_eq!(o.sensitivity, SENSITIVITY_RANGE.1);
     }
 
     #[test]

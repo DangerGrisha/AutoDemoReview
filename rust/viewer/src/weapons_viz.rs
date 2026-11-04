@@ -569,7 +569,8 @@ pub fn update_viewmodel(
     let Some(assets) = assets else { return };
     let fp_slot = match viewer.cam_mode {
         // the real arms and weapon are up, or a scope covers the screen
-        _ if real_arms.active || real_arms.scope_overlay => None,
+        // the settings asked for no arms and weapon at all
+        _ if real_arms.active || real_arms.scope_overlay || !real_arms.vm.visible => None,
         CamMode::Follow { slot, first_person: true } => Some(slot),
         _ => None,
     };

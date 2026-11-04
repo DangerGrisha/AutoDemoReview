@@ -35,6 +35,8 @@ pub enum ControlMsg {
     /// Players painted in their team's colour from afar and grenade flights drawn as
     /// coloured lines, for analysis (true), or everything as CS2 shows it (false).
     SetAnalysisLook(bool),
+    /// The free camera's speed and mouse sensitivity as multiples, and the mouse's up and down.
+    SetCamFeel { speed: f32, sensitivity: f32, invert_y: bool },
     /// Put the free camera at a place in Source units, looking along pitch and yaw in degrees.
     SetCamLook { pos: [f32; 3], pitch: f32, yaw: f32 },
     /// Lock the camera to a player slot in first- (true) or third-person (false).
