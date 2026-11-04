@@ -355,6 +355,23 @@ impl DemoSource for Dp2Source {
         Ok(rows)
     }
 
+    fn crosshair_codes(&mut self, ticks: &[i64]) -> Result<Vec<(i64, String, String)>> {
+        if ticks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let out = self.tick_parse(&["crosshair_code"], ticks)?;
+        let c_code = out
+            .prop_controller
+            .prop_infos
+            .iter()
+            .find(|pi| pi.prop_friendly_name == "crosshair_code")
+            .and_then(|pi| out.df.get(&pi.id));
+        let (c_tick, c_sid) = (out.df.get(&TICK_ID), out.df.get(&STEAMID_ID));
+        Ok((0..col_len(c_tick))
+            .filter_map(|i| Some((col_i64(c_tick, i)?, col_u64(c_sid, i)?.to_string(), col_string(c_code, i)?)))
+            .collect())
+    }
+
     fn detonate_events(&mut self, event: &str) -> Result<Vec<DetEvent>> {
         Ok(self
             .events()?

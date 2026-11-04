@@ -30,7 +30,7 @@ ARTIFACT_RE = re.compile(r"^(manifest\.json|r\d{2}\.3dr)$")
 
 # What a replay should hold, kept equal to DATA_VERSION in rust/extract/src/lib.rs (a test
 # checks). Older replays get replaced on a re-upload and by tools/rebuild_replays.py.
-DATA_VERSION = 3
+DATA_VERSION = 4
 
 # A replay being built, next to the final directories. ARTIFACT_RE and the numeric match id
 # keep it unreachable.

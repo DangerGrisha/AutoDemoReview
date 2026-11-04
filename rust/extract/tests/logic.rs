@@ -853,3 +853,29 @@ fn manifest_winner_score() {
     assert_eq!(man["rounds"][2]["scoreCT"], 1);
     assert_eq!(man["rounds"][2]["scoreT"], 1);
 }
+
+#[test]
+fn crosshairs_keep_each_players_last_code() {
+    let rows = vec![
+        (300, "76561198000000001".to_string(), "CSGO-new".to_string()),
+        (100, "76561198000000001".to_string(), "CSGO-old".to_string()),
+        (100, "76561198000000002".to_string(), " CSGO-two ".to_string()),
+        (200, "76561198000000002".to_string(), String::new()),
+        (100, String::new(), "CSGO-nobody".to_string()),
+    ];
+    let last = extract3d::last_crosshairs(rows);
+    assert_eq!(
+        last,
+        vec![
+            ("76561198000000001".to_string(), "CSGO-new".to_string()),
+            ("76561198000000002".to_string(), "CSGO-two".to_string()),
+        ],
+        "the latest code wins, an empty one never replaces a real one"
+    );
+    let mut man = serde_json::json!({"map": "de_test"});
+    extract3d::manifest::add_crosshairs(&mut man, &last);
+    assert_eq!(man["crosshairs"]["76561198000000001"], "CSGO-new");
+    let mut bare = serde_json::json!({"map": "de_test"});
+    extract3d::manifest::add_crosshairs(&mut bare, &[]);
+    assert!(bare.get("crosshairs").is_none(), "no key without codes");
+}

@@ -38,7 +38,7 @@ pub const TARGET_HZ: f64 = 64.0;
 /// What the replay files hold. Raise it, together with DATA_VERSION in web/replay3d.py,
 /// when extraction starts giving files something older ones lack: a re-upload and
 /// tools/rebuild_replays.py then replace older replays. A manifest without the key is 1.
-pub const DATA_VERSION: i64 = 3;
+pub const DATA_VERSION: i64 = 4;
 pub const PAD_SECONDS: i64 = 3;
 pub const FLASH_FULL_S: f64 = 5.1;
 /// A >1 s gap in an entity's trajectory (raw ticks, NOT tick-rate scaled) = reused id.
@@ -290,6 +290,11 @@ pub trait DemoSource {
     fn player_events(&mut self) -> Result<Vec<PlayerEvent>> {
         Ok(Vec::new())
     }
+    /// `(tick, steamid, code)` of each player's crosshair share code at these ticks, in
+    /// any order. Default empty: the page then draws the viewer's own crosshair.
+    fn crosshair_codes(&mut self, _ticks: &[i64]) -> Result<Vec<(i64, String, String)>> {
+        Ok(Vec::new())
+    }
     /// Round events with the fields `segment_rounds` pairs on. The default
     /// falls back to bare ticks (no enrichment) for simple/test sources.
     fn round_events(&mut self) -> Result<(Vec<FreezeEvent>, Vec<EndEvent>)> {
@@ -321,6 +326,19 @@ pub struct Meta3d {
     /// Per-round C4 story, index-aligned with the rounds. None = never planted
     /// (or a source that doesn't report bomb events).
     pub bombs: Vec<Option<BombRound>>,
+    /// Each player's crosshair share code, the last one seen, by SteamID.
+    pub crosshairs: Vec<(String, String)>,
+}
+
+/// The last non-empty code of each player, sorted by SteamID so the manifest is stable.
+pub fn last_crosshairs(mut rows: Vec<(i64, String, String)>) -> Vec<(String, String)> {
+    rows.retain(|(_, sid, code)| !sid.is_empty() && !code.trim().is_empty());
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut last: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for (_, sid, code) in rows {
+        last.insert(sid, code.trim().to_string());
+    }
+    last.into_iter().collect()
 }
 
 // --------------------------------------------------------------------------- //
@@ -1164,6 +1182,10 @@ pub fn build_replay3d_hz(
         })
         .collect();
 
+    // One tick a round is enough: a code only changes when a player saves a new one. A demo
+    // without the prop costs a failed lookup, never the replay.
+    let xh_ticks: Vec<i64> = freeze_ticks.iter().take(n_rounds).copied().collect();
+    let crosshairs = last_crosshairs(source.crosshair_codes(&xh_ticks).unwrap_or_default());
     let meta = Meta3d {
         map: map_name.clone(),
         tick_rate: tickrate,
@@ -1173,6 +1195,7 @@ pub fn build_replay3d_hz(
         map_supported: mapscal::map_info(&map_name).is_some(),
         winners,
         bombs,
+        crosshairs,
     };
     Ok((models, meta))
 }

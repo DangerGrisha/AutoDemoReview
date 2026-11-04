@@ -224,6 +224,18 @@ pub fn build_manifest(
     Value::Object(manifest)
 }
 
+/// `crosshairs`: each player's crosshair share code by SteamID, for the page to draw the
+/// followed player's own crosshair. Absent when the demo had none.
+pub fn add_crosshairs(manifest: &mut Value, codes: &[(String, String)]) {
+    if codes.is_empty() {
+        return;
+    }
+    if let Value::Object(m) = manifest {
+        let map: Map<String, Value> = codes.iter().map(|(sid, code)| (sid.clone(), Value::from(code.as_str()))).collect();
+        m.insert("crosshairs".into(), Value::Object(map));
+    }
+}
+
 fn non_empty(s: Option<&str>, default: &str) -> String {
     match s {
         Some(v) if !v.is_empty() => v.to_string(),
