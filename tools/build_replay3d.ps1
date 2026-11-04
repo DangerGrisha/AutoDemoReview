@@ -69,6 +69,8 @@ if (-not (Test-Path $python)) { $python = 'python' }
 & $python (Join-Path $repo 'tools\precompress.py') `
     (Join-Path $pkg 'viewer_bg.wasm') (Join-Path $pkg 'viewer.js') `
     (Join-Path $repo 'web\static\replay3d\sfx.js') `
+    (Join-Path $repo 'web\static\replay3d\settings.js') `
+    (Join-Path $repo 'web\static\replay3d\crosshair.js') `
     (Join-Path $repo 'web\static\replay3d\assets\maps\*\world.glb') `
     (Join-Path $repo 'web\static\replay3d\assets\models\*.glb') `
     (Join-Path $repo 'web\static\replay3d\assets\models\cs2_v1\*.glb') `

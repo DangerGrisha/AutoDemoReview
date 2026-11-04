@@ -68,6 +68,11 @@ fixtures stay byte-identical, because everything new is optional.
 helped (did damage or flashed the victim), for the scoreboard's assists. Nothing in the
 `.3dr` files changed. Matches 1, 2 and 27 are rebuilt; on others the A column says "–".
 
+**Version 4** (2026-11-04) adds `crosshairs` to the manifest: each player's crosshair share
+code by SteamID (`CCSPlayerController.m_szCrosshairCodes`, the parser's `crosshair_code`), the
+last non-empty one seen at the rounds' freeze ends. All 30 players of the three local demos have
+one, all `legacy-v1`. The pass reads one tick a round and costs 0.3 s on a 24-round demo.
+
 **Header keys, each present only when non-empty:**
 
 - `state`: index-aligned with `players`. Each entry holds flat `[sample, value, sample,
@@ -190,8 +195,11 @@ progress overlay. If you touch any of them, keep the others in mind:
   (build step 6/6); `CompressedStaticFiles` in `web/app.py` serves them with
   the original `Content-Type` (`application/wasm` keeps streaming instantiation
   alive), `Vary: Accept-Encoding`, and `Cache-Control: public, max-age=604800`.
-  Bevy wasm compresses ~9–11× under brotli; f32 geometry ~2.5×. **Siblings are
-  trusted blindly** — always regenerate them after rebuilding the wasm or a map
+  Bevy wasm compresses ~9–11× under brotli; f32 geometry ~2.5×. A sibling older
+  than its file is skipped and the file itself goes out (since 2026-11-04: a
+  `settings.js` edited after the build used to reach the browser as it was built).
+  **Otherwise siblings are trusted blindly**, their contents are never checked —
+  regenerate them after rebuilding the wasm or a map to keep compressed serving
   (the build script does; a manual wasm swap must re-run precompress).
 - **Parallel load + progress overlay** (both HTML pages): wasm, world.glb,
   manifest and the first round download concurrently (the glb fetch warms the
@@ -510,8 +518,8 @@ Each of these has been run in a browser and ends in a working replay:
 | Corrupted lightmap | textured map without baked light or shadow |
 | Corrupted sky | textured map with the plain background |
 
-**After rebuilding a map, keep the `.br` siblings in step:** `CompressedStaticFiles` trusts them
-blindly. `convert_maps.ps1` does this, and `precompress.py` skips a sibling newer than its source.
+**After rebuilding a map, keep the `.br` siblings in step:** `CompressedStaticFiles` trusts
+one at least as new as its file blindly, and sends the big raw file in place of an older one. `convert_maps.ps1` does this, and `precompress.py` skips a sibling newer than its source.
 
 ## Maps travel through Git LFS
 
@@ -623,6 +631,51 @@ Not one to one: CS2's spectator HUD has player cards along the bottom and its ow
 art, here the list stays on the right and the radar is the overview image; the scoreboard
 has no ping, MVPs or score; the 1:30 for four players is the wingman default, not read from
 the demo; and the move to a teammate after a death, and its 2.5 s, are this page's choice.
+
+## Settings (the ⚙ in the bottom bar)
+
+One panel with tabs, `web/static/replay3d/settings.js`. Each value is described once in its
+`SCHEMA` (range, step, default, and CS2's console name where the game has the same setting), and
+what comes back from `localStorage['replay3d.settings.v1']` goes through it: broken JSON, a
+blocked storage or a value of the wrong kind gives the default, a number past its range is
+brought into it. The defaults are what the page did before the panel, so nothing changes for
+someone who never opens it. `replay3d.mode`, `replay3d.lightMap` and the sound mixer's own
+`replay3d.sfx.v3` stay where they were.
+
+| Tab | Settings | Where it acts |
+|---|---|---|
+| Radar | centred on the player (`cl_radar_always_centered`), turning (`cl_radar_rotate`), map zoom (`cl_radar_scale` 0.25-1, default 0.7), radar size (`cl_hud_radar_scale` 0.8-1.3), icon size (`cl_radar_icon_scale_min` 0.4-1.25), the whole map while Tab is held (`cl_radar_square_with_scoreboard`), grenades and the bomb, player numbers, view lines, map dimming | `drawRadar` on the page |
+| Crosshair | whose crosshair (the followed player's own, as CS2 shows a spectated player's, or always mine), shape, colour (CS2's five or RGB), opacity, length, thickness, gap, centre dot, T style, outline; a share code pasted in fills them; "take the player's crosshair" copies the followed one | `crosshair.js`, a canvas over the view |
+| Arms | `viewmodel_fov` 54-68, `viewmodel_offset_x` -2 to 2.5, `_y` and `_z` -2 to 2, CS2's Desktop and Classic presets, arms and weapon off | `set_viewmodel` -> `viewmodel::VmSettings` |
+| Camera | flight speed ×0.25-4, mouse sensitivity ×0.25-3, mouse up and down reversed, the move to a teammate after a death and its delay | `set_camera_feel` -> `OrbitCam`; the page |
+| Graphics | player shadows, render resolution 50-100%, the FPS line, the light map | `set_player_shadows`; the page |
+| Sound | the mixer `sfx.js` used to show behind its own ⚙ | `sfx.js`, `mountUI(host, mixerHost)` |
+
+**Zoom.** At `cl_radar_scale` 0.35 the whole map fits the radar, so the default 0.7 is the 2x
+the page always showed; a smaller number shows more of the map, as in the game. That 0.35 is
+my match by eye, not a number from CS2. Off centre (`cl_radar_always_centered 0`) the radar
+still follows the player but stops at the edges of the map picture, so near an edge the player
+moves off the middle instead of the radar showing what is past the edge.
+
+**Render resolution** needs no work in the viewer. The canvas sits in `#stage`, which a lower
+setting makes that share of the window and scales back up with a CSS transform. Bevy fits the
+canvas to its parent's layout box, which a transform does not change, so it renders fewer
+pixels; mouse movement is in screen pixels and does not change with it.
+
+**Crosshair codes** (`crosshair.js`). A code is a number in base 57: 18 bytes behind `CSGO-`,
+32 bytes behind `CS` (CS2's own since 30 September 2026). Byte 0 is the sum of the rest, byte 1
+the layout: `legacy-v1` keeps CS:GO's units, `legacy-v3` and `legacy-v4` are pixels on the
+screen height they were made on, `cs2-v1` adds a signed gap and an outline colour. The layouts
+are from akiver/csgo-sharecode (MIT); the decoder is our own, and
+`tests/data/crosshair_codes.json` holds that library's 18 test codes of all four layouts with
+their values, and five it refuses. Everything is turned into one shape in pixels on a screen
+`ref` lines tall and drawn scaled to the window, as CS2 does since the pixel crosshair.
+
+Not one to one: dynamic styles stand still (the replay has no spread); circle, square and quad
+styles are a guess at their look; `legacy-v1` sizes go through Source's YRES (a 480-line
+screen) and a gap of 4 on 1200 lines plus the code's own, because CS2 publishes no conversion,
+so they need comparing with the game; half outlines are drawn whole. The Couch viewmodel preset
+is missing: I found no reliable numbers for it.
 
 ## CS2-style HUD (score bar · live radar · kill feed)
 

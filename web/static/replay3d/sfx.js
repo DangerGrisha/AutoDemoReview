@@ -968,9 +968,16 @@
   #sfxpanel input[type=range] { width:100%; height:14px; margin:0; accent-color:var(--accent,#2b6cff); }
   #sfxpanel .cb { display:flex; align-items:center; gap:7px; margin-top:9px; font-size:11px;
     color:var(--muted,#8b93a5); cursor:pointer; }
-  #sfxpanel .sep { height:1px; background:var(--line,#232a36); margin:10px 0 2px; }`;
+  #sfxpanel .sep { height:1px; background:var(--line,#232a36); margin:10px 0 2px; }
+  /* inside the page's settings panel */
+  #sfxpanel.embedded { position:static; display:block; width:auto; padding:2px 0 0; background:none;
+    border:0; box-shadow:none; backdrop-filter:none; }
+  #sfxpanel.embedded h4 { display:none; }
+  #sfxpanel.embedded .r { grid-template-columns:128px 1fr 44px; margin-top:8px; }`;
 
-  function mountUI(host) {
+  /** The Sound button in `host`, and its mixer: in `mixerHost` (the page's settings) when
+   *  given, else behind a ⚙ of its own. */
+  function mountUI(host, mixerHost) {
     if (!host || document.getElementById('sfxwrap')) return;
     document.head.appendChild(Object.assign(document.createElement('style'), { textContent: CSS }));
 
@@ -980,7 +987,8 @@
     const gear = document.createElement('button'); gear.id = 'sfxgear';
     gear.textContent = '⚙'; gear.title = 'Sound mixer';
     const panel = document.createElement('div'); panel.id = 'sfxpanel';
-    wrap.append(btn, gear, panel);
+    if (mixerHost) { panel.classList.add('embedded'); wrap.append(btn); mixerHost.appendChild(panel); }
+    else wrap.append(btn, gear, panel);
     host.appendChild(wrap);
 
     const label = () => {
@@ -1005,22 +1013,22 @@
       r.append(l, i, o); panel.appendChild(r);
     };
     const sep = () => panel.appendChild(Object.assign(document.createElement('div'), { className: 'sep' }));
-    slider('master', 'master'); sep();
-    slider('shots', 'gunfire');
-    slider('steps', 'footsteps');
-    slider('util', 'grenades, C4');
-    slider('hits', 'impacts');
-    slider('voice', 'own / POV');
-    slider('ui', 'interface');
-    slider('reverb', 'reverb'); sep();
+    slider('master', 'Общая громкость'); sep();
+    slider('shots', 'Выстрелы');
+    slider('steps', 'Шаги');
+    slider('util', 'Гранаты и бомба');
+    slider('hits', 'Попадания');
+    slider('voice', 'Свои звуки');
+    slider('ui', 'Интерфейс');
+    slider('reverb', 'Эхо'); sep();
     const check = (key, text) => {
       const l = document.createElement('label'); l.className = 'cb';
       const i = document.createElement('input'); i.type = 'checkbox'; i.checked = !!cfg[key];
       i.onchange = () => { cfg[key] = i.checked; save(); };
       l.append(i, document.createTextNode(text)); panel.appendChild(l);
     };
-    check('propagation', 'speed-of-sound delay');
-    check('tinnitus', 'flash ringing');
+    check('propagation', 'Задержка звука с расстоянием');
+    check('tinnitus', 'Звон после флешки');
 
     // A browser only allows audio after a gesture: any click/key starts (or
     // resumes) the context. The same handler gives every button a UI tick.
