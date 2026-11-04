@@ -100,7 +100,13 @@ class CompressedStaticFiles(StaticFiles):
             for encoding, suffix in (("br", ".br"), ("gzip", ".gz")):
                 if encoding not in accepted:
                     continue
-                if self.lookup_path(path + suffix)[1] is None:   # no sibling on disk
+                sibling = self.lookup_path(path + suffix)[1]
+                if sibling is None:   # no sibling on disk
+                    continue
+                # one older than its file was made before the file changed: serving it would
+                # hand out the old code until the next build (tools/precompress.py is_fresh)
+                source = self.lookup_path(path)[1]
+                if source is not None and sibling.st_mtime < source.st_mtime:
                     continue
                 response = await super().get_response(path + suffix, scope)
                 if response.status_code == 200:
